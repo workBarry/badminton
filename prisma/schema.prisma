@@ -1,0 +1,165 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  MEMBER
+}
+
+enum MembershipStatus {
+  MEMBER
+  GUEST
+  PENDING
+  EXITING
+}
+
+enum EventStatus {
+  SCHEDULED
+  CANCELLED
+  COMPLETED
+}
+
+enum BookingStatus {
+  REGULAR
+  STANDBY
+  CANCELLED
+  TRANSFERRED
+}
+
+enum InvoiceType {
+  QUARTERLY_MEMBER
+  SINGLE_EVENT
+  ADJUSTMENT
+  CREDIT
+}
+
+enum PaymentStatus {
+  PENDING
+  REPORTED
+  CONFIRMED
+  VOID
+  CREDITED
+}
+
+enum SettlementStatus {
+  PENDING
+  CONFIRMED
+}
+
+enum FeeKind {
+  MEMBER_VISIT
+  GUEST_VISIT
+}
+
+model Member {
+  id               String           @id @default(cuid())
+  displayName      String           @unique
+  department       String?
+  role             UserRole         @default(MEMBER)
+  membershipStatus MembershipStatus @default(GUEST)
+  joinedAt         DateTime?
+  endingAt         DateTime?
+  creditBalance    Int              @default(0)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  bookings         Booking[]
+  invoices         Invoice[]
+  transfersGiven   Transfer[]       @relation("TransferSource")
+  transfersTaken   Transfer[]       @relation("TransferRecipient")
+}
+
+model ClubEvent {
+  id              String      @id @default(cuid())
+  startsAt        DateTime
+  endsAt          DateTime
+  courts          String
+  regularCapacity Int         @default(10)
+  standbyCapacity Int         @default(4)
+  status          EventStatus @default(SCHEDULED)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  bookings        Booking[]
+  invoices        Invoice[]
+  transfers       Transfer[]
+}
+
+model Booking {
+  id              String        @id @default(cuid())
+  eventId         String
+  memberId        String
+  kindSnapshot    MembershipStatus
+  status          BookingStatus
+  confirmedAt     DateTime      @default(now())
+  cancelledAt     DateTime?
+  createdAt       DateTime      @default(now())
+  event           ClubEvent     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  member          Member        @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  sourceTransfer  Transfer?     @relation("SourceBooking")
+  @@unique([eventId, memberId])
+  @@index([eventId, status, confirmedAt])
+}
+
+model Transfer {
+  id             String           @id @default(cuid())
+  eventId        String
+  sourceBookingId String           @unique
+  sourceMemberId String
+  recipientId    String
+  settlement     SettlementStatus @default(PENDING)
+  createdAt      DateTime         @default(now())
+  event          ClubEvent        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  sourceBooking  Booking          @relation("SourceBooking", fields: [sourceBookingId], references: [id], onDelete: Cascade)
+  sourceMember   Member           @relation("TransferSource", fields: [sourceMemberId], references: [id], onDelete: Cascade)
+  recipient      Member           @relation("TransferRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+}
+
+model Invoice {
+  id          String        @id @default(cuid())
+  memberId    String
+  eventId     String?
+  type        InvoiceType
+  amount      Int
+  status      PaymentStatus @default(PENDING)
+  periodLabel String?
+  dueAt       DateTime?
+  reportedAt  DateTime?
+  confirmedAt DateTime?
+  note        String?
+  createdAt   DateTime      @default(now())
+  member      Member        @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  event       ClubEvent?    @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  @@index([memberId, status])
+}
+
+model Announcement {
+  id        String   @id @default(cuid())
+  title     String
+  content   String
+  linkUrl   String?
+  pinned    Boolean  @default(false)
+  publishedAt DateTime @default(now())
+  createdAt DateTime @default(now())
+}
+
+model RestDay {
+  id        String   @id @default(cuid())
+  date      DateTime @unique
+  label     String
+  createdAt DateTime @default(now())
+}
+
+model FeeRate {
+  id            String   @id @default(cuid())
+  kind          FeeKind
+  amount        Int
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  createdAt     DateTime @default(now())
+  @@index([kind, effectiveFrom])
+}
