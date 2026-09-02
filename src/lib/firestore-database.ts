@@ -1,4 +1,4 @@
-import { createHash } from "crypto";
+import { randomUUID } from "crypto";
 import {
   FieldValue,
   Timestamp,
@@ -8,6 +8,7 @@ import {
   type Transaction,
 } from "firebase-admin/firestore";
 import { getAdminFirestore } from "@/lib/firebase-admin";
+import { createClaimCodeRecord, type Viewer } from "@/lib/device-auth";
 
 type StoredDate = Timestamp | Date | string | null | undefined;
 
@@ -35,13 +36,9 @@ function taipeiDate(value: StoredDate) {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
-function normalizedNameId(name: string) {
-  return `name-${createHash("sha256").update(name.normalize("NFKC").toLocaleLowerCase("zh-TW")).digest("hex").slice(0, 24)}`;
-}
-
-async function memberFor(db: Firestore, name: string) {
-  const snapshot = await db.collection("members").where("displayName", "==", name).limit(1).get();
-  return snapshot.empty ? null : snapshot.docs[0];
+async function membersForName(db: Firestore, name: string) {
+  const snapshot = await db.collection("members").where("displayName", "==", name).get();
+  return snapshot.docs;
 }
 
 async function activeFee(db: Firestore, kind: "MEMBER_VISIT" | "GUEST_VISIT", at: Date) {
@@ -96,20 +93,27 @@ async function promoteStandby(eventId: string) {
   });
 }
 
-export async function readState() {
+export async function readState(viewer: Viewer | null = null) {
   const db = getAdminFirestore();
-  const [memberSnapshot, eventSnapshot, bookingSnapshot, announcementSnapshot, invoiceSnapshot, restDaySnapshot, feeRateSnapshot] = await Promise.all([
-    db.collection("members").get(),
+  const isAdmin = viewer?.role === "ADMIN";
+  const invoiceQuery = isAdmin
+    ? db.collection("invoices")
+    : viewer
+      ? db.collection("invoices").where("memberId", "==", viewer.id)
+      : null;
+  const [eventSnapshot, announcementSnapshot, memberSnapshot, bookingSnapshot, invoiceSnapshot, restDaySnapshot, feeRateSnapshot] = await Promise.all([
     db.collection("events").get(),
-    db.collectionGroup("bookings").get(),
     db.collection("announcements").get(),
-    db.collection("invoices").get(),
-    db.collection("restDays").get(),
-    db.collection("feeRates").get(),
+    viewer ? db.collection("members").get() : Promise.resolve(null),
+    viewer ? db.collectionGroup("bookings").get() : Promise.resolve(null),
+    invoiceQuery ? invoiceQuery.get() : Promise.resolve(null),
+    isAdmin ? db.collection("restDays").get() : Promise.resolve(null),
+    isAdmin ? db.collection("feeRates").get() : Promise.resolve(null),
   ]);
 
-  const membersById = new Map(memberSnapshot.docs.map((document) => [document.id, document.data()]));
-  const members = memberSnapshot.docs
+  const memberDocuments = memberSnapshot?.docs ?? [];
+  const membersById = new Map(memberDocuments.map((document) => [document.id, document.data()]));
+  const members = memberDocuments
     .map((document) => {
       const member = document.data();
       return {
@@ -118,19 +122,19 @@ export async function readState() {
         department: member.department ? String(member.department) : null,
         role: String(member.role ?? "MEMBER"),
         membershipStatus: String(member.membershipStatus ?? "GUEST"),
-        creditBalance: Number(member.creditBalance ?? 0),
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
 
   const bookingsByEvent = new Map<string, Array<Record<string, unknown>>>();
-  for (const document of bookingSnapshot.docs) {
+  for (const document of bookingSnapshot?.docs ?? []) {
     const booking = document.data();
     if (booking.status !== "REGULAR" && booking.status !== "STANDBY") continue;
     const eventId = String(booking.eventId ?? document.ref.parent.parent?.id ?? "");
     const member = membersById.get(String(booking.memberId));
     const item = {
       id: String(booking.id ?? document.id),
+      memberId: String(booking.memberId ?? document.id),
       name: String(booking.displayNameSnapshot ?? member?.displayName ?? "未知使用者"),
       kind: String(booking.kindSnapshot ?? "GUEST"),
       status: String(booking.status),
@@ -173,7 +177,7 @@ export async function readState() {
     })
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || String(b.publishedAt).localeCompare(String(a.publishedAt)));
 
-  const invoices = invoiceSnapshot.docs
+  const invoices = (invoiceSnapshot?.docs ?? [])
     .map((document) => {
       const invoice = document.data();
       const member = membersById.get(String(invoice.memberId));
@@ -195,10 +199,10 @@ export async function readState() {
     })
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
 
-  const restDays = restDaySnapshot.docs
+  const restDays = (restDaySnapshot?.docs ?? [])
     .map((document) => ({ id: document.id, date: String(document.data().date ?? document.id), label: String(document.data().label ?? "") }))
     .sort((a, b) => a.date.localeCompare(b.date));
-  const feeRates = feeRateSnapshot.docs
+  const feeRates = (feeRateSnapshot?.docs ?? [])
     .map((document) => ({
       id: document.id,
       kind: String(document.data().kind ?? ""),
@@ -208,37 +212,16 @@ export async function readState() {
     }))
     .sort((a, b) => String(b.effective_from).localeCompare(String(a.effective_from)));
 
-  return { members, events, announcements, invoices, restDays, feeRates };
+  return { viewer, members, events, announcements, invoices, restDays, feeRates };
 }
 
-async function login(name: string) {
-  const cleanName = name.trim();
-  if (!cleanName) throw new Error("請輸入使用者名稱");
+async function join(input: Record<string, string>, actor: Viewer) {
   const db = getAdminFirestore();
-  const existing = await memberFor(db, cleanName);
-  if (existing) return;
-  const memberRef = db.collection("members").doc(normalizedNameId(cleanName));
-  await memberRef.set({
-    id: memberRef.id,
-    displayName: cleanName,
-    department: null,
-    role: "MEMBER",
-    membershipStatus: "GUEST",
-    joinedAt: null,
-    endingAt: null,
-    creditBalance: 0,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  }, { merge: true });
-}
-
-async function join(input: Record<string, string>) {
-  const db = getAdminFirestore();
-  const memberSnapshot = await memberFor(db, input.name);
-  if (!memberSnapshot) throw new Error("找不到使用者");
+  const memberSnapshot = await db.collection("members").doc(actor.id).get();
+  if (!memberSnapshot.exists) throw new Error("找不到使用者");
   const eventRef = db.collection("events").doc(input.eventId);
   const bookingRef = eventRef.collection("bookings").doc(memberSnapshot.id);
-  const member = memberSnapshot.data();
+  const member = memberSnapshot.data()!;
   const kind = member.membershipStatus === "MEMBER" ? "MEMBER" : "GUEST";
   const now = new Date();
   const guestFee = kind === "GUEST" ? await activeFee(db, "GUEST_VISIT", now) : 0;
@@ -296,10 +279,10 @@ async function join(input: Record<string, string>) {
   });
 }
 
-async function cancel(input: Record<string, string>) {
+async function cancel(input: Record<string, string>, actor: Viewer) {
   const db = getAdminFirestore();
-  const memberSnapshot = await memberFor(db, input.name);
-  if (!memberSnapshot) throw new Error("找不到使用者");
+  const memberSnapshot = await db.collection("members").doc(actor.id).get();
+  if (!memberSnapshot.exists) throw new Error("找不到使用者");
   const eventRef = db.collection("events").doc(input.eventId);
   const bookingRef = eventRef.collection("bookings").doc(memberSnapshot.id);
   const memberRef = memberSnapshot.ref;
@@ -343,20 +326,22 @@ async function cancel(input: Record<string, string>) {
   });
 }
 
-async function transfer(input: Record<string, string>) {
+async function transfer(input: Record<string, string>, actor: Viewer) {
   const db = getAdminFirestore();
   const recipientName = input.recipient?.trim();
   if (!recipientName) throw new Error("請填寫接手者名稱");
-  const sourceSnapshot = await memberFor(db, input.name);
-  if (!sourceSnapshot) throw new Error("找不到轉讓者");
-  if (String(sourceSnapshot.data().displayName) === recipientName) throw new Error("接手者不能是原社員本人");
-  await login(recipientName);
-  const recipientSnapshot = await memberFor(db, recipientName);
-  if (!recipientSnapshot) throw new Error("無法建立接手者");
+  const sourceSnapshot = await db.collection("members").doc(actor.id).get();
+  if (!sourceSnapshot.exists) throw new Error("找不到轉讓者");
+  const matchingRecipients = (await membersForName(db, recipientName)).filter((document) => document.id !== actor.id);
+  if (matchingRecipients.length > 1) throw new Error("有多位同名使用者，請由幹部協助確認接手帳號");
+
+  const recipientRef = matchingRecipients[0]?.ref ?? db.collection("members").doc(randomUUID());
+  const recipientData = matchingRecipients[0]?.data() ?? null;
+  const claim = recipientData ? null : createClaimCodeRecord();
 
   const eventRef = db.collection("events").doc(input.eventId);
   const sourceBookingRef = eventRef.collection("bookings").doc(sourceSnapshot.id);
-  const recipientBookingRef = eventRef.collection("bookings").doc(recipientSnapshot.id);
+  const recipientBookingRef = eventRef.collection("bookings").doc(recipientRef.id);
   const transferRef = db.collection("transfers").doc(`transfer-${input.eventId}-${sourceSnapshot.id}`);
   const now = new Date();
 
@@ -370,11 +355,30 @@ async function transfer(input: Record<string, string>) {
     if (recipientBookingSnapshot.exists && recipientBookingSnapshot.data()?.status !== "CANCELLED") throw new Error("接手者已在本次活動名單中");
     const sourceBooking = sourceBookingSnapshot.data()!;
 
+    if (!recipientData && claim) {
+      transaction.create(recipientRef, {
+        id: recipientRef.id,
+        displayName: recipientName,
+        department: null,
+        role: "MEMBER",
+        membershipStatus: "GUEST",
+        accountType: "unclaimed",
+        joinedAt: null,
+        endingAt: null,
+        creditBalance: 0,
+        claimCodeSalt: claim.salt,
+        claimCodeHash: claim.hash,
+        claimCodeCreatedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
     transaction.set(recipientBookingRef, {
-      id: recipientBookingSnapshot.data()?.id ?? `${input.eventId}-${recipientSnapshot.id}`,
+      id: recipientBookingSnapshot.data()?.id ?? `${input.eventId}-${recipientRef.id}`,
       eventId: input.eventId,
-      memberId: recipientSnapshot.id,
-      displayNameSnapshot: recipientSnapshot.data().displayName,
+      memberId: recipientRef.id,
+      displayNameSnapshot: recipientName,
       kindSnapshot: "GUEST",
       status: sourceBooking.status,
       confirmedAt: now,
@@ -388,12 +392,13 @@ async function transfer(input: Record<string, string>) {
       eventId: input.eventId,
       sourceBookingId: String(sourceBooking.id ?? sourceBookingRef.id),
       sourceMemberId: sourceSnapshot.id,
-      recipientId: recipientSnapshot.id,
+      recipientId: recipientRef.id,
       settlement: "CONFIRMED",
       createdAt: now,
       updatedAt: now,
     }, { merge: true });
   });
+  return claim ? { claimCode: claim.code, recipientName } : undefined;
 }
 
 async function publish(input: Record<string, string>) {
@@ -557,22 +562,24 @@ async function generateWeeklyEvents(input: Record<string, string>) {
   }
 }
 
-async function reportPayment(invoiceId: string) {
+async function reportPayment(invoiceId: string, actor: Viewer) {
   if (!invoiceId) throw new Error("缺少帳單識別碼");
   const invoiceRef = getAdminFirestore().collection("invoices").doc(invoiceId);
   const invoice = await invoiceRef.get();
   if (!invoice.exists) throw new Error("找不到帳單");
+  if (actor.role !== "ADMIN" && String(invoice.data()?.memberId) !== actor.id) throw new Error("你不能更新其他人的帳單");
   if (invoice.data()?.status === "VOID" || invoice.data()?.status === "CREDITED") throw new Error("這筆帳單已無需付款");
   await invoiceRef.update({ status: "REPORTED", reportedAt: new Date(), updatedAt: new Date() });
 }
 
-export async function mutate(action: string, input: Record<string, string>) {
-  if (action === "login") return login(input.name);
-  if (action === "join") return join(input);
-  if (action === "cancel") return cancel(input);
-  if (action === "transfer") return transfer(input);
+export async function mutate(action: string, input: Record<string, string>, actor: Viewer) {
+  if (action === "join") return join(input, actor);
+  if (action === "cancel") return cancel(input, actor);
+  if (action === "transfer") return transfer(input, actor);
+  if (action === "reportPayment") return reportPayment(input.invoiceId, actor);
+
+  if (actor.role !== "ADMIN") throw new Error("只有幹部可以執行這項操作");
   if (action === "publish") return publish(input);
-  if (action === "reportPayment") return reportPayment(input.invoiceId);
   if (action === "createEvent") return createEvent(input);
   if (action === "updateEvent") return updateEvent(input);
   if (action === "cancelEvent") return cancelEvent(input.eventId);

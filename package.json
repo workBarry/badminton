@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "db:check:firestore": "node scripts/migrate-sqlite-to-firestore.mjs --check",
-    "db:migrate:firestore": "node scripts/migrate-sqlite-to-firestore.mjs"
+    "db:migrate:firestore": "node scripts/migrate-sqlite-to-firestore.mjs --write"
   },
   "engines": {
     "node": ">=22"

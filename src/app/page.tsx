@@ -5,10 +5,20 @@ import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 
 type Role = "admin" | "member";
 type Tab = "總覽" | "活動" | "公告" | "社員名單" | "費用管理";
 type ActivityManagerTab = "single" | "weekly" | "rest";
-type Person = { name: string; department?: string; role: Role; member: boolean };
-type Booking = { name: string; kind: "社員" | "非社員"; rank: "正取" | "候補"; transferred?: boolean };
+type Person = { id: string; name: string; department?: string; role: Role; member: boolean };
+type Booking = { memberId: string; name: string; kind: "社員" | "非社員"; rank: "正取" | "候補"; transferred?: boolean };
 type NewsItem = { title: string; content: string; date: string; linkUrl?: string };
-type Invoice = { id: string; memberName: string; type: string; amount: number; status: string; period_label?: string };
+type Invoice = { id: string; member_id: string; memberName: string; type: string; amount: number; status: string; period_label?: string };
+type Viewer = {
+  id: string;
+  name: string;
+  department: string | null;
+  role: "ADMIN" | "MEMBER";
+  membershipStatus: string;
+  accountType: "guest" | "recoverable" | "verified" | "unclaimed";
+  hasRecoveryCode: boolean;
+};
+type ActionResult = { recoveryCode?: string; claimCode?: string; recipientName?: string };
 type ClubEvent = {
   id: string;
   startsAt?: string;
@@ -23,20 +33,22 @@ type ClubEvent = {
 };
 
 type ApiState = {
-  members: { name: string; department?: string; role: string; membershipStatus: string }[];
-  events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; bookings: { name: string; kind: string; status: string }[] }[];
+  viewer: Viewer | null;
+  members: { id: string; name: string; department?: string; role: string; membershipStatus: string }[];
+  events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; bookings: { memberId: string; name: string; kind: string; status: string }[] }[];
   announcements: { title: string; content: string; publishedAt: string; linkUrl?: string }[];
   invoices: Invoice[];
+  actionResult?: ActionResult;
 };
 
 const people: Person[] = [
-  { name: "王小芸", department: "人資", role: "admin", member: true },
-  { name: "陳韋廷", department: "工程", role: "admin", member: true },
-  { name: "林子晴", department: "設計", role: "member", member: true },
-  { name: "周昱安", department: "業務", role: "member", member: true },
-  { name: "許庭維", department: "財務", role: "member", member: false },
-  { name: "徐佩珊", department: "產品", role: "member", member: true },
-  { name: "郭明軒", department: "工程", role: "member", member: true },
+  { id: "seed-admin-1", name: "王小芸", department: "人資", role: "admin", member: true },
+  { id: "seed-admin-2", name: "陳韋廷", department: "工程", role: "admin", member: true },
+  { id: "seed-member-1", name: "林子晴", department: "設計", role: "member", member: true },
+  { id: "seed-member-2", name: "周昱安", department: "業務", role: "member", member: true },
+  { id: "seed-guest-1", name: "許庭維", department: "財務", role: "member", member: false },
+  { id: "seed-member-3", name: "徐佩珊", department: "產品", role: "member", member: true },
+  { id: "seed-member-4", name: "郭明軒", department: "工程", role: "member", member: true },
 ];
 
 const eventsSeed: ClubEvent[] = [
@@ -49,13 +61,13 @@ const eventsSeed: ClubEvent[] = [
     regular: 10,
     wait: 4,
     bookings: [
-      { name: "王小芸", kind: "社員", rank: "正取" },
-      { name: "陳韋廷", kind: "社員", rank: "正取" },
-      { name: "林子晴", kind: "社員", rank: "正取" },
-      { name: "周昱安", kind: "社員", rank: "正取" },
-      { name: "徐佩珊", kind: "社員", rank: "正取" },
-      { name: "郭明軒", kind: "社員", rank: "正取" },
-      { name: "許庭維", kind: "非社員", rank: "候補" },
+      { memberId: "seed-admin-1", name: "王小芸", kind: "社員", rank: "正取" },
+      { memberId: "seed-admin-2", name: "陳韋廷", kind: "社員", rank: "正取" },
+      { memberId: "seed-member-1", name: "林子晴", kind: "社員", rank: "正取" },
+      { memberId: "seed-member-2", name: "周昱安", kind: "社員", rank: "正取" },
+      { memberId: "seed-member-3", name: "徐佩珊", kind: "社員", rank: "正取" },
+      { memberId: "seed-member-4", name: "郭明軒", kind: "社員", rank: "正取" },
+      { memberId: "seed-guest-1", name: "許庭維", kind: "非社員", rank: "候補" },
     ],
   },
   {
@@ -67,8 +79,8 @@ const eventsSeed: ClubEvent[] = [
     regular: 10,
     wait: 4,
     bookings: [
-      { name: "王小芸", kind: "社員", rank: "正取" },
-      { name: "陳韋廷", kind: "社員", rank: "正取" },
+      { memberId: "seed-admin-1", name: "王小芸", kind: "社員", rank: "正取" },
+      { memberId: "seed-admin-2", name: "陳韋廷", kind: "社員", rank: "正取" },
     ],
   },
   {
@@ -107,9 +119,11 @@ function Badge({
 }
 
 export default function Home() {
-  const [name, setName] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<Viewer | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
   const [input, setInput] = useState("");
-  const [recent, setRecent] = useState<string[]>([]);
+  const [authSaving, setAuthSaving] = useState(false);
+  const [codeNotice, setCodeNotice] = useState<{ title: string; body: string; code: string } | null>(null);
   const [tab, setTab] = useState<Tab>("總覽");
   const [events, setEvents] = useState<ClubEvent[]>(eventsSeed);
   const [news, setNews] = useState(initialNews);
@@ -142,13 +156,14 @@ export default function Home() {
   }, [managerOpen, announcementOpen]);
 
   const applyState = useCallback((state: ApiState) => {
-    setMembers(state.members.map((member) => ({ name: member.name, department: member.department, role: member.role === "ADMIN" ? "admin" : "member", member: member.membershipStatus === "MEMBER" })));
+    setViewer(state.viewer);
+    setMembers(state.members.map((member) => ({ id: member.id, name: member.name, department: member.department, role: member.role === "ADMIN" ? "admin" : "member", member: member.membershipStatus === "MEMBER" })));
     setEvents(state.events.map((item) => {
       const startsAt = new Date(item.starts_at);
       const endsAt = new Date(item.ends_at);
       const date = `${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "numeric" })} ${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", day: "numeric" })}`;
       const time = `${startsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })} – ${endsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })}`;
-      return { id: item.id, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, bookings: item.bookings.map((booking) => ({ name: booking.name, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
+      return { id: item.id, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
     }));
     setNews(state.announcements.map((item) => ({
       title: item.title,
@@ -160,50 +175,81 @@ export default function Home() {
   }, []);
 
   const refresh = useCallback(async () => {
-    const response = await fetch("/api/club", { cache: "no-store" });
-    if (response.ok) applyState(await response.json() as ApiState);
+    try {
+      const response = await fetch("/api/club", { cache: "no-store" });
+      if (response.ok) applyState(await response.json() as ApiState);
+    } finally {
+      setSessionReady(true);
+    }
   }, [applyState]);
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => {
-      const storedRecent = localStorage.getItem("club-recent");
-      if (storedRecent) setRecent(JSON.parse(storedRecent));
-      void refresh();
-    });
-    return () => window.cancelAnimationFrame(frame);
+    void refresh();
   }, [refresh]);
 
   const execute = async (action: string, data: Record<string, string>) => {
     const response = await fetch("/api/club", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, ...data }) });
     const payload = await response.json() as ApiState & { error?: string };
-    if (!response.ok) { window.alert(payload.error ?? "資料庫操作失敗"); return false; }
+    if (!response.ok) {
+      if (response.status === 401) setViewer(null);
+      window.alert(payload.error ?? "資料庫操作失敗");
+      return null;
+    }
     applyState(payload);
-    return true;
+    return payload;
   };
 
   const user = useMemo<Person>(
-    () =>
-      members.find((person) => person.name === name) ?? { name: name ?? "", role: "member", member: false },
-    [name, members],
+    () => viewer
+      ? { id: viewer.id, name: viewer.name, department: viewer.department ?? undefined, role: viewer.role === "ADMIN" ? "admin" : "member", member: viewer.membershipStatus === "MEMBER" }
+      : { id: "", name: "", role: "member", member: false },
+    [viewer],
   );
   const event = events.find((item) => !item.endsAt || new Date(item.endsAt) > new Date());
-  const booking = event?.bookings.find((item) => item.name === name);
-  const invoice = invoices.find((item) => item.memberName === name && item.status !== "VOID");
-  const login = async (candidate: string) => {
+  const booking = event?.bookings.find((item) => item.memberId === viewer?.id);
+  const invoice = invoices.find((item) => item.member_id === viewer?.id && item.status !== "VOID");
+  const createGuest = async (candidate: string) => {
     const clean = candidate.trim();
     if (!clean) return;
-    const next = [clean, ...recent.filter((item) => item !== clean)].slice(0, 4);
-    setRecent(next);
-    localStorage.setItem("club-recent", JSON.stringify(next));
-    await execute("login", { name: clean });
-    setName(clean);
+    setAuthSaving(true);
+    try {
+      await execute("createGuest", { name: clean });
+      setInput("");
+    } finally {
+      setAuthSaving(false);
+    }
   };
-  const join = (eventId: string) => { if (name) void execute("join", { name, eventId }); };
-  const cancel = (eventId: string) => { if (name) void execute("cancel", { name, eventId }); };
+  const recover = async (candidate: string, code: string) => {
+    setAuthSaving(true);
+    try {
+      const payload = await execute("recover", { name: candidate.trim(), code: code.trim() });
+      if (payload?.actionResult?.recoveryCode) {
+        setCodeNotice({ title: "請保存新的復原碼", body: "舊的認領碼或復原碼已失效。這組新碼只會顯示一次，請放在安全的地方。", code: payload.actionResult.recoveryCode });
+      }
+    } finally {
+      setAuthSaving(false);
+    }
+  };
+  const logout = async () => { await execute("logout", {}); setTab("總覽"); };
+  const makeRecoveryCode = async () => {
+    const payload = await execute("createRecoveryCode", {});
+    if (payload?.actionResult?.recoveryCode) {
+      setCodeNotice({ title: "請保存你的復原碼", body: "這組碼只會顯示一次。清除瀏覽器資料或更換裝置時，可用姓名與此碼取回帳號。", code: payload.actionResult.recoveryCode });
+    }
+  };
+  const join = (eventId: string) => { if (viewer) void execute("join", { eventId }); };
+  const cancel = (eventId: string) => { if (viewer) void execute("cancel", { eventId }); };
   const submitTransfer = async () => {
     const clean = recipient.trim();
-    if (!clean || !name || !event) return;
-    if (await execute("transfer", { name, eventId: event.id, recipient: clean })) { setRecipient(""); setTransfer(false); }
+    if (!clean || !viewer || !event) return;
+    const payload = await execute("transfer", { eventId: event.id, recipient: clean });
+    if (payload) {
+      setRecipient("");
+      setTransfer(false);
+      if (payload.actionResult?.claimCode) {
+        setCodeNotice({ title: "請將認領碼交給接手者", body: `${payload.actionResult.recipientName ?? clean} 可在登入頁用姓名與這組認領碼開啟帳號。此碼只會顯示一次。`, code: payload.actionResult.claimCode });
+      }
+    }
   };
   const publish = async (form: FormEvent<HTMLFormElement>) => {
     form.preventDefault();
@@ -300,7 +346,8 @@ export default function Home() {
     }
   };
 
-  if (!name) return <Login input={input} setInput={setInput} login={login} recent={recent} />;
+  if (!sessionReady) return <main className="login"><section className="session-loading"><div className="login-logo">羽</div><h1>正在確認此裝置…</h1><span>請稍候，系統正在安全地恢復登入狀態。</span></section></main>;
+  if (!viewer) return <Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} saving={authSaving} />;
   const isAdmin = user.role === "admin";
   return (
     <div className="app">
@@ -326,7 +373,7 @@ export default function Home() {
             <strong>{user.name}</strong>
             <small>{isAdmin ? "幹部管理者" : user.member ? "社員" : "非社員"}</small>
           </span>
-          <button onClick={() => setName(null)} title="登出">
+          <button onClick={() => void logout()} title="登出">
             ↪
           </button>
         </div>
@@ -359,6 +406,15 @@ export default function Home() {
             )}
           </div>
         </header>
+        {!viewer.hasRecoveryCode && (
+          <section className="account-warning">
+            <div>
+              <strong>此帳號目前只存在這台裝置</strong>
+              <span>清除網站資料、使用無痕模式或更換裝置後，可能無法取回報名與付款紀錄。</span>
+            </div>
+            <button className="secondary" onClick={() => void makeRecoveryCode()}>建立復原碼</button>
+          </section>
+        )}
         {tab === "總覽" && (
           <Overview
             event={event}
@@ -375,7 +431,7 @@ export default function Home() {
         {tab === "活動" && (
           <Events
             list={events}
-            name={name}
+            viewerId={viewer.id}
             user={user}
             join={join}
             cancel={cancel}
@@ -428,6 +484,7 @@ export default function Home() {
         />
       )}
       {editingEvent && <div className="modal-cover"><section className="modal"><button className="close" onClick={() => setEditingEvent(null)}>×</button><p>活動管理</p><h2>編輯活動</h2><form onSubmit={updateEvent}><input name="date" type="date" defaultValue={editingEvent.startsAt?.slice(0, 10)} required /><div className="time-pair"><input name="start" type="time" defaultValue={editingEvent.startsAt?.slice(11, 16)} required /><input name="end" type="time" defaultValue={editingEvent.endsAt?.slice(11, 16)} required /></div><input name="courts" defaultValue={editingEvent.courts} required /><div className="time-pair"><input name="regular" type="number" min="1" defaultValue={editingEvent.regular} /><input name="standby" type="number" min="0" defaultValue={editingEvent.wait} /></div><button className="primary">儲存變更</button></form></section></div>}
+      {codeNotice && <CodeNotice notice={codeNotice} onClose={() => setCodeNotice(null)} />}
     </div>
   );
 }
@@ -618,51 +675,73 @@ function AnnouncementModal({
 function Login({
   input,
   setInput,
-  login,
-  recent,
+  createGuest,
+  recover,
+  saving,
 }: {
   input: string;
   setInput: (value: string) => void;
-  login: (name: string) => void;
-  recent: string[];
+  createGuest: (name: string) => void;
+  recover: (name: string, code: string) => void;
+  saving: boolean;
 }) {
+  const [mode, setMode] = useState<"new" | "recover">("new");
+  const [code, setCode] = useState("");
   return (
     <main className="login">
       <section>
         <div className="login-logo">羽</div>
         <p>COMPANY BADMINTON CLUB</p>
         <h1>下班，一起上場。</h1>
-        <span>輸入名稱開始使用社團原型。此頁面不會驗證身分，請勿輸入真實付款或個資。</span>
+        <span>{mode === "new" ? "第一次使用只需輸入顯示名稱，系統會為這台裝置建立一個新的訪客帳號。" : "輸入原帳號姓名與認領碼或復原碼，即可在這台裝置取回帳號。"}</span>
+        <div className="login-tabs" role="tablist" aria-label="登入方式">
+          <button type="button" role="tab" aria-selected={mode === "new"} className={mode === "new" ? "active" : ""} onClick={() => setMode("new")}>第一次使用</button>
+          <button type="button" role="tab" aria-selected={mode === "recover"} className={mode === "recover" ? "active" : ""} onClick={() => setMode("recover")}>取回既有帳號</button>
+        </div>
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            login(input);
+            if (mode === "new") createGuest(input);
+            else recover(input, code);
           }}
         >
           <label>使用者名稱</label>
-          <div>
-            <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="例如：林子晴" />
-            <button className="primary">進入</button>
-          </div>
+          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="例如：林子晴" maxLength={40} required autoComplete="nickname" />
+          {mode === "recover" && (
+            <>
+              <label>認領碼或復原碼</label>
+              <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="XXXX-XXXX-XXXX-XXXX" maxLength={19} required autoComplete="one-time-code" />
+            </>
+          )}
+          <button className="primary" disabled={saving}>{saving ? "處理中…" : mode === "new" ? "建立這台裝置的帳號" : "取回帳號"}</button>
         </form>
-        {recent.length > 0 && (
-          <aside className="recent">
-            <small>快速登入</small>
-            <div>
-              {recent.map((item) => (
-                <button key={item} onClick={() => login(item)}>
-                  {item}
-                </button>
-              ))}
-            </div>
-          </aside>
-        )}
         <aside className="notice">
-          <strong>測試帳號</strong>
-          <span>王小芸、陳韋廷為幹部；林子晴、周昱安為社員；許庭維為非社員。</span>
+          <strong>測試版帳號提醒</strong>
+          <span>相同姓名也會建立成不同帳號。未建立復原碼前，清除瀏覽器資料或更換裝置可能導致帳號無法取回。</span>
         </aside>
       </section>
     </main>
+  );
+}
+
+function CodeNotice({ notice, onClose }: { notice: { title: string; body: string; code: string }; onClose: () => void }) {
+  const copyCode = async () => {
+    await navigator.clipboard.writeText(notice.code);
+    window.alert("已複製");
+  };
+  return (
+    <div className="modal-cover" role="presentation">
+      <section className="modal code-modal" role="dialog" aria-modal="true" aria-labelledby="code-notice-title">
+        <p>帳號安全</p>
+        <h2 id="code-notice-title">{notice.title}</h2>
+        <span>{notice.body}</span>
+        <strong className="recovery-code">{notice.code}</strong>
+        <div className="code-actions">
+          <button className="secondary" onClick={() => void copyCode()}>複製代碼</button>
+          <button className="primary" onClick={onClose}>我已保存</button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -900,7 +979,7 @@ function ActivityCalendar({ list }: { list: ClubEvent[] }) {
 
 function Events({
   list,
-  name,
+  viewerId,
   user,
   join,
   cancel,
@@ -910,7 +989,7 @@ function Events({
   editEvent,
 }: {
   list: ClubEvent[];
-  name: string;
+  viewerId: string;
   user: Person;
   join: (id: string) => void;
   cancel: (id: string) => void;
@@ -931,7 +1010,7 @@ function Events({
       </div>
       <section className="event-list">
         {list.map((event) => {
-        const entry = event.bookings.find((item) => item.name === name);
+        const entry = event.bookings.find((item) => item.memberId === viewerId);
         const regular = event.bookings.filter((item) => item.rank === "正取").length;
         const wait = event.bookings.filter((item) => item.rank === "候補").length;
         const dateParts = event.date.match(/(\d+)\s*月\s*(\d+)/);
@@ -951,7 +1030,7 @@ function Events({
               </p>
               <div className="chips">
                 {event.bookings.slice(0, 5).map((item) => (
-                  <span key={item.name}>
+                  <span key={item.memberId}>
                     {item.name}
                     <i className={item.rank === "正取" ? "green-dot" : "orange-dot"} />
                   </span>
@@ -1026,7 +1105,7 @@ function Members({ members }: { members: Person[] }) {
         <span>本週狀態</span>
       </div>
       {members.map((person) => (
-        <div className="row" key={person.name}>
+        <div className="row" key={person.id}>
           <strong>
             <i>{person.name[0]}</i>
             {person.name}

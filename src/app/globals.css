@@ -148,12 +148,52 @@ textarea {
   font-size: 13px;
   font-weight: 700;
 }
+.login form {
+  display: flex;
+  flex-direction: column;
+}
 .login form > div {
   display: flex;
   gap: 9px;
 }
 .login input {
   width: 100%;
+  margin-bottom: 14px;
+}
+.login form > .primary {
+  width: 100%;
+  margin-top: 4px;
+}
+.login-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 22px;
+  padding: 4px;
+  border-radius: 12px;
+  background: #eef3f1;
+}
+.login-tabs button {
+  flex: 1;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+}
+.login-tabs button.active {
+  background: #fff;
+  color: var(--green);
+  box-shadow: 0 3px 10px #163f3714;
+}
+.session-loading {
+  text-align: center;
+}
+.session-loading .login-logo {
+  margin: 0 auto 24px;
+}
+.session-loading h1 {
+  font-size: 28px;
 }
 .recent {
   margin-top: 23px;
@@ -1019,6 +1059,48 @@ textarea {
 .modal input {
   width: 100%;
   margin-bottom: 14px;
+}
+.account-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: -8px 0 24px;
+  padding: 14px 17px;
+  border: 1px solid #ead49c;
+  border-radius: 14px;
+  background: #fff8e7;
+  color: #765d31;
+}
+.account-warning > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.account-warning span {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.account-warning button {
+  flex: 0 0 auto;
+}
+.recovery-code {
+  display: block;
+  margin: 22px 0;
+  padding: 17px 12px;
+  border: 1px dashed #77a097;
+  border-radius: 12px;
+  background: #eff7f4;
+  color: var(--green);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: clamp(18px, 5vw, 25px);
+  letter-spacing: .08em;
+  text-align: center;
+}
+.code-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
 }
 .close {
   position: absolute;

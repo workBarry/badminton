@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomBytes, scryptSync } from "node:crypto";
 import { createClient } from "@libsql/client";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
@@ -31,17 +32,44 @@ function taipeiDate(value) {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
+function createClaimCode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const bytes = randomBytes(16);
+  const characters = Array.from(bytes, (byte) => alphabet[byte % alphabet.length]);
+  const code = [characters.slice(0, 4), characters.slice(4, 8), characters.slice(8, 12), characters.slice(12, 16)]
+    .map((group) => group.join(""))
+    .join("-");
+  const salt = randomBytes(16).toString("hex");
+  const normalized = code.replaceAll("-", "");
+  return { code, salt, hash: scryptSync(normalized, salt, 32).toString("hex") };
+}
+
 const projectId = required("FIREBASE_PROJECT_ID");
 const clientEmail = required("FIREBASE_CLIENT_EMAIL");
 const privateKey = required("FIREBASE_PRIVATE_KEY").replace(/^['"]|['"]$/g, "").replace(/\\n/g, "\n");
 const databaseId = process.env.FIREBASE_DATABASE_ID?.trim() || "(default)";
 const app = getApps()[0] ?? initializeApp({ credential: cert({ projectId, clientEmail, privateKey }), projectId });
 const firestore = databaseId === "(default)" ? getFirestore(app) : getFirestore(app, databaseId);
+const migrationCollections = ["members", "events", "invoices", "transfers", "announcements", "restDays", "feeRates", "eventDates"];
+const collectionChecks = await Promise.all(migrationCollections.map(async (name) => ({
+  name,
+  hasData: !(await firestore.collection(name).limit(1).get()).empty,
+})));
+const nonEmptyCollections = collectionChecks.filter((item) => item.hasData).map((item) => item.name);
 
 if (process.argv.includes("--check")) {
-  const snapshot = await firestore.collection("members").limit(1).get();
-  console.log(JSON.stringify({ connected: true, databaseId, membersCollectionHasData: !snapshot.empty }, null, 2));
+  console.log(JSON.stringify({ connected: true, databaseId, nonEmptyCollections }, null, 2));
   process.exit(0);
+}
+
+if (!process.argv.includes("--write")) {
+  throw new Error("This command writes to Firestore. Run the package script with the explicit --write flag.");
+}
+
+const existingMigration = await firestore.collection("system").doc("migration-sqlite-v1").get();
+if (existingMigration.exists) throw new Error("SQLite migration has already completed; refusing to overwrite Firestore data.");
+if (nonEmptyCollections.length > 0) {
+  throw new Error(`Firestore is not empty (${nonEmptyCollections.join(", ")}); refusing to mix or overwrite existing data.`);
 }
 
 const sqlitePath = path.join(process.cwd(), "data", "badminton.sqlite").replace(/\\/g, "/");
@@ -61,11 +89,15 @@ const [members, events, bookings, invoices, transfers, announcements, restDays, 
 ]);
 
 const memberNames = new Map(members.map((member) => [String(member.id), String(member.display_name)]));
+const memberClaimCodes = new Map(members.map((member) => [String(member.id), createClaimCode()]));
 const operations = [];
 const put = (ref, data) => operations.push({ ref, data });
 
-for (const member of members) put(firestore.collection("members").doc(String(member.id)), {
-  id: String(member.id),
+for (const member of members) {
+  const memberId = String(member.id);
+  const claim = memberClaimCodes.get(memberId);
+  put(firestore.collection("members").doc(memberId), {
+  id: memberId,
   displayName: String(member.display_name),
   department: member.department ? String(member.department) : null,
   role: String(member.role ?? "MEMBER"),
@@ -73,9 +105,14 @@ for (const member of members) put(firestore.collection("members").doc(String(mem
   joinedAt: optionalDate(member.joined_at),
   endingAt: optionalDate(member.ending_at),
   creditBalance: Number(member.credit_balance ?? 0),
+  accountType: "unclaimed",
+  claimCodeSalt: claim.salt,
+  claimCodeHash: claim.hash,
+  claimCodeCreatedAt: now,
   createdAt: optionalDate(member.created_at) ?? now,
   updatedAt: now,
 });
+}
 
 for (const event of events) {
   const eventId = String(event.id);
@@ -185,3 +222,7 @@ for (let offset = 0; offset < operations.length; offset += 400) {
 
 await sqlite.close();
 console.log(JSON.stringify({ databaseId, writtenDocuments: operations.length, members: members.length, events: events.length, bookings: bookings.length, invoices: invoices.length, transfers: transfers.length, announcements: announcements.length, restDays: restDays.length, feeRates: feeRates.length }, null, 2));
+console.log("\nOne-time account claim codes (store securely; Firestore contains hashes only):");
+for (const member of members) {
+  console.log(`${String(member.display_name)}\t${memberClaimCodes.get(String(member.id)).code}`);
+}

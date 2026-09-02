@@ -52,6 +52,17 @@ FIREBASE_DATABASE_ID=(default)
 npm run db:migrate:firestore
 ```
 
+這個指令會寫入雲端資料庫，僅在確認要上傳本機測試資料後執行。每位匯入的既有使用者都會產生一組一次性認領碼；終端機會顯示原始碼，Firestore 只保存加鹽雜湊值。遺失原始認領碼後無法從資料庫還原。
+
+## 裝置帳號
+
+- 第一次使用會建立新的訪客 `userId`；姓名只用於顯示，因此同名使用者仍是不同帳號。
+- 隨機裝置憑證存放在 `HttpOnly`、`SameSite=Lax` Cookie，Firestore 只保存憑證的雜湊值。
+- 未建立復原碼的帳號只可由目前裝置存取；清除網站資料、使用無痕模式或更換裝置後可能無法取回。
+- 使用者可建立復原碼，或用既有帳號的一次性認領碼登入。成功後會立即輪替成新的復原碼。
+- 管理權限由 Firestore 的社員文件決定；只輸入與幹部相同的姓名不會取得幹部權限。
+- 手機簡訊與 Passkey 尚未實作，之後可綁定到同一個 `userId`，不必搬移活動與付款紀錄。
+
 ## Deploy on Vercel
 
 將上述四個環境變數加入 Vercel 的 Production、Preview 與 Development 環境，再重新部署。Production 與 Preview 的私鑰請標記為 Sensitive。
