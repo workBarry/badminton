@@ -6,15 +6,20 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:check:firestore": "node scripts/migrate-sqlite-to-firestore.mjs --check",
+    "db:migrate:firestore": "node scripts/migrate-sqlite-to-firestore.mjs"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.4",
     "@prisma/client": "^6.19.3",
-    "@types/sql.js": "^1.4.11",
+    "firebase-admin": "^14.3.0",
     "next": "16.3.4",
     "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "sql.js": "^1.14.2"
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

@@ -1,4 +1,4 @@
-import { mutate, readState } from "@/lib/database";
+import { mutate, readState } from "@/lib/firestore-database";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
