@@ -20,6 +20,7 @@ type Invoice = { id: string; member_id: string; memberName: string; type: string
 type RestDay = { id: string; date: string; label: string };
 type FeeRate = { id: string; kind: string; amount: number; effective_from: string | null; effective_to: string | null };
 type MembershipRequest = { id: string; memberId: string; memberName: string; kind: "JOIN" | "EXIT"; status: "PENDING" | "APPROVED" | "REJECTED"; requestedAt: string | null; reviewedAt: string | null };
+type ClubNotification = { id: string; title: string; message: string; type: string; tab: string; createdAt: string | null; read: boolean };
 type Viewer = {
   id: string;
   name: string;
@@ -31,7 +32,7 @@ type Viewer = {
   hasRecoveryCode: boolean;
   hasPasskey: boolean;
 };
-type ActionResult = { recoveryCode?: string; claimCode?: string; recipientName?: string; invoiceCount?: number; eventCount?: number; totalAmount?: number; periodLabel?: string };
+type ActionResult = { recoveryCode?: string; claimCode?: string; recipientName?: string; invoiceCount?: number; eventCount?: number; totalAmount?: number; periodLabel?: string; createdCount?: number };
 type DeviceAccount = { id: string; name: string; role: "ADMIN" | "MEMBER"; membershipStatus: string };
 type ClubEvent = {
   id: string;
@@ -43,6 +44,7 @@ type ClubEvent = {
   courts: string;
   regular: number;
   wait: number;
+  booked: number;
   memberFee: number;
   guestFee: number;
   bookings: Booking[];
@@ -51,93 +53,17 @@ type ClubEvent = {
 type ApiState = {
   viewer: Viewer | null;
   members: { id: string; name: string; department?: string; role: string; membershipStatus: string; creditBalance?: number; primaryAdmin?: boolean }[];
-  events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; member_fee: number; guest_fee: number; bookings: { memberId: string; name: string; kind: string; status: string }[] }[];
+  events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; regular_count: number; standby_count: number; member_fee: number; guest_fee: number; bookings: { memberId: string; name: string; kind: string; status: string }[] }[];
   announcements: { id: string; title: string; content: string; publishedAt: string; linkUrl?: string; pinned: boolean }[];
   invoices: Invoice[];
   restDays: RestDay[];
   feeRates: FeeRate[];
   membershipRequests: MembershipRequest[];
+  notifications: ClubNotification[];
   currentFees: { member: number; guest: number };
   quickAccounts: DeviceAccount[];
   actionResult?: ActionResult;
 };
-
-const people: Person[] = [
-  { id: "seed-admin-1", name: "王小芸", department: "人資", role: "admin", member: true },
-  { id: "seed-admin-2", name: "陳韋廷", department: "工程", role: "admin", member: true },
-  { id: "seed-member-1", name: "林子晴", department: "設計", role: "member", member: true },
-  { id: "seed-member-2", name: "周昱安", department: "業務", role: "member", member: true },
-  { id: "seed-guest-1", name: "許庭維", department: "財務", role: "member", member: false },
-  { id: "seed-member-3", name: "徐佩珊", department: "產品", role: "member", member: true },
-  { id: "seed-member-4", name: "郭明軒", department: "工程", role: "member", member: true },
-];
-
-const eventsSeed: ClubEvent[] = [
-  {
-    id: "seed-1",
-    date: "9月4日",
-    weekday: "週五",
-    time: "19:00 – 21:00",
-    courts: "公司體育館 A 場",
-    regular: 10,
-    wait: 4,
-    memberFee: 150,
-    guestFee: 180,
-    bookings: [
-      { memberId: "seed-admin-1", name: "王小芸", kind: "社員", rank: "正取" },
-      { memberId: "seed-admin-2", name: "陳韋廷", kind: "社員", rank: "正取" },
-      { memberId: "seed-member-1", name: "林子晴", kind: "社員", rank: "正取" },
-      { memberId: "seed-member-2", name: "周昱安", kind: "社員", rank: "正取" },
-      { memberId: "seed-member-3", name: "徐佩珊", kind: "社員", rank: "正取" },
-      { memberId: "seed-member-4", name: "郭明軒", kind: "社員", rank: "正取" },
-      { memberId: "seed-guest-1", name: "許庭維", kind: "非社員", rank: "候補" },
-    ],
-  },
-  {
-    id: "seed-2",
-    date: "9 月 11 日",
-    weekday: "週五",
-    time: "19:00 – 21:00",
-    courts: "公司體育館 A 場",
-    regular: 10,
-    wait: 4,
-    memberFee: 150,
-    guestFee: 180,
-    bookings: [
-      { memberId: "seed-admin-1", name: "王小芸", kind: "社員", rank: "正取" },
-      { memberId: "seed-admin-2", name: "陳韋廷", kind: "社員", rank: "正取" },
-    ],
-  },
-  {
-    id: "seed-3",
-    date: "9 月 18 日",
-    weekday: "週五",
-    time: "19:00 – 21:00",
-    courts: "公司體育館 A、B 場",
-    regular: 20,
-    wait: 8,
-    memberFee: 150,
-    guestFee: 180,
-    bookings: [],
-  },
-];
-
-const initialNews: NewsItem[] = [
-  {
-    id: "seed-news-1",
-    title: "九月活動時段與場地",
-    date: "2026.08.29",
-    content: "九月固定於週五 19:00 開打；9/18 將使用 A、B 兩場。",
-    pinned: true,
-  },
-  {
-    id: "seed-news-2",
-    title: "第三季社員費預收通知",
-    date: "2026.08.25",
-    content: "本季共 12 次活動，社員預收費用為 NT$1,800。請於 9/6 前完成轉帳。",
-    pinned: false,
-  },
-];
 
 function Badge({
   children,
@@ -159,13 +85,17 @@ export default function Home() {
   const [quickAccounts, setQuickAccounts] = useState<DeviceAccount[]>([]);
   const [codeNotice, setCodeNotice] = useState<{ title: string; body: string; code: string } | null>(null);
   const [tab, setTab] = useState<Tab>("總覽");
-  const [events, setEvents] = useState<ClubEvent[]>(eventsSeed);
-  const [news, setNews] = useState(initialNews);
-  const [members, setMembers] = useState<Person[]>(people);
+  const [events, setEvents] = useState<ClubEvent[]>([]);
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [members, setMembers] = useState<Person[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [restDays, setRestDays] = useState<RestDay[]>([]);
   const [feeRates, setFeeRates] = useState<FeeRate[]>([]);
   const [membershipRequests, setMembershipRequests] = useState<MembershipRequest[]>([]);
+  const [notifications, setNotifications] = useState<ClubNotification[]>([]);
+  const [notificationOpen, setNotificationOpen] = useState(false);
+  const [notificationSaving, setNotificationSaving] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [currentFees, setCurrentFees] = useState({ member: 150, guest: 180 });
   const [transferEventId, setTransferEventId] = useState<string | null>(null);
   const [recipient, setRecipient] = useState("");
@@ -212,7 +142,7 @@ export default function Home() {
       const endsAt = new Date(item.ends_at);
       const date = `${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "numeric" })} ${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", day: "numeric" })}`;
       const time = `${startsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })} – ${endsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })}`;
-      return { id: item.id, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, memberFee: item.member_fee, guestFee: item.guest_fee, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
+      return { id: item.id, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, booked: item.regular_count + item.standby_count, memberFee: item.member_fee, guestFee: item.guest_fee, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
     }));
     setNews(state.announcements.map((item) => ({
       id: item.id,
@@ -226,6 +156,7 @@ export default function Home() {
     setRestDays(state.restDays ?? []);
     setFeeRates(state.feeRates ?? []);
     setMembershipRequests(state.membershipRequests ?? []);
+    setNotifications(state.notifications ?? []);
     setCurrentFees(state.currentFees ?? { member: 150, guest: 180 });
   }, []);
 
@@ -272,6 +203,7 @@ export default function Home() {
     [viewer],
   );
   const event = events.find((item) => !item.endsAt || new Date(item.endsAt) > new Date());
+  const headerDate = event?.startsAt ? new Intl.DateTimeFormat("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "long" }).format(new Date(event.startsAt)) : "台北時間 · UTC+8";
   const booking = event?.bookings.find((item) => item.memberId === viewer?.id);
   const invoice = invoices.find((item) => item.member_id === viewer?.id && ["PENDING", "REPORTED", "CONFIRMED"].includes(item.status));
   const createGuest = async (candidate: string) => {
@@ -339,7 +271,7 @@ export default function Home() {
       setPasskeySaving(false);
     }
   };
-  const logout = async () => { await execute("logout", {}); setTab("總覽"); };
+  const logout = async () => { await execute("logout", {}); setTab("總覽"); setNotificationOpen(false); };
   const makeRecoveryCode = async (replaceExisting: boolean) => {
     if (replaceExisting && !window.confirm("重新產生後，原本的復原碼會立即失效。確定要繼續嗎？")) return;
     setRecoverySaving(true);
@@ -513,9 +445,11 @@ export default function Home() {
     }
     setManagerSaving(true);
     try {
-      if (await execute("generateWeeklyEvents", { startDate: String(data.get("startDate")), weeks: String(data.get("weeks")), startTime: start, endTime: end, courts: String(data.get("courts")), regularCapacity: String(data.get("regular")), standbyCapacity: String(data.get("standby")) })) {
+      const payload = await execute("generateWeeklyEvents", { startDate: String(data.get("startDate")), weeks: String(data.get("weeks")), startTime: start, endTime: end, courts: String(data.get("courts")), regularCapacity: String(data.get("regular")), standbyCapacity: String(data.get("standby")) });
+      if (payload) {
         element.reset();
         setManagerOpen(false);
+        window.alert(payload.actionResult?.createdCount ? `已建立 ${payload.actionResult.createdCount} 場活動。` : "沒有建立新活動；所選期間可能已存在活動或休團日。");
       }
     } finally {
       setManagerSaving(false);
@@ -616,13 +550,37 @@ export default function Home() {
       setMemberSaving(false);
     }
   };
+  const markNotificationsRead = async (notificationIds: string[]) => {
+    if (notificationIds.length === 0) return true;
+    setNotificationSaving(true);
+    try {
+      return Boolean(await execute("markNotificationsRead", { notificationIds: notificationIds.join(",") }));
+    } finally {
+      setNotificationSaving(false);
+    }
+  };
+  const openNotification = async (notification: ClubNotification) => {
+    if (!notification.read) await markNotificationsRead([notification.id]);
+    if ((["總覽", "活動", "公告", "社員名單", "費用管理", "個人資訊"] as string[]).includes(notification.tab)) setTab(notification.tab as Tab);
+    setNotificationOpen(false);
+  };
+  const unreadNotifications = notifications.filter((notification) => !notification.read);
 
   if (!sessionReady) return <main className="login"><section className="session-loading"><div className="login-logo">羽</div><h1>正在確認此裝置…</h1><span>請稍候，系統正在安全地恢復登入狀態。</span></section></main>;
-  if (!viewer) return <Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} passkeyLogin={loginWithPasskey} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving || passkeySaving} />;
+  if (!viewer) return <Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} passkeyLogin={loginWithPasskey} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving || passkeySaving} events={events} news={news} />;
   const isAdmin = user.role === "admin";
   return (
     <div className="app">
-      <aside className="sidebar">
+      <aside className={`sidebar${sidebarCollapsed ? " collapsed" : ""}`}>
+        <button
+          type="button"
+          className="sidebar-toggle"
+          aria-label={sidebarCollapsed ? "展開側邊欄" : "收合側邊欄"}
+          title={sidebarCollapsed ? "展開側邊欄" : "收合側邊欄"}
+          onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+        >
+          {sidebarCollapsed ? "›" : "‹"}
+        </button>
         <div className="brand">
           <b>羽</b>
           <span>
@@ -632,9 +590,14 @@ export default function Home() {
         </div>
         <nav>
           {(["總覽", "活動", "公告", "社員名單", "費用管理", "個人資訊"] as Tab[]).map((item, index) => (
-            <button key={item} className={tab === item ? "nav-active" : ""} onClick={() => setTab(item)}>
+            <button
+              key={item}
+              className={tab === item ? "nav-active" : ""}
+              title={sidebarCollapsed ? item : undefined}
+              onClick={() => { setTab(item); setNotificationOpen(false); }}
+            >
               <i>{["⌂", "◷", "✦", "♙", "◫", "●"][index]}</i>
-              {item}
+              <span>{item}</span>
             </button>
           ))}
         </nav>
@@ -652,13 +615,22 @@ export default function Home() {
       <main>
         <header>
           <div>
-            <p>2026 · SEPTEMBER</p>
+            <p>{headerDate}</p>
             <h1>{tab}</h1>
           </div>
           <div className="header-actions">
-            <button className="bell">
-              🔔<em>2</em>
+            <button className="bell" aria-label={`通知，${unreadNotifications.length} 筆未讀`} aria-expanded={notificationOpen} onClick={() => setNotificationOpen((open) => !open)}>
+              🔔{unreadNotifications.length > 0 && <em>{unreadNotifications.length > 99 ? "99+" : unreadNotifications.length}</em>}
             </button>
+            {notificationOpen && (
+              <NotificationPanel
+                notifications={notifications}
+                saving={notificationSaving}
+                close={() => setNotificationOpen(false)}
+                openNotification={(notification) => void openNotification(notification)}
+                markAll={() => void markNotificationsRead(unreadNotifications.map((notification) => notification.id))}
+              />
+            )}
             {isAdmin && (tab === "活動" || tab === "公告" || tab === "費用管理") && (
               <button
                 className="primary small"
@@ -1179,6 +1151,8 @@ function Login({
   quickAccounts,
   quickLogin,
   saving,
+  events,
+  news,
 }: {
   input: string;
   setInput: (value: string) => void;
@@ -1188,12 +1162,38 @@ function Login({
   quickAccounts: DeviceAccount[];
   quickLogin: (userId: string) => void;
   saving: boolean;
+  events: ClubEvent[];
+  news: NewsItem[];
 }) {
   const [mode, setMode] = useState<"new" | "recover">("new");
   const [code, setCode] = useState("");
+  const upcomingEvents = events.filter((event) => !event.endsAt || new Date(event.endsAt) > new Date()).slice(0, 3);
   return (
-    <main className="login">
-      <section>
+    <main className="login public-login">
+      <div className="public-shell">
+        <section className="public-preview">
+          <section className="public-section">
+            <div className="public-section-heading"><div><small>UPCOMING</small><h2>近期活動</h2></div><span>{upcomingEvents.length} 場</span></div>
+            <div className="public-event-list">
+              {upcomingEvents.length === 0 ? <p className="public-empty">目前尚未公布新活動</p> : upcomingEvents.map((event) => (
+                <article key={event.id}>
+                  <div><strong>{event.date}</strong><small>{event.weekday}</small></div>
+                  <span><strong>{event.time}</strong><small>{event.courts}</small></span>
+                  <Badge tone="green">尚有 {Math.max(0, event.regular + event.wait - event.booked)} 位</Badge>
+                </article>
+              ))}
+            </div>
+          </section>
+          <section className="public-section">
+            <div className="public-section-heading"><div><small>NOTICE</small><h2>最新公告</h2></div></div>
+            <div className="public-news-list">
+              {news.length === 0 ? <p className="public-empty">目前沒有公告</p> : news.slice(0, 3).map((item) => (
+                <article key={item.id}><span><strong>{item.title}</strong><small>{item.date}</small></span><p>{item.content}</p>{item.linkUrl && <a href={item.linkUrl} target="_blank" rel="noreferrer">開啟連結 →</a>}</article>
+              ))}
+            </div>
+          </section>
+        </section>
+        <section className="login-card" id="guest-account">
         <div className="login-logo">羽</div>
         <p>COMPANY BADMINTON CLUB</p>
         <h1>下班，一起上場。</h1>
@@ -1247,8 +1247,51 @@ function Login({
           <strong>測試版帳號提醒</strong>
           <span>相同姓名也會建立成不同帳號。未建立復原碼前，清除瀏覽器資料或更換裝置可能導致帳號無法取回。</span>
         </aside>
-      </section>
+        </section>
+      </div>
     </main>
+  );
+}
+
+function NotificationPanel({
+  notifications,
+  saving,
+  close,
+  openNotification,
+  markAll,
+}: {
+  notifications: ClubNotification[];
+  saving: boolean;
+  close: () => void;
+  openNotification: (notification: ClubNotification) => void;
+  markAll: () => void;
+}) {
+  const unreadCount = notifications.filter((notification) => !notification.read).length;
+  const icon: Record<string, string> = { ANNOUNCEMENT: "✦", EVENT: "◷", PAYMENT: "＄", MEMBERSHIP: "♙", TRANSFER: "↔" };
+  const displayTime = (value: string | null) => value
+    ? new Date(value).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : "";
+  return (
+    <section className="notification-panel" role="dialog" aria-label="網站通知">
+      <header>
+        <div><strong>通知中心</strong><span>{unreadCount > 0 ? `${unreadCount} 筆未讀` : "全部已讀"}</span></div>
+        <button type="button" className="close-notifications" onClick={close} aria-label="關閉通知">×</button>
+      </header>
+      {notifications.length === 0 ? (
+        <div className="notification-empty"><b>目前沒有通知</b><span>活動、帳單與社員申請異動會顯示在這裡。</span></div>
+      ) : (
+        <div className="notification-list">
+          {notifications.map((notification) => (
+            <button type="button" className={notification.read ? "" : "unread"} key={notification.id} onClick={() => openNotification(notification)}>
+              <i aria-hidden="true">{icon[notification.type] ?? "•"}</i>
+              <span><strong>{notification.title}</strong><small>{notification.message}</small><time>{displayTime(notification.createdAt)}</time></span>
+              {!notification.read && <em aria-label="未讀" />}
+            </button>
+          ))}
+        </div>
+      )}
+      {unreadCount > 0 && <footer><button type="button" className="link" disabled={saving} onClick={markAll}>{saving ? "處理中…" : "全部標示為已讀"}</button></footer>}
+    </section>
   );
 }
 

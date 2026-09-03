@@ -64,6 +64,32 @@ function memberAt(member: DocumentData, at: Date) {
   return member.membershipStatus === "EXITING" && Boolean(endingAt && endingAt >= at);
 }
 
+function notificationData({
+  title,
+  message,
+  type,
+  tab,
+  recipientId = null,
+}: {
+  title: string;
+  message: string;
+  type: string;
+  tab: string;
+  recipientId?: string | null;
+}) {
+  const now = new Date();
+  return {
+    title,
+    message,
+    type,
+    tab,
+    audience: recipientId ? "USER" : "ALL",
+    recipientId,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 async function promoteStandbyInTransaction(
   transaction: Transaction,
   eventRef: DocumentReference,
@@ -77,7 +103,14 @@ async function promoteStandbyInTransaction(
   const candidates = standbySnapshot.docs
     .sort((a, b) => bookingPriority(a.data()) - bookingPriority(b.data()) || (dateValue(a.data().confirmedAt)?.getTime() ?? 0) - (dateValue(b.data().confirmedAt)?.getTime() ?? 0))
     .slice(0, vacancies);
-  for (const candidate of candidates) transaction.update(candidate.ref, { status: "REGULAR", promotedAt: now });
+  for (const candidate of candidates) {
+    transaction.update(candidate.ref, { status: "REGULAR", promotedAt: now });
+    const recipientId = String(candidate.data().memberId ?? candidate.id);
+    if (recipientId) {
+      const notificationRef = eventRef.firestore.collection("notifications").doc();
+      transaction.create(notificationRef, notificationData({ title: "候補已遞補", message: `${taipeiDate(event.startsAt)} 的活動已遞補為正取`, type: "EVENT", tab: "活動", recipientId }));
+    }
+  }
   return candidates.length;
 }
 
@@ -149,6 +182,17 @@ async function cancelEventInTransaction(
       cancellationReason: "EVENT_CANCELLED",
       updatedAt: now,
     });
+    const recipientId = String(booking.data().memberId ?? booking.id);
+    if (recipientId) {
+      const notificationRef = db.collection("notifications").doc();
+      transaction.create(notificationRef, notificationData({
+        title: "活動已取消",
+        message: `${taipeiDate(event.startsAt)} ${String(event.courts ?? "羽球活動")} 已取消`,
+        type: "EVENT",
+        tab: "活動",
+        recipientId,
+      }));
+    }
   }
 
   for (const invoice of invoices) {
@@ -247,7 +291,10 @@ export async function readState(viewer: Viewer | null = null) {
     : viewer
       ? db.collection("membershipRequests").where("memberId", "==", viewer.id)
       : null;
-  const [eventSnapshot, announcementSnapshot, memberSnapshot, bookingSnapshot, invoiceSnapshot, restDaySnapshot, feeRateSnapshot, membershipRequestSnapshot, currentMemberFee, currentGuestFee] = await Promise.all([
+  const targetedNotificationQuery = viewer ? db.collection("notifications").where("recipientId", "==", viewer.id) : null;
+  const broadcastNotificationQuery = viewer ? db.collection("notifications").where("audience", "==", "ALL") : null;
+  const notificationReadQuery = viewer ? db.collection("notificationReads").where("memberId", "==", viewer.id) : null;
+  const [eventSnapshot, announcementSnapshot, memberSnapshot, bookingSnapshot, invoiceSnapshot, restDaySnapshot, feeRateSnapshot, membershipRequestSnapshot, targetedNotificationSnapshot, broadcastNotificationSnapshot, notificationReadSnapshot, currentMemberFee, currentGuestFee] = await Promise.all([
     db.collection("events").get(),
     db.collection("announcements").get(),
     viewer ? db.collection("members").get() : Promise.resolve(null),
@@ -256,6 +303,9 @@ export async function readState(viewer: Viewer | null = null) {
     isAdmin ? db.collection("restDays").get() : Promise.resolve(null),
     isAdmin ? db.collection("feeRates").get() : Promise.resolve(null),
     membershipRequestQuery ? membershipRequestQuery.get() : Promise.resolve(null),
+    targetedNotificationQuery ? targetedNotificationQuery.get() : Promise.resolve(null),
+    broadcastNotificationQuery ? broadcastNotificationQuery.get() : Promise.resolve(null),
+    notificationReadQuery ? notificationReadQuery.get() : Promise.resolve(null),
     activeFee(db, "MEMBER_VISIT", new Date()),
     activeFee(db, "GUEST_VISIT", new Date()),
   ]);
@@ -309,6 +359,8 @@ export async function readState(viewer: Viewer | null = null) {
         courts: String(event.courts ?? ""),
         regular_capacity: Number(event.regularCapacity ?? 10),
         standby_capacity: Number(event.standbyCapacity ?? 4),
+        regular_count: Number(event.regularCount ?? 0),
+        standby_count: Number(event.standbyCount ?? 0),
         member_fee: Number(event.memberFeeSnapshot ?? 150),
         guest_fee: Number(event.guestFeeSnapshot ?? 180),
         status: String(event.status ?? "SCHEDULED"),
@@ -384,8 +436,28 @@ export async function readState(viewer: Viewer | null = null) {
       };
     })
     .sort((a, b) => String(b.requestedAt).localeCompare(String(a.requestedAt)));
+  const readNotificationIds = new Set((notificationReadSnapshot?.docs ?? []).map((document) => String(document.data().notificationId ?? "")));
+  const notificationDocuments = [...new Map([
+    ...(targetedNotificationSnapshot?.docs ?? []),
+    ...(broadcastNotificationSnapshot?.docs ?? []),
+  ].map((document) => [document.id, document])).values()];
+  const notifications = notificationDocuments
+    .map((document) => {
+      const notification = document.data();
+      return {
+        id: document.id,
+        title: String(notification.title ?? "通知"),
+        message: String(notification.message ?? ""),
+        type: String(notification.type ?? "INFO"),
+        tab: String(notification.tab ?? "總覽"),
+        createdAt: iso(notification.createdAt),
+        read: readNotificationIds.has(document.id),
+      };
+    })
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, 50);
 
-  return { viewer, members, events, announcements, invoices, restDays, feeRates, membershipRequests, currentFees: { member: currentMemberFee, guest: currentGuestFee } };
+  return { viewer, members, events, announcements, invoices, restDays, feeRates, membershipRequests, notifications, currentFees: { member: currentMemberFee, guest: currentGuestFee } };
 }
 
 async function join(input: Record<string, string>, actor: Viewer) {
@@ -524,6 +596,7 @@ async function transfer(input: Record<string, string>, actor: Viewer) {
   const sourceBookingRef = eventRef.collection("bookings").doc(sourceSnapshot.id);
   const recipientBookingRef = eventRef.collection("bookings").doc(recipientRef.id);
   const transferRef = db.collection("transfers").doc(`transfer-${input.eventId}-${sourceSnapshot.id}`);
+  const notificationRef = db.collection("notifications").doc();
   const now = new Date();
 
   await db.runTransaction(async (transaction) => {
@@ -578,6 +651,7 @@ async function transfer(input: Record<string, string>, actor: Viewer) {
       createdAt: now,
       updatedAt: now,
     }, { merge: true });
+    transaction.create(notificationRef, notificationData({ title: "收到活動名額", message: `${actor.name} 已將 ${taipeiDate(event.startsAt)} 的活動名額轉讓給你，費用請私下結清`, type: "TRANSFER", tab: "活動", recipientId: recipientRef.id }));
   });
   return claim ? { claimCode: claim.code, recipientName } : undefined;
 }
@@ -603,8 +677,12 @@ async function publish(input: Record<string, string>) {
   const values = validatedAnnouncementInput(input);
   const db = getAdminFirestore();
   const announcementRef = db.collection("announcements").doc();
+  const notificationRef = db.collection("notifications").doc();
   const now = new Date();
-  await announcementRef.set({ id: announcementRef.id, ...values, pinned: false, publishedAt: now, updatedAt: now });
+  const batch = db.batch();
+  batch.set(announcementRef, { id: announcementRef.id, ...values, pinned: false, publishedAt: now, updatedAt: now });
+  batch.set(notificationRef, notificationData({ title: "新公告", message: values.title, type: "ANNOUNCEMENT", tab: "公告" }));
+  await batch.commit();
 }
 
 async function updateAnnouncement(input: Record<string, string>) {
@@ -640,6 +718,7 @@ function validatedEventInput(input: Record<string, string>) {
   const standbyCapacity = Number(input.standbyCapacity || 4);
   if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || endsAt <= startsAt) throw new Error("結束時間必須晚於開始時間");
   if (!Number.isInteger(regularCapacity) || regularCapacity < 1 || !Number.isInteger(standbyCapacity) || standbyCapacity < 0) throw new Error("請填寫正確的正取與候補人數");
+  if (regularCapacity + standbyCapacity > 100) throw new Error("單場正取與候補合計最多 100 人");
   return { startsAt, endsAt, courts: input.courts.trim(), regularCapacity, standbyCapacity, date: taipeiDate(startsAt) };
 }
 
@@ -652,6 +731,7 @@ async function createEvent(input: Record<string, string>) {
   ]);
   const eventRef = db.collection("events").doc();
   const eventDateRef = db.collection("eventDates").doc(values.date);
+  const notificationRef = input.notify === "false" ? null : db.collection("notifications").doc();
   const now = new Date();
   await db.runTransaction(async (transaction) => {
     const dateSnapshot = await transaction.get(eventDateRef);
@@ -672,6 +752,7 @@ async function createEvent(input: Record<string, string>) {
       updatedAt: now,
     });
     transaction.create(eventDateRef, { eventId: eventRef.id, date: values.date, createdAt: now });
+    if (notificationRef) transaction.create(notificationRef, notificationData({ title: "新活動開放確認", message: `${values.date} ${values.courts}，可前往活動頁確認參加`, type: "EVENT", tab: "活動" }));
   });
 }
 
@@ -687,7 +768,10 @@ async function updateEvent(input: Record<string, string>) {
     const oldDate = taipeiDate(event.startsAt);
     const oldDateRef = db.collection("eventDates").doc(oldDate);
     const newDateRef = db.collection("eventDates").doc(values.date);
-    const newDateSnapshot = await transaction.get(newDateRef);
+    const [newDateSnapshot, bookingSnapshot] = await Promise.all([
+      transaction.get(newDateRef),
+      transaction.get(eventRef.collection("bookings")),
+    ]);
     if (newDateSnapshot.exists && newDateSnapshot.data()?.eventId !== input.eventId) throw new Error("這一天已有其他活動");
 
     const regularCount = Number(event.regularCount ?? 0);
@@ -709,6 +793,11 @@ async function updateEvent(input: Record<string, string>) {
     });
     if (oldDate !== values.date) transaction.delete(oldDateRef);
     transaction.set(newDateRef, { eventId: input.eventId, date: values.date, updatedAt: now }, { merge: true });
+    for (const booking of bookingSnapshot.docs.filter((document) => ["REGULAR", "STANDBY"].includes(String(document.data().status)))) {
+      const recipientId = String(booking.data().memberId ?? booking.id);
+      const notificationRef = db.collection("notifications").doc();
+      transaction.create(notificationRef, notificationData({ title: "活動資訊已更新", message: `${values.date} ${values.courts}，請重新確認日期、時間與集合地點`, type: "EVENT", tab: "活動", recipientId }));
+    }
   });
 }
 
@@ -751,6 +840,7 @@ async function generateWeeklyEvents(input: Record<string, string>) {
   const standbyCapacity = Number(input.standbyCapacity || 4);
   if (!Number.isInteger(requestedWeeks) || requestedWeeks < 1 || requestedWeeks > 16) throw new Error("建立週數必須是 1 到 16 的整數");
   if (!Number.isInteger(regularCapacity) || regularCapacity < 1 || !Number.isInteger(standbyCapacity) || standbyCapacity < 0) throw new Error("請填寫正確的正取與候補人數");
+  if (regularCapacity + standbyCapacity > 100) throw new Error("單場正取與候補合計最多 100 人");
   const validTime = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
   const startTime = validTime.test(input.startTime || "") ? input.startTime : "19:00";
   const endTime = validTime.test(input.endTime || "") ? input.endTime : "21:00";
@@ -760,6 +850,7 @@ async function generateWeeklyEvents(input: Record<string, string>) {
   while (start.getUTCDay() !== 5) start.setUTCDate(start.getUTCDate() + 1);
 
   const db = getAdminFirestore();
+  let createdCount = 0;
   for (let index = 0; index < requestedWeeks; index += 1) {
     const day = new Date(start);
     day.setUTCDate(start.getUTCDate() + index * 7);
@@ -777,8 +868,15 @@ async function generateWeeklyEvents(input: Record<string, string>) {
       courts: input.courts?.trim() || "公司體育館 A 場",
       regularCapacity: String(regularCapacity),
       standbyCapacity: String(standbyCapacity),
+      notify: "false",
     });
+    createdCount += 1;
   }
+  if (createdCount > 0) {
+    const notificationRef = db.collection("notifications").doc();
+    await notificationRef.set(notificationData({ title: "未來活動已開放確認", message: `新增 ${createdCount} 場週五活動，可前往活動頁查看`, type: "EVENT", tab: "活動" }));
+  }
+  return { createdCount };
 }
 
 function billingBoundary(value: string | undefined, endOfDay = false) {
@@ -851,7 +949,9 @@ async function createQuarterlyInvoices(input: Record<string, string>) {
   let totalAmount = 0;
   const members = memberSnapshot.docs;
   for (let offset = 0; offset < members.length; offset += 20) {
-    const results = await Promise.all(members.slice(offset, offset + 20).map((memberDocument) => db.runTransaction(async (transaction) => {
+    const results = await Promise.all(members.slice(offset, offset + 20).map((memberDocument) => {
+      const notificationRef = db.collection("notifications").doc();
+      return db.runTransaction(async (transaction) => {
       const invoiceRef = db.collection("invoices").doc(`${periodId}-${memberDocument.id}`);
       const [freshMember, existingInvoice] = await transaction.getAll(memberDocument.ref, invoiceRef);
       if (!freshMember.exists) return null;
@@ -882,8 +982,16 @@ async function createQuarterlyInvoices(input: Record<string, string>) {
         updatedAt: now,
       });
       if (creditApplied > 0) transaction.update(memberDocument.ref, { creditBalance: FieldValue.increment(-creditApplied), updatedAt: now });
+      transaction.create(notificationRef, notificationData({
+        title: "新的社員帳單",
+        message: amount === 0 ? `${label} 已由帳戶餘額全額抵扣` : `${label} 應付 NT$${amount}`,
+        type: "PAYMENT",
+        tab: "費用管理",
+        recipientId: memberDocument.id,
+      }));
       return amount;
-    })));
+      });
+    }));
     for (const amount of results) {
       if (amount !== null) {
         invoiceCount += 1;
@@ -917,13 +1025,24 @@ async function setFeeRates(input: Record<string, string>) {
 
 async function reportPayment(invoiceId: string, actor: Viewer) {
   if (!invoiceId) throw new Error("缺少帳單識別碼");
-  const invoiceRef = getAdminFirestore().collection("invoices").doc(invoiceId);
-  const invoice = await invoiceRef.get();
+  const db = getAdminFirestore();
+  const invoiceRef = db.collection("invoices").doc(invoiceId);
+  const [invoice, administrators] = await Promise.all([
+    invoiceRef.get(),
+    db.collection("members").where("role", "==", "ADMIN").get(),
+  ]);
   if (!invoice.exists) throw new Error("找不到帳單");
   if (actor.role !== "ADMIN" && String(invoice.data()?.memberId) !== actor.id) throw new Error("你不能更新其他人的帳單");
   if (invoice.data()?.status === "REPORTED") return;
   if (invoice.data()?.status !== "PENDING") throw new Error("這筆帳單目前無法回報轉帳");
-  await invoiceRef.update({ status: "REPORTED", reportedAt: new Date(), updatedAt: new Date() });
+  const now = new Date();
+  const batch = db.batch();
+  batch.update(invoiceRef, { status: "REPORTED", reportedAt: now, updatedAt: now });
+  for (const administrator of administrators.docs) {
+    const notificationRef = db.collection("notifications").doc();
+    batch.set(notificationRef, notificationData({ title: "待確認轉帳", message: `${String(invoice.data()?.memberNameSnapshot ?? actor.name)} 回報已轉帳 NT$${Number(invoice.data()?.amount ?? 0).toLocaleString("zh-TW")}`, type: "PAYMENT", tab: "費用管理", recipientId: administrator.id }));
+  }
+  await batch.commit();
 }
 
 async function confirmPayment(invoiceId: string) {
@@ -933,7 +1052,35 @@ async function confirmPayment(invoiceId: string) {
   if (!invoice.exists) throw new Error("找不到帳單");
   if (invoice.data()?.status === "CONFIRMED") return;
   if (invoice.data()?.status !== "PENDING" && invoice.data()?.status !== "REPORTED") throw new Error("這筆帳單目前無法確認收款");
-  await invoiceRef.update({ status: "CONFIRMED", confirmedAt: new Date(), updatedAt: new Date() });
+  const now = new Date();
+  const db = getAdminFirestore();
+  const batch = db.batch();
+  batch.update(invoiceRef, { status: "CONFIRMED", confirmedAt: now, updatedAt: now });
+  const memberId = String(invoice.data()?.memberId ?? "");
+  if (memberId) {
+    const notificationRef = db.collection("notifications").doc();
+    batch.set(notificationRef, notificationData({ title: "款項已確認", message: `NT$${Number(invoice.data()?.amount ?? 0).toLocaleString("zh-TW")} 已由幹部確認收款`, type: "PAYMENT", tab: "費用管理", recipientId: memberId }));
+  }
+  await batch.commit();
+}
+
+async function markNotificationsRead(input: Record<string, string>, actor: Viewer) {
+  const notificationIds = [...new Set((input.notificationIds ?? "").split(",").map((id) => id.trim()).filter(Boolean))];
+  if (notificationIds.length === 0) return;
+  if (notificationIds.length > 50) throw new Error("一次最多處理 50 筆通知");
+  const db = getAdminFirestore();
+  const references = notificationIds.map((id) => db.collection("notifications").doc(id));
+  const notifications = await db.getAll(...references);
+  const batch = db.batch();
+  const now = new Date();
+  for (const notification of notifications) {
+    if (!notification.exists) continue;
+    const data = notification.data()!;
+    if (data.audience !== "ALL" && String(data.recipientId ?? "") !== actor.id) throw new Error("你不能更新其他人的通知");
+    const readRef = db.collection("notificationReads").doc(`${actor.id}_${notification.id}`);
+    batch.set(readRef, { memberId: actor.id, notificationId: notification.id, readAt: now }, { merge: true });
+  }
+  await batch.commit();
 }
 
 async function requestMembershipChange(kind: string, actor: Viewer) {
@@ -945,7 +1092,10 @@ async function requestMembershipChange(kind: string, actor: Viewer) {
   const now = new Date();
 
   await db.runTransaction(async (transaction) => {
-    const [memberSnapshot, lockSnapshot] = await transaction.getAll(memberRef, lockRef);
+    const [[memberSnapshot, lockSnapshot], adminSnapshot] = await Promise.all([
+      transaction.getAll(memberRef, lockRef),
+      transaction.get(db.collection("members").where("role", "==", "ADMIN")),
+    ]);
     if (!memberSnapshot.exists) throw new Error("找不到使用者");
     if (lockSnapshot.exists) throw new Error("你已有一筆待審核的社員申請");
     const member = memberSnapshot.data()!;
@@ -966,6 +1116,10 @@ async function requestMembershipChange(kind: string, actor: Viewer) {
       updatedAt: now,
     });
     transaction.create(lockRef, { memberId: actor.id, requestId: requestRef.id, kind, createdAt: now });
+    for (const administrator of adminSnapshot.docs) {
+      const notificationRef = db.collection("notifications").doc();
+      transaction.create(notificationRef, notificationData({ title: "新的社員申請", message: `${String(member.displayName ?? actor.name)} 申請${kind === "JOIN" ? "加入" : "退出"}社員`, type: "MEMBERSHIP", tab: "社員名單", recipientId: administrator.id }));
+    }
   });
 }
 
@@ -1020,6 +1174,7 @@ async function reviewMembershipRequest(requestId: string, decision: string, acto
   const memberRef = db.collection("members").doc(memberId);
   const lockRef = db.collection("membershipRequestLocks").doc(memberId);
   const invoiceRef = periodDocument ? db.collection("invoices").doc(`membership-${periodDocument.id}-${memberId}`) : null;
+  const notificationRef = db.collection("notifications").doc();
   const result = await db.runTransaction(async (transaction) => {
     const references = invoiceRef ? [requestRef, memberRef, lockRef, invoiceRef] : [requestRef, memberRef, lockRef];
     const snapshots = await transaction.getAll(...references);
@@ -1032,6 +1187,7 @@ async function reviewMembershipRequest(requestId: string, decision: string, acto
     if (decision === "REJECT") {
       transaction.update(requestRef, { status: "REJECTED", reviewedAt: now, reviewedBy: actor.id, updatedAt: now });
       if (lock.exists && lock.data()?.requestId === requestId) transaction.delete(lockRef);
+      transaction.create(notificationRef, notificationData({ title: "社員申請結果", message: `你的${kind === "JOIN" ? "加入" : "退出"}社員申請未獲核准`, type: "MEMBERSHIP", tab: "個人資訊", recipientId: memberId }));
       return { amount: 0 };
     }
 
@@ -1071,6 +1227,7 @@ async function reviewMembershipRequest(requestId: string, decision: string, acto
       }
       transaction.update(requestRef, { status: "APPROVED", reviewedAt: now, reviewedBy: actor.id, proratedAmount: amount, updatedAt: now });
       if (lock.exists && lock.data()?.requestId === requestId) transaction.delete(lockRef);
+      transaction.create(notificationRef, notificationData({ title: "已加入社員", message: amount > 0 ? `申請已核准，本期應付 NT$${amount}` : "申請已核准，社員身分已立即生效", type: "MEMBERSHIP", tab: amount > 0 ? "費用管理" : "個人資訊", recipientId: memberId }));
       return { amount };
     }
 
@@ -1082,6 +1239,7 @@ async function reviewMembershipRequest(requestId: string, decision: string, acto
     });
     transaction.update(requestRef, { status: "APPROVED", reviewedAt: now, reviewedBy: actor.id, effectiveAt: endingAt, updatedAt: now });
     if (lock.exists && lock.data()?.requestId === requestId) transaction.delete(lockRef);
+    transaction.create(notificationRef, notificationData({ title: "退出申請已核准", message: periodDocument ? `社員身分將維持至 ${String(period?.endDate)}` : "社員身分已結束", type: "MEMBERSHIP", tab: "個人資訊", recipientId: memberId }));
     return { amount: 0, endingAt: endingAt.toISOString() };
   });
   return result;
@@ -1191,6 +1349,7 @@ export async function mutate(action: string, input: Record<string, string>, acto
   if (action === "transfer") return transfer(input, actor);
   if (action === "reportPayment") return reportPayment(input.invoiceId, actor);
   if (action === "requestMembershipChange") return requestMembershipChange(input.kind, actor);
+  if (action === "markNotificationsRead") return markNotificationsRead(input, actor);
 
   if (actor.role !== "ADMIN") throw new Error("只有幹部可以執行這項操作");
   if (action === "reviewMembershipRequest") return reviewMembershipRequest(input.requestId, input.decision, actor);
