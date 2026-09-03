@@ -87,7 +87,8 @@ export async function POST(request: NextRequest) {
     }
 
     const actionResult = await mutate(body.action, body, viewer);
-    return NextResponse.json({ ...(await stateForDevice(currentToken, viewer)), ...(actionResult ? { actionResult } : {}) });
+    const refreshedViewer = await viewerForDeviceToken(currentToken);
+    return NextResponse.json({ ...(await stateForDevice(currentToken, refreshedViewer)), ...(actionResult ? { actionResult } : {}) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "資料庫操作失敗" }, { status: 400 });
   }

@@ -11,6 +11,7 @@ export type Viewer = {
   department: string | null;
   role: "ADMIN" | "MEMBER";
   membershipStatus: string;
+  creditBalance: number;
   accountType: "guest" | "recoverable" | "verified" | "unclaimed";
   hasRecoveryCode: boolean;
   hasPasskey: boolean;
@@ -51,12 +52,16 @@ export function createClaimCodeRecord() {
 }
 
 function viewerFromMember(id: string, member: FirebaseFirestore.DocumentData): Viewer {
+  const storedMembershipStatus = String(member.membershipStatus ?? "GUEST");
+  const endingAt = typeof member.endingAt?.toDate === "function" ? member.endingAt.toDate() : member.endingAt ? new Date(member.endingAt) : null;
+  const membershipStatus = storedMembershipStatus === "EXITING" && endingAt && endingAt <= new Date() ? "GUEST" : storedMembershipStatus;
   return {
     id,
     name: String(member.displayName ?? ""),
     department: member.department ? String(member.department) : null,
     role: member.role === "ADMIN" ? "ADMIN" : "MEMBER",
-    membershipStatus: String(member.membershipStatus ?? "GUEST"),
+    membershipStatus,
+    creditBalance: Number(member.creditBalance ?? 0),
     accountType: ["guest", "recoverable", "verified", "unclaimed"].includes(String(member.accountType))
       ? member.accountType as Viewer["accountType"]
       : "unclaimed",
@@ -210,7 +215,7 @@ export async function createGuestDeviceAccount(displayName: string, existingToke
   if (credential.create) batch.create(credential.ref, credential.data);
   else batch.update(credential.ref, credential.data);
   await batch.commit();
-  return { token: credential.token, viewer: viewerFromMember(userId, { displayName: name, role: "MEMBER", membershipStatus: "GUEST", accountType: "guest" }) };
+  return { token: credential.token, viewer: viewerFromMember(userId, { displayName: name, role: "MEMBER", membershipStatus: "GUEST", accountType: "guest", creditBalance: 0 }) };
 }
 
 export async function loginWithRecoveryOrClaimCode(displayName: string, code: string, existingToken?: string | null) {

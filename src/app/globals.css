@@ -997,6 +997,63 @@ textarea {
 .time-pair, .capacity-fields { display: flex; gap: 8px; }
 .time-pair input, .capacity-fields label { min-width: 0; flex: 1; }
 .form-note { margin: 2px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.rest-day-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.rest-day-manager .manager-form {
+  min-height: 0;
+}
+.rest-day-list {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.rest-day-list > div,
+.rest-day-list article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 13px;
+}
+.rest-day-list > div {
+  background: #f7faf9;
+  color: var(--green);
+  font-size: 12px;
+}
+.rest-day-list > div span,
+.rest-day-list > p {
+  color: var(--muted);
+  font-size: 11px;
+}
+.rest-day-list > p {
+  margin: 0;
+  padding: 18px 13px;
+  text-align: center;
+}
+.rest-day-list article {
+  border-top: 1px solid var(--line);
+}
+.rest-day-list article > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.rest-day-list article strong {
+  font-size: 12px;
+}
+.rest-day-list article small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.rest-day-list button:disabled {
+  cursor: wait;
+  opacity: .55;
+}
 .publish textarea {
   resize: vertical;
 }
@@ -1086,8 +1143,56 @@ textarea {
   color: #c9ddd8;
   font-size: 13px;
 }
-.pay {
-  margin: 18px 25px;
+.billing-tools,
+.billing-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.billing-status {
+  flex-wrap: wrap;
+}
+.invoice-description {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.invoice-description strong {
+  font-size: 12px;
+}
+.invoice-description small {
+  color: var(--muted);
+  font-size: 10px;
+}
+.billing-empty {
+  padding: 34px 24px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+.rate-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.rate-manager .manager-form {
+  min-height: 0;
+}
+.rate-history {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 14px;
+  border-radius: 12px;
+  background: #f4f8f7;
+}
+.rate-history strong {
+  color: var(--green);
+  font-size: 12px;
+}
+.rate-history span {
+  color: var(--muted);
+  font-size: 11px;
 }
 .claim-button {
   padding: 5px 0;
@@ -1138,6 +1243,7 @@ textarea {
 }
 .primary:disabled,
 .secondary:disabled,
+.link:disabled,
 .close:disabled {
   cursor: wait;
   opacity: .6;
@@ -1164,6 +1270,67 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+.member-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.membership-requests {
+  overflow: hidden;
+  border: 1px solid #e7eeee;
+  border-radius: 18px;
+  background: var(--card);
+  box-shadow: 0 5px 18px #173f3706;
+}
+.membership-requests > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.membership-requests > header p {
+  margin: 0 0 4px;
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+.membership-requests > header h3 {
+  margin: 0;
+  font-size: 19px;
+}
+.membership-requests article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.membership-requests article:last-child {
+  border-bottom: 0;
+}
+.membership-requests article > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.membership-requests article span,
+.membership-request-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+.membership-request-empty {
+  padding: 24px;
+  text-align: center;
+}
+.request-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
 }
 .account-hero,
 .account-card {
@@ -1274,6 +1441,48 @@ textarea {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
+}
+.membership-card {
+  display: flex;
+  flex-direction: column;
+}
+.membership-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 18px;
+  border-radius: 14px;
+  background: #f4f8f7;
+}
+.membership-action > div {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.membership-action span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.membership-action > button {
+  flex: 0 0 auto;
+}
+.membership-history {
+  display: flex;
+  flex-direction: column;
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.membership-history > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 2px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
 }
 .security-card {
   display: flex;
@@ -1486,6 +1695,18 @@ textarea {
   .account-session {
     align-items: flex-start;
     flex-direction: column;
+  }
+  .membership-action,
+  .membership-requests article {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .membership-action > button,
+  .request-actions {
+    width: 100%;
+  }
+  .request-actions > button {
+    flex: 1;
   }
   .bell {
     display: none;

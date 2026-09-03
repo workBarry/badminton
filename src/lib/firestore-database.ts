@@ -58,6 +58,12 @@ function bookingPriority(booking: DocumentData) {
   return booking.kindSnapshot === "MEMBER" ? 0 : 1;
 }
 
+function memberAt(member: DocumentData, at: Date) {
+  if (member.membershipStatus === "MEMBER") return true;
+  const endingAt = dateValue(member.endingAt);
+  return member.membershipStatus === "EXITING" && Boolean(endingAt && endingAt >= at);
+}
+
 async function promoteStandbyInTransaction(
   transaction: Transaction,
   eventRef: DocumentReference,
@@ -93,6 +99,141 @@ async function promoteStandby(eventId: string) {
   });
 }
 
+type EventCancellationSummary = {
+  cancelledBookings: number;
+  voidedInvoices: number;
+  creditedInvoices: number;
+};
+
+async function cancelEventInTransaction(
+  transaction: Transaction,
+  db: Firestore,
+  eventRef: DocumentReference,
+  reason: string,
+  now: Date,
+): Promise<EventCancellationSummary> {
+  const eventSnapshot = await transaction.get(eventRef);
+  if (!eventSnapshot.exists) throw new Error("找不到活動");
+  const event = eventSnapshot.data()!;
+  const eventDateRef = db.collection("eventDates").doc(taipeiDate(event.startsAt));
+
+  if (event.status === "CANCELLED") {
+    const dateSnapshot = await transaction.get(eventDateRef);
+    if (dateSnapshot.exists) transaction.delete(eventDateRef);
+    return { cancelledBookings: 0, voidedInvoices: 0, creditedInvoices: 0 };
+  }
+
+  const endsAt = dateValue(event.endsAt);
+  if (endsAt && endsAt <= now) throw new Error("活動已結束，無法取消");
+  const [dateSnapshot, bookingSnapshot, directInvoiceSnapshot, quarterlyInvoiceSnapshot] = await Promise.all([
+    transaction.get(eventDateRef),
+    transaction.get(eventRef.collection("bookings")),
+    transaction.get(db.collection("invoices").where("eventId", "==", eventRef.id)),
+    transaction.get(db.collection("invoices").where("eventIds", "array-contains", eventRef.id)),
+  ]);
+
+  const activeBookings = bookingSnapshot.docs.filter((document) => ["REGULAR", "STANDBY"].includes(String(document.data().status)));
+  const invoices = [...new Map([...directInvoiceSnapshot.docs, ...quarterlyInvoiceSnapshot.docs].map((document) => [document.id, document])).values()];
+  const paidQuarterlyInvoices = invoices.filter((document) => document.data().type === "QUARTERLY_MEMBER" && ["REPORTED", "CONFIRMED"].includes(String(document.data().status)));
+  const quarterlyCreditRefs = paidQuarterlyInvoices.map((document) => db.collection("invoices").doc(`credit-${eventRef.id}-${document.data().memberId}`));
+  const existingQuarterlyCredits = quarterlyCreditRefs.length > 0 ? await transaction.getAll(...quarterlyCreditRefs) : [];
+  const existingCreditIds = new Set(existingQuarterlyCredits.filter((document) => document.exists).map((document) => document.id));
+  const creditsByMember = new Map<string, number>();
+  let voidedInvoices = 0;
+  let creditedInvoices = 0;
+
+  for (const booking of activeBookings) {
+    transaction.update(booking.ref, {
+      status: "CANCELLED",
+      cancelledAt: now,
+      cancellationReason: "EVENT_CANCELLED",
+      updatedAt: now,
+    });
+  }
+
+  for (const invoice of invoices) {
+    const invoiceData = invoice.data();
+    const memberId = String(invoiceData.memberId ?? "");
+    if (invoiceData.type === "QUARTERLY_MEMBER") {
+      const eventIds = Array.isArray(invoiceData.eventIds) ? invoiceData.eventIds.map(String) : [];
+      const eventAmounts = Array.isArray(invoiceData.eventAmounts) ? invoiceData.eventAmounts.map(Number) : [];
+      const eventIndex = eventIds.indexOf(eventRef.id);
+      if (eventIndex < 0) continue;
+      const eventCharge = Number(eventAmounts[eventIndex] ?? invoiceData.unitAmount ?? event.memberFeeSnapshot ?? 150);
+      if (invoiceData.status === "PENDING") {
+        const remainingEventIds = eventIds.filter((_: string, index: number) => index !== eventIndex);
+        const remainingEventAmounts = eventAmounts.filter((_: number, index: number) => index !== eventIndex);
+        const previousCredit = Number(invoiceData.creditApplied ?? 0);
+        const nextGross = Math.max(0, Number(invoiceData.grossAmount ?? invoiceData.amount ?? 0) - eventCharge);
+        const nextCredit = Math.min(previousCredit, nextGross);
+        const restoredCredit = previousCredit - nextCredit;
+        const nextAmount = nextGross - nextCredit;
+        if (restoredCredit > 0) creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + restoredCredit);
+        if (nextGross === 0) voidedInvoices += 1;
+        transaction.update(invoice.ref, {
+          eventIds: remainingEventIds,
+          eventAmounts: remainingEventAmounts,
+          grossAmount: nextGross,
+          creditApplied: nextCredit,
+          amount: nextAmount,
+          status: nextGross === 0 ? "VOID" : nextAmount === 0 ? "CONFIRMED" : "PENDING",
+          confirmedAt: nextAmount === 0 && nextGross > 0 ? now : null,
+          cancellationReason: "EVENT_CANCELLED",
+          updatedAt: now,
+        });
+      } else if (["REPORTED", "CONFIRMED"].includes(String(invoiceData.status))) {
+        const creditRef = db.collection("invoices").doc(`credit-${eventRef.id}-${memberId}`);
+        if (!existingCreditIds.has(creditRef.id)) {
+          creditedInvoices += 1;
+          creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + eventCharge);
+          transaction.create(creditRef, {
+            id: creditRef.id,
+            memberId,
+            memberNameSnapshot: invoiceData.memberNameSnapshot,
+            eventId: eventRef.id,
+            type: "CREDIT",
+            grossAmount: -eventCharge,
+            creditApplied: 0,
+            amount: -eventCharge,
+            status: "CONFIRMED",
+            periodLabel: "活動取消退回餘額",
+            confirmedAt: now,
+            note: `活動取消，NT$${eventCharge} 已轉入帳戶餘額`,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+      }
+      continue;
+    }
+    if (invoiceData.status === "PENDING") {
+      voidedInvoices += 1;
+      const restoredCredit = Number(invoiceData.creditApplied ?? 0);
+      if (restoredCredit > 0) creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + restoredCredit);
+      transaction.update(invoice.ref, { status: "VOID", cancellationReason: "EVENT_CANCELLED", updatedAt: now });
+    } else if (invoiceData.status === "REPORTED" || invoiceData.status === "CONFIRMED") {
+      creditedInvoices += 1;
+      creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + Number(invoiceData.grossAmount ?? invoiceData.amount ?? 0));
+      transaction.update(invoice.ref, { status: "CREDITED", cancellationReason: "EVENT_CANCELLED", updatedAt: now });
+    }
+  }
+
+  for (const [memberId, amount] of creditsByMember) {
+    if (memberId && amount > 0) transaction.update(db.collection("members").doc(memberId), { creditBalance: FieldValue.increment(amount), updatedAt: now });
+  }
+
+  transaction.update(eventRef, {
+    status: "CANCELLED",
+    regularCount: 0,
+    standbyCount: 0,
+    cancelledAt: now,
+    cancellationReason: reason,
+    updatedAt: now,
+  });
+  if (dateSnapshot.exists) transaction.delete(eventDateRef);
+  return { cancelledBookings: activeBookings.length, voidedInvoices, creditedInvoices };
+}
+
 export async function readState(viewer: Viewer | null = null) {
   const db = getAdminFirestore();
   const isAdmin = viewer?.role === "ADMIN";
@@ -101,7 +242,12 @@ export async function readState(viewer: Viewer | null = null) {
     : viewer
       ? db.collection("invoices").where("memberId", "==", viewer.id)
       : null;
-  const [eventSnapshot, announcementSnapshot, memberSnapshot, bookingSnapshot, invoiceSnapshot, restDaySnapshot, feeRateSnapshot] = await Promise.all([
+  const membershipRequestQuery = isAdmin
+    ? db.collection("membershipRequests")
+    : viewer
+      ? db.collection("membershipRequests").where("memberId", "==", viewer.id)
+      : null;
+  const [eventSnapshot, announcementSnapshot, memberSnapshot, bookingSnapshot, invoiceSnapshot, restDaySnapshot, feeRateSnapshot, membershipRequestSnapshot, currentMemberFee, currentGuestFee] = await Promise.all([
     db.collection("events").get(),
     db.collection("announcements").get(),
     viewer ? db.collection("members").get() : Promise.resolve(null),
@@ -109,6 +255,9 @@ export async function readState(viewer: Viewer | null = null) {
     invoiceQuery ? invoiceQuery.get() : Promise.resolve(null),
     isAdmin ? db.collection("restDays").get() : Promise.resolve(null),
     isAdmin ? db.collection("feeRates").get() : Promise.resolve(null),
+    membershipRequestQuery ? membershipRequestQuery.get() : Promise.resolve(null),
+    activeFee(db, "MEMBER_VISIT", new Date()),
+    activeFee(db, "GUEST_VISIT", new Date()),
   ]);
 
   const memberDocuments = memberSnapshot?.docs ?? [];
@@ -116,12 +265,15 @@ export async function readState(viewer: Viewer | null = null) {
   const members = memberDocuments
     .map((document) => {
       const member = document.data();
+      const storedMembershipStatus = String(member.membershipStatus ?? "GUEST");
+      const membershipStatus = storedMembershipStatus === "EXITING" && !memberAt(member, new Date()) ? "GUEST" : storedMembershipStatus;
       return {
         id: document.id,
         name: String(member.displayName ?? ""),
         department: member.department ? String(member.department) : null,
         role: String(member.role ?? "MEMBER"),
-        membershipStatus: String(member.membershipStatus ?? "GUEST"),
+        membershipStatus,
+        creditBalance: Number(member.creditBalance ?? 0),
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
@@ -155,6 +307,8 @@ export async function readState(viewer: Viewer | null = null) {
         courts: String(event.courts ?? ""),
         regular_capacity: Number(event.regularCapacity ?? 10),
         standby_capacity: Number(event.standbyCapacity ?? 4),
+        member_fee: Number(event.memberFeeSnapshot ?? 150),
+        guest_fee: Number(event.guestFeeSnapshot ?? 180),
         status: String(event.status ?? "SCHEDULED"),
         created_at: iso(event.createdAt),
         bookings: (bookingsByEvent.get(document.id) ?? []).sort((a, b) => String(a.confirmedAt).localeCompare(String(b.confirmedAt))),
@@ -187,6 +341,8 @@ export async function readState(viewer: Viewer | null = null) {
         event_id: invoice.eventId ? String(invoice.eventId) : null,
         memberName: String(invoice.memberNameSnapshot ?? member?.displayName ?? "未知使用者"),
         type: String(invoice.type ?? ""),
+        gross_amount: Number(invoice.grossAmount ?? invoice.amount ?? 0),
+        credit_applied: Number(invoice.creditApplied ?? 0),
         amount: Number(invoice.amount ?? 0),
         status: String(invoice.status ?? "PENDING"),
         period_label: invoice.periodLabel ? String(invoice.periodLabel) : null,
@@ -211,8 +367,23 @@ export async function readState(viewer: Viewer | null = null) {
       effective_to: iso(document.data().effectiveTo),
     }))
     .sort((a, b) => String(b.effective_from).localeCompare(String(a.effective_from)));
+  const membershipRequests = (membershipRequestSnapshot?.docs ?? [])
+    .map((document) => {
+      const request = document.data();
+      const member = membersById.get(String(request.memberId));
+      return {
+        id: document.id,
+        memberId: String(request.memberId ?? ""),
+        memberName: String(request.memberNameSnapshot ?? member?.displayName ?? "未知使用者"),
+        kind: String(request.kind ?? "JOIN"),
+        status: String(request.status ?? "PENDING"),
+        requestedAt: iso(request.requestedAt),
+        reviewedAt: iso(request.reviewedAt),
+      };
+    })
+    .sort((a, b) => String(b.requestedAt).localeCompare(String(a.requestedAt)));
 
-  return { viewer, members, events, announcements, invoices, restDays, feeRates };
+  return { viewer, members, events, announcements, invoices, restDays, feeRates, membershipRequests, currentFees: { member: currentMemberFee, guest: currentGuestFee } };
 }
 
 async function join(input: Record<string, string>, actor: Viewer) {
@@ -221,17 +392,17 @@ async function join(input: Record<string, string>, actor: Viewer) {
   if (!memberSnapshot.exists) throw new Error("找不到使用者");
   const eventRef = db.collection("events").doc(input.eventId);
   const bookingRef = eventRef.collection("bookings").doc(memberSnapshot.id);
-  const member = memberSnapshot.data()!;
-  const kind = member.membershipStatus === "MEMBER" ? "MEMBER" : "GUEST";
   const now = new Date();
-  const guestFee = kind === "GUEST" ? await activeFee(db, "GUEST_VISIT", now) : 0;
 
   await db.runTransaction(async (transaction) => {
-    const [eventSnapshot, bookingSnapshot] = await transaction.getAll(eventRef, bookingRef);
+    const [eventSnapshot, bookingSnapshot, freshMemberSnapshot] = await transaction.getAll(eventRef, bookingRef, memberSnapshot.ref);
     if (!eventSnapshot.exists) throw new Error("找不到活動");
+    if (!freshMemberSnapshot.exists) throw new Error("找不到使用者");
     const event = eventSnapshot.data()!;
+    const member = freshMemberSnapshot.data()!;
     const startsAt = dateValue(event.startsAt);
     if (event.status !== "SCHEDULED" || !startsAt || startsAt <= now) throw new Error("活動已開始或已取消，無法再報名");
+    const kind = memberAt(member, startsAt) ? "MEMBER" : "GUEST";
     if (bookingSnapshot.exists && bookingSnapshot.data()?.status !== "CANCELLED") return;
 
     const regularCount = Number(event.regularCount ?? 0);
@@ -259,22 +430,28 @@ async function join(input: Record<string, string>, actor: Viewer) {
 
     if (kind === "GUEST") {
       const invoiceRef = db.collection("invoices").doc(`single-${input.eventId}-${memberSnapshot.id}`);
+      const grossAmount = Number(event.guestFeeSnapshot ?? 180);
+      const creditApplied = Math.min(Math.max(0, Number(member.creditBalance ?? 0)), grossAmount);
+      const amount = grossAmount - creditApplied;
       transaction.set(invoiceRef, {
         id: invoiceRef.id,
         memberId: memberSnapshot.id,
         memberNameSnapshot: member.displayName,
         eventId: input.eventId,
         type: "SINGLE_EVENT",
-        amount: guestFee,
-        status: "PENDING",
+        grossAmount,
+        creditApplied,
+        amount,
+        status: amount === 0 ? "CONFIRMED" : "PENDING",
         periodLabel: "單次活動",
         dueAt: null,
         reportedAt: null,
-        confirmedAt: null,
-        note: null,
+        confirmedAt: amount === 0 ? now : null,
+        note: creditApplied > 0 ? `已使用帳戶餘額 NT$${creditApplied}` : null,
         createdAt: now,
         updatedAt: now,
       }, { merge: true });
+      if (creditApplied > 0) transaction.update(memberSnapshot.ref, { creditBalance: FieldValue.increment(-creditApplied), updatedAt: now });
     }
   });
 }
@@ -316,11 +493,13 @@ async function cancel(input: Record<string, string>, actor: Viewer) {
 
     if (beforeStart && invoice) {
       const invoiceData = invoice.data();
+      const creditApplied = Number(invoiceData.creditApplied ?? 0);
       if (invoiceData.status === "PENDING") {
         transaction.update(invoice.ref, { status: "VOID", updatedAt: now });
+        if (creditApplied > 0) transaction.update(memberRef, { creditBalance: FieldValue.increment(creditApplied), updatedAt: now });
       } else if (invoiceData.status === "REPORTED" || invoiceData.status === "CONFIRMED") {
         transaction.update(invoice.ref, { status: "CREDITED", updatedAt: now });
-        transaction.update(memberRef, { creditBalance: FieldValue.increment(Number(invoiceData.amount ?? 0)), updatedAt: now });
+        transaction.update(memberRef, { creditBalance: FieldValue.increment(Number(invoiceData.grossAmount ?? invoiceData.amount ?? 0)), updatedAt: now });
       }
     }
   });
@@ -434,6 +613,10 @@ function validatedEventInput(input: Record<string, string>) {
 async function createEvent(input: Record<string, string>) {
   const values = validatedEventInput(input);
   const db = getAdminFirestore();
+  const [memberFeeSnapshot, guestFeeSnapshot] = await Promise.all([
+    activeFee(db, "MEMBER_VISIT", values.startsAt),
+    activeFee(db, "GUEST_VISIT", values.startsAt),
+  ]);
   const eventRef = db.collection("events").doc();
   const eventDateRef = db.collection("eventDates").doc(values.date);
   const now = new Date();
@@ -447,6 +630,8 @@ async function createEvent(input: Record<string, string>) {
       courts: values.courts,
       regularCapacity: values.regularCapacity,
       standbyCapacity: values.standbyCapacity,
+      memberFeeSnapshot,
+      guestFeeSnapshot,
       regularCount: 0,
       standbyCount: 0,
       status: "SCHEDULED",
@@ -495,16 +680,10 @@ async function updateEvent(input: Record<string, string>) {
 }
 
 async function cancelEvent(eventId: string) {
+  if (!eventId) throw new Error("缺少活動識別碼");
   const db = getAdminFirestore();
   const eventRef = db.collection("events").doc(eventId);
-  await db.runTransaction(async (transaction) => {
-    const eventSnapshot = await transaction.get(eventRef);
-    if (!eventSnapshot.exists) throw new Error("找不到活動");
-    const dateRef = db.collection("eventDates").doc(taipeiDate(eventSnapshot.data()!.startsAt));
-    await transaction.get(dateRef);
-    transaction.update(eventRef, { status: "CANCELLED", updatedAt: new Date() });
-    transaction.delete(dateRef);
-  });
+  return db.runTransaction((transaction) => cancelEventInTransaction(transaction, db, eventRef, "ADMIN_CANCELLED", new Date()));
 }
 
 async function addRestDay(input: Record<string, string>) {
@@ -513,12 +692,19 @@ async function addRestDay(input: Record<string, string>) {
   if (!date || !label) throw new Error("請填寫休團日日期與名稱");
   const db = getAdminFirestore();
   const restDayRef = db.collection("restDays").doc(date);
-  try {
-    await restDayRef.create({ id: date, date, label, createdAt: new Date() });
-  } catch (error) {
-    if (typeof error === "object" && error && "code" in error && Number((error as { code: number }).code) === 6) throw new Error("這一天已經是休團日");
-    throw error;
-  }
+  const eventDateRef = db.collection("eventDates").doc(date);
+  const now = new Date();
+  return db.runTransaction(async (transaction) => {
+    const [restDaySnapshot, eventDateSnapshot] = await transaction.getAll(restDayRef, eventDateRef);
+    if (restDaySnapshot.exists) throw new Error("這一天已經是休團日");
+    let cancelledEvent: EventCancellationSummary | null = null;
+    if (eventDateSnapshot.exists) {
+      const eventId = String(eventDateSnapshot.data()?.eventId ?? "");
+      if (eventId) cancelledEvent = await cancelEventInTransaction(transaction, db, db.collection("events").doc(eventId), "REST_DAY", now);
+    }
+    transaction.create(restDayRef, { id: date, date, label, createdAt: now, updatedAt: now });
+    return { cancelledEvent };
+  });
 }
 
 async function removeRestDay(restDayId: string) {
@@ -562,14 +748,310 @@ async function generateWeeklyEvents(input: Record<string, string>) {
   }
 }
 
+function billingBoundary(value: string | undefined, endOfDay = false) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value ?? "")) throw new Error("請填寫正確的帳單期間");
+  const date = new Date(`${value}T${endOfDay ? "23:59:59.999" : "00:00:00"}+08:00`);
+  if (Number.isNaN(date.getTime())) throw new Error("請填寫正確的帳單期間");
+  return date;
+}
+
+async function createQuarterlyInvoices(input: Record<string, string>) {
+  const startDate = input.startDate;
+  const endDate = input.endDate;
+  const startsAt = billingBoundary(startDate);
+  const endsAt = billingBoundary(endDate, true);
+  if (endsAt <= startsAt) throw new Error("帳單結束日期必須晚於開始日期");
+  const label = input.label?.trim() || `${startDate}～${endDate}`;
+  if (label.length > 60) throw new Error("帳單期間名稱不能超過 60 個字元");
+  const dueAt = input.dueDate ? billingBoundary(input.dueDate, true) : null;
+  const db = getAdminFirestore();
+  const periodId = `quarterly-${startDate}-${endDate}`;
+  const periodRef = db.collection("billingPeriods").doc(periodId);
+  const [existingPeriod, eventSnapshot, memberSnapshot] = await Promise.all([
+    periodRef.get(),
+    db.collection("events").get(),
+    db.collection("members").where("membershipStatus", "==", "MEMBER").get(),
+  ]);
+
+  if (existingPeriod.exists && existingPeriod.data()?.status === "ACTIVE") throw new Error("這個期間的社員帳單已經建立");
+  const scheduledEvents = existingPeriod.exists
+    ? null
+    : eventSnapshot.docs
+      .map((document) => {
+        const event = document.data();
+        return { id: document.id, startsAt: event.startsAt as StoredDate, status: String(event.status ?? "SCHEDULED"), memberFeeSnapshot: Number(event.memberFeeSnapshot ?? 150) };
+      })
+      .filter((event) => {
+        const eventStart = dateValue(event.startsAt);
+        return event.status === "SCHEDULED" && eventStart && eventStart >= startsAt && eventStart <= endsAt;
+      })
+      .sort((a, b) => (dateValue(a.startsAt)?.getTime() ?? 0) - (dateValue(b.startsAt)?.getTime() ?? 0));
+
+  if (scheduledEvents && scheduledEvents.length === 0) throw new Error("這個期間沒有可計費的活動");
+  const periodData = existingPeriod.data();
+  const eventIds = scheduledEvents?.map((event) => event.id) ?? (Array.isArray(periodData?.eventIds) ? periodData.eventIds.map(String) : []);
+  const eventAmounts = scheduledEvents?.map((event) => Number(event.memberFeeSnapshot ?? 150))
+    ?? (Array.isArray(periodData?.eventAmounts) ? periodData.eventAmounts.map(Number) : []);
+  const grossAmount = eventAmounts.reduce((total, amount) => total + amount, 0);
+  if (eventIds.length === 0 || grossAmount <= 0) throw new Error("帳單期間資料不完整，請聯絡系統管理者");
+  const now = new Date();
+
+  if (!existingPeriod.exists) {
+    await periodRef.create({
+      id: periodId,
+      type: "QUARTERLY_MEMBER",
+      label,
+      startDate,
+      endDate,
+      dueAt,
+      eventIds,
+      eventAmounts,
+      eventCount: eventIds.length,
+      grossAmount,
+      status: "GENERATING",
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  let invoiceCount = 0;
+  let totalAmount = 0;
+  const members = memberSnapshot.docs;
+  for (let offset = 0; offset < members.length; offset += 20) {
+    const results = await Promise.all(members.slice(offset, offset + 20).map((memberDocument) => db.runTransaction(async (transaction) => {
+      const invoiceRef = db.collection("invoices").doc(`${periodId}-${memberDocument.id}`);
+      const [freshMember, existingInvoice] = await transaction.getAll(memberDocument.ref, invoiceRef);
+      if (!freshMember.exists) return null;
+      if (existingInvoice.exists) return Number(existingInvoice.data()?.amount ?? 0);
+      const member = freshMember.data()!;
+      const creditApplied = Math.min(Math.max(0, Number(member.creditBalance ?? 0)), grossAmount);
+      const amount = grossAmount - creditApplied;
+      transaction.create(invoiceRef, {
+        id: invoiceRef.id,
+        memberId: memberDocument.id,
+        memberNameSnapshot: String(member.displayName ?? "未知使用者"),
+        eventId: null,
+        eventIds,
+        eventAmounts,
+        type: "QUARTERLY_MEMBER",
+        grossAmount,
+        creditApplied,
+        amount,
+        unitAmount: eventAmounts.every((value) => value === eventAmounts[0]) ? eventAmounts[0] : null,
+        periodId,
+        periodLabel: existingPeriod.exists ? String(periodData?.label ?? label) : label,
+        dueAt: existingPeriod.exists ? dateValue(periodData?.dueAt) : dueAt,
+        status: amount === 0 ? "CONFIRMED" : "PENDING",
+        reportedAt: null,
+        confirmedAt: amount === 0 ? now : null,
+        note: creditApplied > 0 ? `已使用帳戶餘額 NT$${creditApplied}` : null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      if (creditApplied > 0) transaction.update(memberDocument.ref, { creditBalance: FieldValue.increment(-creditApplied), updatedAt: now });
+      return amount;
+    })));
+    for (const amount of results) {
+      if (amount !== null) {
+        invoiceCount += 1;
+        totalAmount += amount;
+      }
+    }
+  }
+
+  await periodRef.update({ status: "ACTIVE", invoiceCount, totalAmount, completedAt: new Date(), updatedAt: new Date() });
+  return { invoiceCount, eventCount: eventIds.length, totalAmount, periodLabel: existingPeriod.exists ? String(periodData?.label ?? label) : label };
+}
+
+async function setFeeRates(input: Record<string, string>) {
+  const memberAmount = Number(input.memberAmount);
+  const guestAmount = Number(input.guestAmount);
+  if (!Number.isInteger(memberAmount) || memberAmount < 1 || memberAmount > 10000 || !Number.isInteger(guestAmount) || guestAmount < 1 || guestAmount > 10000) {
+    throw new Error("費率必須是 1 到 10,000 元的整數");
+  }
+  const effectiveDate = input.effectiveDate;
+  const effectiveFrom = billingBoundary(effectiveDate);
+  const db = getAdminFirestore();
+  const now = new Date();
+  const batch = db.batch();
+  for (const [kind, amount] of [["MEMBER_VISIT", memberAmount], ["GUEST_VISIT", guestAmount]] as const) {
+    const reference = db.collection("feeRates").doc(`${kind}-${effectiveDate}`);
+    batch.set(reference, { id: reference.id, kind, amount, effectiveFrom, effectiveTo: null, createdAt: now, updatedAt: now }, { merge: true });
+  }
+  await batch.commit();
+  return { memberAmount, guestAmount, effectiveDate };
+}
+
 async function reportPayment(invoiceId: string, actor: Viewer) {
   if (!invoiceId) throw new Error("缺少帳單識別碼");
   const invoiceRef = getAdminFirestore().collection("invoices").doc(invoiceId);
   const invoice = await invoiceRef.get();
   if (!invoice.exists) throw new Error("找不到帳單");
   if (actor.role !== "ADMIN" && String(invoice.data()?.memberId) !== actor.id) throw new Error("你不能更新其他人的帳單");
-  if (invoice.data()?.status === "VOID" || invoice.data()?.status === "CREDITED") throw new Error("這筆帳單已無需付款");
+  if (invoice.data()?.status === "REPORTED") return;
+  if (invoice.data()?.status !== "PENDING") throw new Error("這筆帳單目前無法回報轉帳");
   await invoiceRef.update({ status: "REPORTED", reportedAt: new Date(), updatedAt: new Date() });
+}
+
+async function confirmPayment(invoiceId: string) {
+  if (!invoiceId) throw new Error("缺少帳單識別碼");
+  const invoiceRef = getAdminFirestore().collection("invoices").doc(invoiceId);
+  const invoice = await invoiceRef.get();
+  if (!invoice.exists) throw new Error("找不到帳單");
+  if (invoice.data()?.status === "CONFIRMED") return;
+  if (invoice.data()?.status !== "PENDING" && invoice.data()?.status !== "REPORTED") throw new Error("這筆帳單目前無法確認收款");
+  await invoiceRef.update({ status: "CONFIRMED", confirmedAt: new Date(), updatedAt: new Date() });
+}
+
+async function requestMembershipChange(kind: string, actor: Viewer) {
+  if (kind !== "JOIN" && kind !== "EXIT") throw new Error("申請類型不正確");
+  const db = getAdminFirestore();
+  const memberRef = db.collection("members").doc(actor.id);
+  const lockRef = db.collection("membershipRequestLocks").doc(actor.id);
+  const requestRef = db.collection("membershipRequests").doc(randomUUID());
+  const now = new Date();
+
+  await db.runTransaction(async (transaction) => {
+    const [memberSnapshot, lockSnapshot] = await transaction.getAll(memberRef, lockRef);
+    if (!memberSnapshot.exists) throw new Error("找不到使用者");
+    if (lockSnapshot.exists) throw new Error("你已有一筆待審核的社員申請");
+    const member = memberSnapshot.data()!;
+    const currentlyMember = memberAt(member, now);
+    if (kind === "JOIN" && currentlyMember) throw new Error("你目前已是社員或會籍仍在有效期間");
+    if (kind === "EXIT" && !currentlyMember) throw new Error("你目前不是社員");
+
+    transaction.create(requestRef, {
+      id: requestRef.id,
+      memberId: actor.id,
+      memberNameSnapshot: String(member.displayName ?? actor.name),
+      kind,
+      status: "PENDING",
+      requestedAt: now,
+      reviewedAt: null,
+      reviewedBy: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    transaction.create(lockRef, { memberId: actor.id, requestId: requestRef.id, kind, createdAt: now });
+  });
+}
+
+function currentBillingPeriod(periods: FirebaseFirestore.QueryDocumentSnapshot[], now: Date) {
+  const date = taipeiDate(now);
+  return periods
+    .filter((document) => {
+      const period = document.data();
+      return period.status === "ACTIVE" && String(period.startDate ?? "") <= date && String(period.endDate ?? "") >= date;
+    })
+    .sort((a, b) => String(a.data().endDate).localeCompare(String(b.data().endDate)))[0] ?? null;
+}
+
+async function reviewMembershipRequest(requestId: string, decision: string, actor: Viewer) {
+  if (!requestId) throw new Error("缺少社員申請識別碼");
+  if (decision !== "APPROVE" && decision !== "REJECT") throw new Error("審核結果不正確");
+  const db = getAdminFirestore();
+  const requestRef = db.collection("membershipRequests").doc(requestId);
+  const requestSnapshot = await requestRef.get();
+  if (!requestSnapshot.exists) throw new Error("找不到社員申請");
+  const requestData = requestSnapshot.data()!;
+  if (requestData.status !== "PENDING") return;
+  const memberId = String(requestData.memberId ?? "");
+  const kind = String(requestData.kind ?? "");
+  if (!memberId || (kind !== "JOIN" && kind !== "EXIT")) throw new Error("社員申請資料不完整");
+
+  const now = new Date();
+  const periods = await db.collection("billingPeriods").get();
+  const periodDocument = currentBillingPeriod(periods.docs, now);
+  const period = periodDocument?.data();
+  let proratedGross = 0;
+  const proratedEventIds: string[] = [];
+  const proratedEventAmounts: number[] = [];
+  if (decision === "APPROVE" && kind === "JOIN" && periodDocument) {
+    const eventIds = Array.isArray(period?.eventIds) ? period.eventIds.map(String) : [];
+    const eventAmounts = Array.isArray(period?.eventAmounts) ? period.eventAmounts.map(Number) : [];
+    if (eventIds.length > 0) {
+      const eventSnapshots = await db.getAll(...eventIds.map((eventId) => db.collection("events").doc(eventId)));
+      eventSnapshots.forEach((eventSnapshot, index) => {
+        const event = eventSnapshot.data();
+        const startsAt = dateValue(event?.startsAt);
+        if (eventSnapshot.exists && event?.status === "SCHEDULED" && startsAt && startsAt > now) {
+          const amount = Number(eventAmounts[index] ?? event.memberFeeSnapshot ?? 150);
+          proratedEventIds.push(eventSnapshot.id);
+          proratedEventAmounts.push(amount);
+          proratedGross += amount;
+        }
+      });
+    }
+  }
+
+  const memberRef = db.collection("members").doc(memberId);
+  const lockRef = db.collection("membershipRequestLocks").doc(memberId);
+  const invoiceRef = periodDocument ? db.collection("invoices").doc(`membership-${periodDocument.id}-${memberId}`) : null;
+  const result = await db.runTransaction(async (transaction) => {
+    const references = invoiceRef ? [requestRef, memberRef, lockRef, invoiceRef] : [requestRef, memberRef, lockRef];
+    const snapshots = await transaction.getAll(...references);
+    const freshRequest = snapshots[0];
+    const freshMember = snapshots[1];
+    const lock = snapshots[2];
+    const existingInvoice = invoiceRef ? snapshots[3] : null;
+    if (!freshRequest.exists || freshRequest.data()?.status !== "PENDING") return { amount: 0 };
+    if (!freshMember.exists) throw new Error("找不到申請人");
+    if (decision === "REJECT") {
+      transaction.update(requestRef, { status: "REJECTED", reviewedAt: now, reviewedBy: actor.id, updatedAt: now });
+      if (lock.exists && lock.data()?.requestId === requestId) transaction.delete(lockRef);
+      return { amount: 0 };
+    }
+
+    const member = freshMember.data()!;
+    if (kind === "JOIN") {
+      const creditApplied = Math.min(Math.max(0, Number(member.creditBalance ?? 0)), proratedGross);
+      const amount = proratedGross - creditApplied;
+      transaction.update(memberRef, {
+        membershipStatus: "MEMBER",
+        memberSince: now,
+        endingAt: null,
+        creditBalance: FieldValue.increment(-creditApplied),
+        updatedAt: now,
+      });
+      if (invoiceRef && proratedGross > 0 && !existingInvoice?.exists) {
+        transaction.create(invoiceRef, {
+          id: invoiceRef.id,
+          memberId,
+          memberNameSnapshot: String(member.displayName ?? freshRequest.data()?.memberNameSnapshot ?? "未知使用者"),
+          eventId: null,
+          eventIds: proratedEventIds,
+          eventAmounts: proratedEventAmounts,
+          type: "MEMBERSHIP_PRORATED",
+          grossAmount: proratedGross,
+          creditApplied,
+          amount,
+          periodId: periodDocument.id,
+          periodLabel: `${String(period?.label ?? "本期社員費")}（中途加入）`,
+          dueAt: period?.dueAt ?? null,
+          status: amount === 0 ? "CONFIRMED" : "PENDING",
+          reportedAt: null,
+          confirmedAt: amount === 0 ? now : null,
+          note: "依核准後剩餘活動場次計費",
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      transaction.update(requestRef, { status: "APPROVED", reviewedAt: now, reviewedBy: actor.id, proratedAmount: amount, updatedAt: now });
+      if (lock.exists && lock.data()?.requestId === requestId) transaction.delete(lockRef);
+      return { amount };
+    }
+
+    const endingAt = periodDocument ? billingBoundary(String(period?.endDate), true) : now;
+    transaction.update(memberRef, {
+      membershipStatus: periodDocument ? "EXITING" : "GUEST",
+      endingAt: periodDocument ? endingAt : null,
+      updatedAt: now,
+    });
+    transaction.update(requestRef, { status: "APPROVED", reviewedAt: now, reviewedBy: actor.id, effectiveAt: endingAt, updatedAt: now });
+    if (lock.exists && lock.data()?.requestId === requestId) transaction.delete(lockRef);
+    return { amount: 0, endingAt: endingAt.toISOString() };
+  });
+  return result;
 }
 
 async function issueClaimCode(memberId: string) {
@@ -593,8 +1075,13 @@ export async function mutate(action: string, input: Record<string, string>, acto
   if (action === "cancel") return cancel(input, actor);
   if (action === "transfer") return transfer(input, actor);
   if (action === "reportPayment") return reportPayment(input.invoiceId, actor);
+  if (action === "requestMembershipChange") return requestMembershipChange(input.kind, actor);
 
   if (actor.role !== "ADMIN") throw new Error("只有幹部可以執行這項操作");
+  if (action === "reviewMembershipRequest") return reviewMembershipRequest(input.requestId, input.decision, actor);
+  if (action === "confirmPayment") return confirmPayment(input.invoiceId);
+  if (action === "createQuarterlyInvoices") return createQuarterlyInvoices(input);
+  if (action === "setFeeRates") return setFeeRates(input);
   if (action === "issueClaimCode") return issueClaimCode(input.memberId);
   if (action === "publish") return publish(input);
   if (action === "createEvent") return createEvent(input);
