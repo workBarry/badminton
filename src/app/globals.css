@@ -20,17 +20,20 @@ body {
 }
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 button {
   cursor: pointer;
 }
 input,
-textarea {
+textarea,
+select {
   border: 1px solid #d9e3e3;
   border-radius: 10px;
   padding: 11px 12px;
+  background: #fff;
   outline-color: var(--green);
 }
 .primary,
@@ -968,6 +971,25 @@ textarea {
   line-height: 1.65;
   font-size: 14px;
 }
+.announcement-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 30px;
+}
+.announcement-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.news-empty {
+  padding: 56px 24px;
+  border: 1px dashed #cedbd7;
+  border-radius: 16px;
+  color: var(--muted);
+  text-align: center;
+}
 .publish {
   align-self: start;
   flex: 0 0 310px;
@@ -995,7 +1017,7 @@ textarea {
 .manager-form label + label { margin-top: 3px; }
 .manager-form > .primary { margin-top: auto; }
 .time-pair, .capacity-fields { display: flex; gap: 8px; }
-.time-pair input, .capacity-fields label { min-width: 0; flex: 1; }
+.time-pair label, .time-pair input, .time-pair select, .capacity-fields label { min-width: 0; flex: 1; }
 .form-note { margin: 2px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .rest-day-manager {
   display: flex;
@@ -1199,6 +1221,17 @@ textarea {
   font-size: 12px;
   white-space: nowrap;
 }
+.member-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.primary-admin-label {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+}
 .modal-cover {
   position: fixed;
   z-index: 10;
@@ -1240,6 +1273,24 @@ textarea {
   width: 100%;
   min-height: 140px;
   resize: vertical;
+}
+.member-manager-modal .manager-form {
+  margin-top: 18px;
+}
+.member-balance-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 15px;
+  border-radius: 12px;
+  background: #f4f8f7;
+  color: var(--muted);
+  font-size: 12px;
+}
+.member-balance-summary strong {
+  color: var(--green);
+  font-size: 16px;
 }
 .primary:disabled,
 .secondary:disabled,

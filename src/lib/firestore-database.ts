@@ -267,13 +267,15 @@ export async function readState(viewer: Viewer | null = null) {
       const member = document.data();
       const storedMembershipStatus = String(member.membershipStatus ?? "GUEST");
       const membershipStatus = storedMembershipStatus === "EXITING" && !memberAt(member, new Date()) ? "GUEST" : storedMembershipStatus;
+      const name = String(member.displayName ?? "");
       return {
         id: document.id,
-        name: String(member.displayName ?? ""),
+        name,
         department: member.department ? String(member.department) : null,
         role: String(member.role ?? "MEMBER"),
         membershipStatus,
         creditBalance: Number(member.creditBalance ?? 0),
+        primaryAdmin: Boolean(member.primaryAdmin) || name.toLocaleLowerCase("en-US") === "barryadmin",
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
@@ -580,7 +582,7 @@ async function transfer(input: Record<string, string>, actor: Viewer) {
   return claim ? { claimCode: claim.code, recipientName } : undefined;
 }
 
-async function publish(input: Record<string, string>) {
+function validatedAnnouncementInput(input: Record<string, string>) {
   const title = input.title?.trim();
   const content = input.content?.trim();
   const linkUrl = input.linkUrl?.trim() || null;
@@ -594,9 +596,40 @@ async function publish(input: Record<string, string>) {
       throw new Error("外部連結必須是完整的 http:// 或 https:// 網址");
     }
   }
+  return { title, content, linkUrl };
+}
+
+async function publish(input: Record<string, string>) {
+  const values = validatedAnnouncementInput(input);
   const db = getAdminFirestore();
   const announcementRef = db.collection("announcements").doc();
-  await announcementRef.set({ id: announcementRef.id, title, content, linkUrl, pinned: false, publishedAt: new Date() });
+  const now = new Date();
+  await announcementRef.set({ id: announcementRef.id, ...values, pinned: false, publishedAt: now, updatedAt: now });
+}
+
+async function updateAnnouncement(input: Record<string, string>) {
+  if (!input.announcementId) throw new Error("缺少公告識別碼");
+  const values = validatedAnnouncementInput(input);
+  const reference = getAdminFirestore().collection("announcements").doc(input.announcementId);
+  const announcement = await reference.get();
+  if (!announcement.exists) throw new Error("找不到公告");
+  await reference.update({ ...values, updatedAt: new Date() });
+}
+
+async function deleteAnnouncement(announcementId: string) {
+  if (!announcementId) throw new Error("缺少公告識別碼");
+  const reference = getAdminFirestore().collection("announcements").doc(announcementId);
+  const announcement = await reference.get();
+  if (!announcement.exists) return;
+  await reference.delete();
+}
+
+async function setAnnouncementPinned(announcementId: string, pinned: string) {
+  if (!announcementId) throw new Error("缺少公告識別碼");
+  const reference = getAdminFirestore().collection("announcements").doc(announcementId);
+  const announcement = await reference.get();
+  if (!announcement.exists) throw new Error("找不到公告");
+  await reference.update({ pinned: pinned === "true", updatedAt: new Date() });
 }
 
 function validatedEventInput(input: Record<string, string>) {
@@ -1054,6 +1087,88 @@ async function reviewMembershipRequest(requestId: string, decision: string, acto
   return result;
 }
 
+async function updateMember(input: Record<string, string>, actor: Viewer) {
+  const memberId = input.memberId;
+  const role = input.role;
+  const membershipStatus = input.membershipStatus;
+  const department = input.department?.trim() || null;
+  const balanceAdjustment = Number(input.balanceAdjustment || 0);
+  const adjustmentNote = input.adjustmentNote?.trim() || "";
+  if (!memberId) throw new Error("缺少使用者識別碼");
+  if (role !== "ADMIN" && role !== "MEMBER") throw new Error("角色設定不正確");
+  if (membershipStatus !== "MEMBER" && membershipStatus !== "GUEST" && membershipStatus !== "EXITING") throw new Error("社員身分設定不正確");
+  if (department && department.length > 60) throw new Error("部門名稱不能超過 60 個字元");
+  if (!Number.isInteger(balanceAdjustment) || Math.abs(balanceAdjustment) > 100000) throw new Error("餘額調整必須是介於 -100,000 到 100,000 的整數");
+  if (balanceAdjustment !== 0 && !adjustmentNote) throw new Error("調整帳戶餘額時必須填寫原因");
+  if (adjustmentNote.length > 200) throw new Error("調整原因不能超過 200 個字元");
+
+  const db = getAdminFirestore();
+  const memberRef = db.collection("members").doc(memberId);
+  const adminQuery = db.collection("members").where("role", "==", "ADMIN");
+  const auditRef = db.collection("auditLogs").doc(randomUUID());
+  const adjustmentRef = balanceAdjustment === 0 ? null : db.collection("invoices").doc(`adjustment-${randomUUID()}`);
+  const now = new Date();
+
+  await db.runTransaction(async (transaction) => {
+    const [memberSnapshot, adminSnapshot] = await Promise.all([transaction.get(memberRef), transaction.get(adminQuery)]);
+    if (!memberSnapshot.exists) throw new Error("找不到使用者");
+    const member = memberSnapshot.data()!;
+    const isPrimaryAdmin = Boolean(member.primaryAdmin) || String(member.displayName ?? "").toLocaleLowerCase("en-US") === "barryadmin";
+    const isDemotion = member.role === "ADMIN" && role !== "ADMIN";
+    if (isPrimaryAdmin && isDemotion) throw new Error("BarryAdmin 是主要幹部，不能降為一般使用者");
+    if (actor.id === memberId && isDemotion) throw new Error("不能取消自己的幹部權限");
+    if (isDemotion && adminSnapshot.size <= 1) throw new Error("系統至少需要保留一位幹部");
+    const currentBalance = Number(member.creditBalance ?? 0);
+    const nextBalance = currentBalance + balanceAdjustment;
+    if (nextBalance < 0) throw new Error("帳戶餘額不足，無法套用這筆扣除");
+    if (membershipStatus === "EXITING" && !member.endingAt) throw new Error("只有已排定期末退出的使用者可以保留此狀態");
+
+    transaction.update(memberRef, {
+      department,
+      role,
+      membershipStatus,
+      endingAt: membershipStatus === "EXITING" ? member.endingAt : null,
+      creditBalance: nextBalance,
+      updatedAt: now,
+    });
+    transaction.create(auditRef, {
+      id: auditRef.id,
+      action: "UPDATE_MEMBER",
+      actorId: actor.id,
+      actorNameSnapshot: actor.name,
+      targetMemberId: memberId,
+      before: {
+        department: member.department ?? null,
+        role: member.role ?? "MEMBER",
+        membershipStatus: member.membershipStatus ?? "GUEST",
+        creditBalance: currentBalance,
+      },
+      after: { department, role, membershipStatus, creditBalance: nextBalance },
+      note: adjustmentNote || null,
+      createdAt: now,
+    });
+    if (adjustmentRef) {
+      transaction.create(adjustmentRef, {
+        id: adjustmentRef.id,
+        memberId,
+        memberNameSnapshot: String(member.displayName ?? "未知使用者"),
+        eventId: null,
+        type: "ADJUSTMENT",
+        grossAmount: -balanceAdjustment,
+        creditApplied: 0,
+        amount: -balanceAdjustment,
+        status: "CONFIRMED",
+        periodLabel: "幹部手動餘額調整",
+        confirmedAt: now,
+        confirmedBy: actor.id,
+        note: adjustmentNote,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+  });
+}
+
 async function issueClaimCode(memberId: string) {
   if (!memberId) throw new Error("缺少使用者識別碼");
   const db = getAdminFirestore();
@@ -1082,8 +1197,12 @@ export async function mutate(action: string, input: Record<string, string>, acto
   if (action === "confirmPayment") return confirmPayment(input.invoiceId);
   if (action === "createQuarterlyInvoices") return createQuarterlyInvoices(input);
   if (action === "setFeeRates") return setFeeRates(input);
+  if (action === "updateMember") return updateMember(input, actor);
   if (action === "issueClaimCode") return issueClaimCode(input.memberId);
   if (action === "publish") return publish(input);
+  if (action === "updateAnnouncement") return updateAnnouncement(input);
+  if (action === "deleteAnnouncement") return deleteAnnouncement(input.announcementId);
+  if (action === "setAnnouncementPinned") return setAnnouncementPinned(input.announcementId, input.pinned);
   if (action === "createEvent") return createEvent(input);
   if (action === "updateEvent") return updateEvent(input);
   if (action === "cancelEvent") return cancelEvent(input.eventId);

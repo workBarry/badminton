@@ -13,9 +13,9 @@ type Role = "admin" | "member";
 type Tab = "總覽" | "活動" | "公告" | "社員名單" | "費用管理" | "個人資訊";
 type ActivityManagerTab = "single" | "weekly" | "rest";
 type BillingManagerTab = "quarterly" | "rates";
-type Person = { id: string; name: string; department?: string; role: Role; member: boolean; membershipStatus?: string; creditBalance?: number };
+type Person = { id: string; name: string; department?: string; role: Role; member: boolean; membershipStatus?: string; creditBalance?: number; primaryAdmin?: boolean };
 type Booking = { memberId: string; name: string; kind: "社員" | "非社員"; rank: "正取" | "候補"; transferred?: boolean };
-type NewsItem = { title: string; content: string; date: string; linkUrl?: string };
+type NewsItem = { id: string; title: string; content: string; date: string; linkUrl?: string; pinned: boolean };
 type Invoice = { id: string; member_id: string; memberName: string; type: string; gross_amount: number; credit_applied: number; amount: number; status: string; period_label?: string; due_at?: string | null };
 type RestDay = { id: string; date: string; label: string };
 type FeeRate = { id: string; kind: string; amount: number; effective_from: string | null; effective_to: string | null };
@@ -50,9 +50,9 @@ type ClubEvent = {
 
 type ApiState = {
   viewer: Viewer | null;
-  members: { id: string; name: string; department?: string; role: string; membershipStatus: string; creditBalance?: number }[];
+  members: { id: string; name: string; department?: string; role: string; membershipStatus: string; creditBalance?: number; primaryAdmin?: boolean }[];
   events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; member_fee: number; guest_fee: number; bookings: { memberId: string; name: string; kind: string; status: string }[] }[];
-  announcements: { title: string; content: string; publishedAt: string; linkUrl?: string }[];
+  announcements: { id: string; title: string; content: string; publishedAt: string; linkUrl?: string; pinned: boolean }[];
   invoices: Invoice[];
   restDays: RestDay[];
   feeRates: FeeRate[];
@@ -124,14 +124,18 @@ const eventsSeed: ClubEvent[] = [
 
 const initialNews: NewsItem[] = [
   {
+    id: "seed-news-1",
     title: "九月活動時段與場地",
     date: "2026.08.29",
     content: "九月固定於週五 19:00 開打；9/18 將使用 A、B 兩場。",
+    pinned: true,
   },
   {
+    id: "seed-news-2",
     title: "第三季社員費預收通知",
     date: "2026.08.25",
     content: "本季共 12 次活動，社員預收費用為 NT$1,800。請於 9/6 前完成轉帳。",
+    pinned: false,
   },
 ];
 
@@ -170,21 +174,26 @@ export default function Home() {
   const [managerOpen, setManagerOpen] = useState(false);
   const [managerSaving, setManagerSaving] = useState(false);
   const [announcementOpen, setAnnouncementOpen] = useState(false);
+  const [editingAnnouncement, setEditingAnnouncement] = useState<NewsItem | null>(null);
   const [announcementSaving, setAnnouncementSaving] = useState(false);
   const [billingManagerOpen, setBillingManagerOpen] = useState(false);
   const [billingManagerTab, setBillingManagerTab] = useState<BillingManagerTab>("quarterly");
   const [billingSaving, setBillingSaving] = useState(false);
   const [membershipSaving, setMembershipSaving] = useState(false);
+  const [editingMember, setEditingMember] = useState<Person | null>(null);
+  const [memberSaving, setMemberSaving] = useState(false);
 
   useEffect(() => {
-    if (!managerOpen && !announcementOpen && !billingManagerOpen) return;
+    if (!managerOpen && !announcementOpen && !billingManagerOpen && !editingMember) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setManagerOpen(false);
         setAnnouncementOpen(false);
+        setEditingAnnouncement(null);
         setBillingManagerOpen(false);
+        setEditingMember(null);
       }
     };
     window.addEventListener("keydown", closeOnEscape);
@@ -192,12 +201,12 @@ export default function Home() {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [managerOpen, announcementOpen, billingManagerOpen]);
+  }, [managerOpen, announcementOpen, billingManagerOpen, editingMember]);
 
   const applyState = useCallback((state: ApiState) => {
     setViewer(state.viewer);
     setQuickAccounts(state.quickAccounts ?? []);
-    setMembers(state.members.map((member) => ({ id: member.id, name: member.name, department: member.department, role: member.role === "ADMIN" ? "admin" : "member", member: member.membershipStatus === "MEMBER" || member.membershipStatus === "EXITING", membershipStatus: member.membershipStatus, creditBalance: Number(member.creditBalance ?? 0) })));
+    setMembers(state.members.map((member) => ({ id: member.id, name: member.name, department: member.department, role: member.role === "ADMIN" ? "admin" : "member", member: member.membershipStatus === "MEMBER" || member.membershipStatus === "EXITING", membershipStatus: member.membershipStatus, creditBalance: Number(member.creditBalance ?? 0), primaryAdmin: Boolean(member.primaryAdmin) })));
     setEvents(state.events.map((item) => {
       const startsAt = new Date(item.starts_at);
       const endsAt = new Date(item.ends_at);
@@ -206,10 +215,12 @@ export default function Home() {
       return { id: item.id, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, memberFee: item.member_fee, guestFee: item.guest_fee, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
     }));
     setNews(state.announcements.map((item) => ({
+      id: item.id,
       title: item.title,
       content: item.content,
       date: new Date(item.publishedAt).toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).replaceAll("/", "."),
       linkUrl: item.linkUrl,
+      pinned: item.pinned,
     })));
     setInvoices(state.invoices ?? []);
     setRestDays(state.restDays ?? []);
@@ -371,7 +382,7 @@ export default function Home() {
       }
     }
   };
-  const publish = async (form: FormEvent<HTMLFormElement>) => {
+  const saveAnnouncement = async (form: FormEvent<HTMLFormElement>) => {
     form.preventDefault();
     const element = form.currentTarget;
     const data = new FormData(element);
@@ -390,10 +401,29 @@ export default function Home() {
     }
     setAnnouncementSaving(true);
     try {
-      if (await execute("publish", { title, content, linkUrl })) {
+      const action = editingAnnouncement ? "updateAnnouncement" : "publish";
+      if (await execute(action, { ...(editingAnnouncement ? { announcementId: editingAnnouncement.id } : {}), title, content, linkUrl })) {
         element.reset();
         setAnnouncementOpen(false);
+        setEditingAnnouncement(null);
       }
+    } finally {
+      setAnnouncementSaving(false);
+    }
+  };
+  const deleteAnnouncement = async (announcement: NewsItem) => {
+    if (!window.confirm(`確定要刪除公告「${announcement.title}」嗎？刪除後無法復原。`)) return;
+    setAnnouncementSaving(true);
+    try {
+      await execute("deleteAnnouncement", { announcementId: announcement.id });
+    } finally {
+      setAnnouncementSaving(false);
+    }
+  };
+  const toggleAnnouncementPinned = async (announcement: NewsItem) => {
+    setAnnouncementSaving(true);
+    try {
+      await execute("setAnnouncementPinned", { announcementId: announcement.id, pinned: String(!announcement.pinned) });
     } finally {
       setAnnouncementSaving(false);
     }
@@ -566,6 +596,26 @@ export default function Home() {
       setMembershipSaving(false);
     }
   };
+  const updateMember = async (form: FormEvent<HTMLFormElement>) => {
+    form.preventDefault();
+    if (!editingMember) return;
+    const data = new FormData(form.currentTarget);
+    setMemberSaving(true);
+    try {
+      if (await execute("updateMember", {
+        memberId: editingMember.id,
+        department: String(data.get("department") ?? "").trim(),
+        role: String(data.get("role") ?? "MEMBER"),
+        membershipStatus: String(data.get("membershipStatus") ?? "GUEST"),
+        balanceAdjustment: String(data.get("balanceAdjustment") ?? "0"),
+        adjustmentNote: String(data.get("adjustmentNote") ?? "").trim(),
+      })) {
+        setEditingMember(null);
+      }
+    } finally {
+      setMemberSaving(false);
+    }
+  };
 
   if (!sessionReady) return <main className="login"><section className="session-loading"><div className="login-logo">羽</div><h1>正在確認此裝置…</h1><span>請稍候，系統正在安全地恢復登入狀態。</span></section></main>;
   if (!viewer) return <Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} passkeyLogin={loginWithPasskey} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving || passkeySaving} />;
@@ -621,6 +671,7 @@ export default function Home() {
                     setBillingManagerOpen(true);
                   } else {
                     setTab("公告");
+                    setEditingAnnouncement(null);
                     setAnnouncementOpen(true);
                   }
                 }}
@@ -656,8 +707,8 @@ export default function Home() {
             editEvent={setEditingEvent}
           />
         )}
-        {tab === "公告" && <News news={news} />}
-        {tab === "社員名單" && <Members members={members} requests={membershipRequests} admin={isAdmin} saving={membershipSaving} issueClaimCode={issueClaimCode} reviewRequest={reviewMembershipRequest} />}
+        {tab === "公告" && <News news={news} admin={isAdmin} saving={announcementSaving} edit={(announcement) => { setEditingAnnouncement(announcement); setAnnouncementOpen(true); }} remove={(announcement) => void deleteAnnouncement(announcement)} togglePinned={(announcement) => void toggleAnnouncementPinned(announcement)} />}
+        {tab === "社員名單" && <Members members={members} requests={membershipRequests} admin={isAdmin} saving={membershipSaving || memberSaving} issueClaimCode={issueClaimCode} reviewRequest={reviewMembershipRequest} manageMember={setEditingMember} />}
         {tab === "費用管理" && (
           <Billing
             admin={isAdmin}
@@ -723,8 +774,9 @@ export default function Home() {
       {isAdmin && announcementOpen && (
         <AnnouncementModal
           saving={announcementSaving}
-          onClose={() => setAnnouncementOpen(false)}
-          publish={publish}
+          announcement={editingAnnouncement}
+          onClose={() => { setAnnouncementOpen(false); setEditingAnnouncement(null); }}
+          save={saveAnnouncement}
         />
       )}
       {isAdmin && billingManagerOpen && (
@@ -760,6 +812,9 @@ export default function Home() {
             </form>
           </section>
         </div>
+      )}
+      {isAdmin && editingMember && (
+        <MemberManagerModal member={editingMember} saving={memberSaving} onClose={() => setEditingMember(null)} save={updateMember} />
       )}
       {codeNotice && <CodeNotice notice={codeNotice} onClose={() => setCodeNotice(null)} />}
     </div>
@@ -925,13 +980,16 @@ function ActivityManagerModal({
 
 function AnnouncementModal({
   saving,
+  announcement,
   onClose,
-  publish,
+  save,
 }: {
   saving: boolean;
+  announcement: NewsItem | null;
   onClose: () => void;
-  publish: (form: FormEvent<HTMLFormElement>) => void;
+  save: (form: FormEvent<HTMLFormElement>) => void;
 }) {
+  const editing = Boolean(announcement);
   return (
     <div
       className="modal-cover"
@@ -945,24 +1003,89 @@ function AnnouncementModal({
           ×
         </button>
         <p>幹部工具</p>
-        <h2 id="announcement-modal-title">發布公告</h2>
-        <span>公告發布後會立即顯示給所有使用者。</span>
-        <form className="manager-form" onSubmit={publish}>
+        <h2 id="announcement-modal-title">{editing ? "編輯公告" : "發布公告"}</h2>
+        <span>{editing ? "儲存後會立即更新所有使用者看到的內容。" : "公告發布後會立即顯示給所有使用者。"}</span>
+        <form className="manager-form" onSubmit={save}>
           <label>
             公告標題
-            <input name="title" maxLength={80} placeholder="例如：本週場地異動通知" required autoFocus />
+            <input name="title" maxLength={80} defaultValue={announcement?.title ?? ""} placeholder="例如：本週場地異動通知" required autoFocus />
           </label>
           <label>
             公告內容
-            <textarea name="content" maxLength={2000} rows={6} placeholder="輸入公告內容…" required />
+            <textarea name="content" maxLength={2000} rows={6} defaultValue={announcement?.content ?? ""} placeholder="輸入公告內容…" required />
           </label>
           <label>
             外部連結（選填）
-            <input name="linkUrl" type="url" inputMode="url" placeholder="https://example.com" />
+            <input name="linkUrl" type="url" inputMode="url" defaultValue={announcement?.linkUrl ?? ""} placeholder="https://example.com" />
             <small>可附上 Teams、公司內網或其他完整網址。</small>
           </label>
           <p className="form-note">目前支援純文字與外部連結；圖片與檔案上傳將留到下一階段。</p>
-          <button className="primary" disabled={saving}>{saving ? "發布中…" : "發布公告"}</button>
+          <button className="primary" disabled={saving}>{saving ? "儲存中…" : editing ? "儲存公告" : "發布公告"}</button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function MemberManagerModal({
+  member,
+  saving,
+  onClose,
+  save,
+}: {
+  member: Person;
+  saving: boolean;
+  onClose: () => void;
+  save: (form: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <div className="modal-cover" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
+      <section className="modal manager-modal member-manager-modal" role="dialog" aria-modal="true" aria-labelledby="member-manager-title">
+        <button type="button" className="close" onClick={onClose} disabled={saving} aria-label="關閉社員管理視窗">×</button>
+        <p>幹部工具</p>
+        <h2 id="member-manager-title">管理 {member.name}</h2>
+        <span>身分異動立即生效；餘額調整會另外留下帳務與稽核紀錄。</span>
+        <form className="manager-form" onSubmit={save}>
+          <label>
+            部門（選填）
+            <input name="department" maxLength={60} defaultValue={member.department ?? ""} placeholder="例如：工程部" autoFocus />
+          </label>
+          <div className="time-pair">
+            <label>
+              系統角色
+              {member.primaryAdmin ? (
+                <><input type="hidden" name="role" value="ADMIN" /><select value="ADMIN" disabled><option value="ADMIN">主要幹部</option></select></>
+              ) : (
+                <select name="role" defaultValue={member.role === "admin" ? "ADMIN" : "MEMBER"}>
+                  <option value="MEMBER">一般使用者</option>
+                  <option value="ADMIN">幹部管理者</option>
+                </select>
+              )}
+            </label>
+            <label>
+              社員身分
+              <select name="membershipStatus" defaultValue={member.membershipStatus ?? (member.member ? "MEMBER" : "GUEST")}>
+                <option value="GUEST">非社員</option>
+                <option value="MEMBER">社員</option>
+                {member.membershipStatus === "EXITING" && <option value="EXITING">本期後退出</option>}
+              </select>
+            </label>
+          </div>
+          <div className="member-balance-summary">
+            <span>目前帳戶餘額</span>
+            <strong>NT$ {Number(member.creditBalance ?? 0).toLocaleString("zh-TW")}</strong>
+          </div>
+          <label>
+            餘額調整（選填）
+            <input name="balanceAdjustment" type="number" step="1" min="-100000" max="100000" defaultValue="0" />
+            <small>正數代表增加可抵扣餘額，負數代表扣除；不調整請維持 0。</small>
+          </label>
+          <label>
+            餘額調整原因
+            <input name="adjustmentNote" maxLength={200} placeholder="有調整餘額時必填，例如：特殊退款" />
+          </label>
+          <p className="form-note">直接改為非社員屬於幹部例外處理，不會自動退款；一般退出請優先使用申請審核流程。</p>
+          <button className="primary" disabled={saving}>{saving ? "儲存中…" : "儲存社員資料"}</button>
         </form>
       </section>
     </div>
@@ -1654,23 +1777,42 @@ function Events({
     </div>
   );
 }
-function News({ news }: { news: NewsItem[] }) {
+function News({
+  news,
+  admin,
+  saving,
+  edit,
+  remove,
+  togglePinned,
+}: {
+  news: NewsItem[];
+  admin: boolean;
+  saving: boolean;
+  edit: (announcement: NewsItem) => void;
+  remove: (announcement: NewsItem) => void;
+  togglePinned: (announcement: NewsItem) => void;
+}) {
   return (
     <div className="news-layout">
       <section className="news-list">
-        {news.map((item, index) => (
-          <article key={`${item.title}-${index}`}>
+        {news.length === 0 ? <div className="news-empty">目前沒有公告</div> : news.map((item) => (
+          <article key={item.id}>
             <div>
-              <Badge tone={index === 0 ? "green" : "gray"}>{index === 0 ? "置頂" : "公告"}</Badge>
+              <Badge tone={item.pinned ? "green" : "gray"}>{item.pinned ? "置頂" : "公告"}</Badge>
               <small>{item.date}</small>
             </div>
             <h3>{item.title}</h3>
             <p>{item.content}</p>
-            {item.linkUrl && (
-              <a className="link" href={item.linkUrl} target="_blank" rel="noreferrer">
-                開啟相關連結 →
-              </a>
-            )}
+            <footer className="announcement-footer">
+              {item.linkUrl ? <a className="link" href={item.linkUrl} target="_blank" rel="noreferrer">開啟相關連結 →</a> : <span />}
+              {admin && (
+                <div className="announcement-actions">
+                  <button className="link" disabled={saving} onClick={() => togglePinned(item)}>{item.pinned ? "取消置頂" : "置頂"}</button>
+                  <button className="link" disabled={saving} onClick={() => edit(item)}>編輯</button>
+                  <button className="link danger" disabled={saving} onClick={() => remove(item)}>刪除</button>
+                </div>
+              )}
+            </footer>
           </article>
         ))}
       </section>
@@ -1684,6 +1826,7 @@ function Members({
   saving,
   issueClaimCode,
   reviewRequest,
+  manageMember,
 }: {
   members: Person[];
   requests: MembershipRequest[];
@@ -1691,6 +1834,7 @@ function Members({
   saving: boolean;
   issueClaimCode: (person: Person) => void;
   reviewRequest: (request: MembershipRequest, decision: "APPROVE" | "REJECT") => void;
+  manageMember: (person: Person) => void;
 }) {
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLocaleLowerCase("zh-Hant");
@@ -1733,7 +1877,7 @@ function Members({
           <span>姓名</span>
           <span>部門</span>
           <span>身分</span>
-          <span>{admin ? "帳號恢復" : "狀態"}</span>
+          <span>{admin ? "管理" : "狀態"}</span>
         </div>
         {visibleMembers.length === 0 ? <div className="membership-request-empty">找不到符合的使用者</div> : visibleMembers.map((person) => (
           <div className="row" key={person.id}>
@@ -1744,8 +1888,9 @@ function Members({
             <span>{person.department ?? "—"}</span>
             <span>
               <Badge tone={person.member ? "green" : "gray"}>{membershipLabel(person)}</Badge>
+              {person.primaryAdmin && <small className="primary-admin-label">主要幹部</small>}
             </span>
-            <span>{admin ? <button type="button" className="link claim-button" onClick={() => issueClaimCode(person)}>產生認領碼</button> : person.member ? "有效" : "—"}</span>
+            <span>{admin ? <span className="member-row-actions"><button type="button" className="link" disabled={saving} onClick={() => manageMember(person)}>編輯</button><button type="button" className="link claim-button" disabled={saving} onClick={() => issueClaimCode(person)}>認領碼</button></span> : person.member ? "有效" : "—"}</span>
           </div>
         ))}
       </section>

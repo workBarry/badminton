@@ -76,6 +76,7 @@ if (matchingSnapshot.size > 1) {
   await account.ref.update({
     role: "ADMIN",
     membershipStatus: "MEMBER",
+    primaryAdmin: displayName.toLocaleLowerCase("en-US") === "barryadmin",
     updatedAt: new Date(),
   });
   console.log(JSON.stringify({
@@ -96,6 +97,7 @@ if (matchingSnapshot.size > 1) {
     department: null,
     role: "ADMIN",
     membershipStatus: "MEMBER",
+    primaryAdmin: displayName.toLocaleLowerCase("en-US") === "barryadmin",
     accountType: "unclaimed",
     joinedAt: now,
     endingAt: null,
