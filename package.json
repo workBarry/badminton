@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "admin:check": "node scripts/bootstrap-admin.mjs",
+    "admin:bootstrap": "node scripts/bootstrap-admin.mjs --write",
     "db:check:firestore": "node scripts/migrate-sqlite-to-firestore.mjs --check",
     "db:migrate:firestore": "node scripts/migrate-sqlite-to-firestore.mjs --write"
   },
@@ -16,6 +18,8 @@
   "dependencies": {
     "@libsql/client": "^0.17.4",
     "@prisma/client": "^6.19.3",
+    "@simplewebauthn/browser": "^14.0.0",
+    "@simplewebauthn/server": "^14.0.0",
     "firebase-admin": "^14.3.0",
     "next": "16.3.4",
     "react": "19.2.8",

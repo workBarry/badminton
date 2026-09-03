@@ -186,6 +186,100 @@ textarea {
   color: var(--green);
   box-shadow: 0 3px 10px #163f3714;
 }
+.quick-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid #c9ddd7;
+  border-radius: 14px;
+  background: #f4faf8;
+}
+.quick-accounts > strong {
+  color: var(--green);
+  font-size: 13px;
+}
+.quick-accounts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.quick-accounts button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid #d7e4e0;
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  text-align: left;
+}
+.quick-accounts button > i {
+  display: flex;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--green);
+  color: var(--lime);
+  font-style: normal;
+  font-weight: 800;
+}
+.quick-accounts button > span {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+.quick-accounts button small,
+.quick-accounts > small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+.quick-accounts button em {
+  color: var(--green);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+}
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 17px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.login-divider::before,
+.login-divider::after {
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+  content: "";
+}
+.passkey-button {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 12px 16px;
+  border: 1px solid #acc7c0;
+  border-radius: 11px;
+  background: #fff;
+  color: var(--green);
+}
+.passkey-button span {
+  color: var(--muted);
+  font-size: 11px;
+}
 .session-loading {
   text-align: center;
 }
@@ -995,6 +1089,11 @@ textarea {
 .pay {
   margin: 18px 25px;
 }
+.claim-button {
+  padding: 5px 0;
+  font-size: 12px;
+  white-space: nowrap;
+}
 .modal-cover {
   position: fixed;
   z-index: 10;
@@ -1038,6 +1137,7 @@ textarea {
   resize: vertical;
 }
 .primary:disabled,
+.secondary:disabled,
 .close:disabled {
   cursor: wait;
   opacity: .6;
@@ -1060,28 +1160,185 @@ textarea {
   width: 100%;
   margin-bottom: 14px;
 }
-.account-warning {
+.account-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.account-hero,
+.account-card {
+  border: 1px solid #e7eeee;
+  border-radius: 18px;
+  background: var(--card);
+  box-shadow: 0 5px 18px #173f3706;
+}
+.account-hero {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 26px 28px;
+}
+.account-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 64px;
+  height: 64px;
+  border-radius: 20px;
+  background: var(--green);
+  color: var(--lime);
+  font-size: 27px;
+  font-weight: 900;
+}
+.account-hero-copy {
+  flex: 1;
+}
+.account-hero-copy p,
+.account-card-heading p,
+.account-session p {
+  margin: 0 0 5px;
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .11em;
+}
+.account-hero-copy h2,
+.account-card-heading h3,
+.account-session h3 {
+  margin: 0;
+}
+.account-hero-copy h2 {
+  font-size: 27px;
+}
+.account-hero-copy span,
+.account-session span {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.account-panels {
+  display: flex;
+  gap: 18px;
+  align-items: flex-start;
+}
+.account-card {
+  padding: 26px;
+}
+.account-panels > .account-card {
+  flex: 1 1 0;
+}
+.account-panels > .identity-card {
+  flex-grow: .72;
+}
+.account-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 21px;
+}
+.account-card-heading h3,
+.account-session h3 {
+  font-size: 20px;
+}
+.account-details {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+.account-details > div {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  margin: -8px 0 24px;
-  padding: 14px 17px;
-  border: 1px solid #ead49c;
-  border-radius: 14px;
-  background: #fff8e7;
-  color: #765d31;
+  gap: 20px;
+  min-height: 43px;
+  border-bottom: 1px solid var(--line);
 }
-.account-warning > div {
+.account-details dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.account-details dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: right;
+}
+.account-details code {
+  color: var(--green);
+  font-size: 12px;
+}
+.account-note {
+  margin: 18px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.security-card {
   display: flex;
   flex-direction: column;
-  gap: 3px;
 }
-.account-warning span {
+.security-method {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 0;
+  border-top: 1px solid var(--line);
+}
+.security-method:nth-of-type(1) {
+  border-top: 0;
+}
+.security-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: #edf5f2;
+  color: var(--green);
+  font-weight: 900;
+}
+.security-copy {
+  flex: 1;
+  min-width: 0;
+}
+.security-copy > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+.security-copy span {
+  display: block;
+  color: var(--muted);
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.55;
 }
-.account-warning button {
+.security-method > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.recovery-reminder {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 14px 15px;
+  border-radius: 12px;
+  background: #fff8e7;
+  color: #765d31;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.account-session {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.account-session > button {
   flex: 0 0 auto;
 }
 .recovery-code {
@@ -1140,6 +1397,12 @@ textarea {
   .app > main {
     padding: 0 25px 42px;
   }
+  .account-panels {
+    flex-direction: column;
+  }
+  .account-panels > .account-card {
+    width: 100%;
+  }
   .overview-lower {
     flex-direction: column;
   }
@@ -1163,6 +1426,7 @@ textarea {
     z-index: 5;
     top: 0;
     display: flex;
+    flex-direction: row;
     align-items: center;
     height: 64px;
     padding: 8px 12px;
@@ -1173,14 +1437,15 @@ textarea {
   .sidebar nav {
     display: flex;
     flex: 1;
+    flex-direction: row;
+    gap: 3px;
     justify-content: flex-end;
   }
   .sidebar nav button {
-    display: none;
-  }
-  .sidebar nav .nav-active {
     display: flex;
-    width: 40px;
+    flex: 0 0 38px;
+    width: 38px;
+    padding: 9px;
   }
   .profile {
     display: none;
@@ -1193,6 +1458,34 @@ textarea {
   }
   .app > main > header h1 {
     font-size: 23px;
+  }
+  .account-hero {
+    flex-wrap: wrap;
+    padding: 20px;
+  }
+  .account-avatar {
+    flex-basis: 52px;
+    height: 52px;
+    border-radius: 16px;
+    font-size: 23px;
+  }
+  .account-hero-copy {
+    min-width: calc(100% - 70px);
+  }
+  .account-card {
+    padding: 20px;
+  }
+  .security-method {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .security-method > button {
+    width: calc(100% - 52px);
+    margin-left: 52px;
+  }
+  .account-session {
+    align-items: flex-start;
+    flex-direction: column;
   }
   .bell {
     display: none;

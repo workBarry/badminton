@@ -1,9 +1,16 @@
 "use client";
 
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
+import type {
+  AuthenticationResponseJSON,
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+  RegistrationResponseJSON,
+} from "@simplewebauthn/server";
 
 type Role = "admin" | "member";
-type Tab = "總覽" | "活動" | "公告" | "社員名單" | "費用管理";
+type Tab = "總覽" | "活動" | "公告" | "社員名單" | "費用管理" | "個人資訊";
 type ActivityManagerTab = "single" | "weekly" | "rest";
 type Person = { id: string; name: string; department?: string; role: Role; member: boolean };
 type Booking = { memberId: string; name: string; kind: "社員" | "非社員"; rank: "正取" | "候補"; transferred?: boolean };
@@ -17,8 +24,10 @@ type Viewer = {
   membershipStatus: string;
   accountType: "guest" | "recoverable" | "verified" | "unclaimed";
   hasRecoveryCode: boolean;
+  hasPasskey: boolean;
 };
 type ActionResult = { recoveryCode?: string; claimCode?: string; recipientName?: string };
+type DeviceAccount = { id: string; name: string; role: "ADMIN" | "MEMBER"; membershipStatus: string };
 type ClubEvent = {
   id: string;
   startsAt?: string;
@@ -38,6 +47,7 @@ type ApiState = {
   events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; bookings: { memberId: string; name: string; kind: string; status: string }[] }[];
   announcements: { title: string; content: string; publishedAt: string; linkUrl?: string }[];
   invoices: Invoice[];
+  quickAccounts: DeviceAccount[];
   actionResult?: ActionResult;
 };
 
@@ -123,6 +133,9 @@ export default function Home() {
   const [sessionReady, setSessionReady] = useState(false);
   const [input, setInput] = useState("");
   const [authSaving, setAuthSaving] = useState(false);
+  const [passkeySaving, setPasskeySaving] = useState(false);
+  const [recoverySaving, setRecoverySaving] = useState(false);
+  const [quickAccounts, setQuickAccounts] = useState<DeviceAccount[]>([]);
   const [codeNotice, setCodeNotice] = useState<{ title: string; body: string; code: string } | null>(null);
   const [tab, setTab] = useState<Tab>("總覽");
   const [events, setEvents] = useState<ClubEvent[]>(eventsSeed);
@@ -157,6 +170,7 @@ export default function Home() {
 
   const applyState = useCallback((state: ApiState) => {
     setViewer(state.viewer);
+    setQuickAccounts(state.quickAccounts ?? []);
     setMembers(state.members.map((member) => ({ id: member.id, name: member.name, department: member.department, role: member.role === "ADMIN" ? "admin" : "member", member: member.membershipStatus === "MEMBER" })));
     setEvents(state.events.map((item) => {
       const startsAt = new Date(item.starts_at);
@@ -199,6 +213,17 @@ export default function Home() {
     return payload;
   };
 
+  const passkeyRequest = async <T,>(action: string, response?: RegistrationResponseJSON | AuthenticationResponseJSON) => {
+    const request = await fetch("/api/passkey", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ...(response ? { response } : {}) }),
+    });
+    const payload = await request.json() as T & { error?: string };
+    if (!request.ok) throw new Error(payload.error ?? "Passkey 操作失敗");
+    return payload;
+  };
+
   const user = useMemo<Person>(
     () => viewer
       ? { id: viewer.id, name: viewer.name, department: viewer.department ?? undefined, role: viewer.role === "ADMIN" ? "admin" : "member", member: viewer.membershipStatus === "MEMBER" }
@@ -230,11 +255,76 @@ export default function Home() {
       setAuthSaving(false);
     }
   };
+  const quickLogin = async (userId: string) => {
+    setAuthSaving(true);
+    try {
+      await execute("quickLogin", { userId });
+    } finally {
+      setAuthSaving(false);
+    }
+  };
+  const loginWithPasskey = async () => {
+    if (typeof PublicKeyCredential === "undefined") {
+      window.alert("這個瀏覽器或裝置不支援 Passkey");
+      return;
+    }
+    setPasskeySaving(true);
+    try {
+      const start = await passkeyRequest<{ options: PublicKeyCredentialRequestOptionsJSON }>("authenticationOptions");
+      const credential = await startAuthentication({ optionsJSON: start.options });
+      const state = await passkeyRequest<ApiState>("verifyAuthentication", credential);
+      applyState(state);
+    } catch (error) {
+      window.alert(error instanceof Error && error.name === "NotAllowedError" ? "已取消 Passkey 登入" : error instanceof Error ? error.message : "Passkey 登入失敗");
+    } finally {
+      setPasskeySaving(false);
+    }
+  };
+  const registerPasskey = async () => {
+    if (typeof PublicKeyCredential === "undefined") {
+      window.alert("這個瀏覽器或裝置不支援 Passkey");
+      return;
+    }
+    setPasskeySaving(true);
+    try {
+      const start = await passkeyRequest<{ options: PublicKeyCredentialCreationOptionsJSON }>("registrationOptions");
+      const credential = await startRegistration({ optionsJSON: start.options });
+      const state = await passkeyRequest<ApiState>("verifyRegistration", credential);
+      applyState(state);
+      window.alert("Passkey 已建立，之後可在其他支援的裝置快速登入");
+    } catch (error) {
+      window.alert(error instanceof Error && error.name === "NotAllowedError" ? "已取消建立 Passkey" : error instanceof Error ? error.message : "建立 Passkey 失敗");
+    } finally {
+      setPasskeySaving(false);
+    }
+  };
   const logout = async () => { await execute("logout", {}); setTab("總覽"); };
-  const makeRecoveryCode = async () => {
-    const payload = await execute("createRecoveryCode", {});
-    if (payload?.actionResult?.recoveryCode) {
-      setCodeNotice({ title: "請保存你的復原碼", body: "這組碼只會顯示一次。清除瀏覽器資料或更換裝置時，可用姓名與此碼取回帳號。", code: payload.actionResult.recoveryCode });
+  const makeRecoveryCode = async (replaceExisting: boolean) => {
+    if (replaceExisting && !window.confirm("重新產生後，原本的復原碼會立即失效。確定要繼續嗎？")) return;
+    setRecoverySaving(true);
+    try {
+      const payload = await execute("createRecoveryCode", {});
+      if (payload?.actionResult?.recoveryCode) {
+        setCodeNotice({
+          title: replaceExisting ? "請保存新的復原碼" : "請保存你的復原碼",
+          body: replaceExisting
+            ? "原本的復原碼已失效。這組新碼只會顯示一次，請立即複製並放在安全的地方。"
+            : "這組碼只會顯示一次。清除瀏覽器資料或更換裝置時，可用姓名與此碼取回帳號。",
+          code: payload.actionResult.recoveryCode,
+        });
+      }
+    } finally {
+      setRecoverySaving(false);
+    }
+  };
+  const issueClaimCode = async (person: Person) => {
+    const payload = await execute("issueClaimCode", { memberId: person.id });
+    if (payload?.actionResult?.claimCode) {
+      setCodeNotice({
+        title: `請將認領碼交給${person.name}`,
+        body: "使用者可在登入頁選擇「取回既有帳號」，輸入姓名與此碼。代碼只會顯示一次，請透過可信任的方式交付。",
+        code: payload.actionResult.claimCode,
+      });
     }
   };
   const join = (eventId: string) => { if (viewer) void execute("join", { eventId }); };
@@ -347,7 +437,7 @@ export default function Home() {
   };
 
   if (!sessionReady) return <main className="login"><section className="session-loading"><div className="login-logo">羽</div><h1>正在確認此裝置…</h1><span>請稍候，系統正在安全地恢復登入狀態。</span></section></main>;
-  if (!viewer) return <Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} saving={authSaving} />;
+  if (!viewer) return <Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} passkeyLogin={loginWithPasskey} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving || passkeySaving} />;
   const isAdmin = user.role === "admin";
   return (
     <div className="app">
@@ -360,9 +450,9 @@ export default function Home() {
           </span>
         </div>
         <nav>
-          {(["總覽", "活動", "公告", "社員名單", "費用管理"] as Tab[]).map((item, index) => (
+          {(["總覽", "活動", "公告", "社員名單", "費用管理", "個人資訊"] as Tab[]).map((item, index) => (
             <button key={item} className={tab === item ? "nav-active" : ""} onClick={() => setTab(item)}>
-              <i>{["⌂", "◷", "✦", "♙", "◫"][index]}</i>
+              <i>{["⌂", "◷", "✦", "♙", "◫", "●"][index]}</i>
               {item}
             </button>
           ))}
@@ -388,7 +478,7 @@ export default function Home() {
             <button className="bell">
               🔔<em>2</em>
             </button>
-            {isAdmin && (
+            {isAdmin && (tab === "活動" || tab === "公告") && (
               <button
                 className="primary small"
                 onClick={() => {
@@ -406,15 +496,6 @@ export default function Home() {
             )}
           </div>
         </header>
-        {!viewer.hasRecoveryCode && (
-          <section className="account-warning">
-            <div>
-              <strong>此帳號目前只存在這台裝置</strong>
-              <span>清除網站資料、使用無痕模式或更換裝置後，可能無法取回報名與付款紀錄。</span>
-            </div>
-            <button className="secondary" onClick={() => void makeRecoveryCode()}>建立復原碼</button>
-          </section>
-        )}
         {tab === "總覽" && (
           <Overview
             event={event}
@@ -442,8 +523,19 @@ export default function Home() {
           />
         )}
         {tab === "公告" && <News news={news} />}
-      {tab === "社員名單" && <Members members={members} />}
+        {tab === "社員名單" && <Members members={members} admin={isAdmin} issueClaimCode={issueClaimCode} />}
         {tab === "費用管理" && <Billing admin={isAdmin} member={user.member} />}
+        {tab === "個人資訊" && (
+          <AccountProfile
+            viewer={viewer}
+            user={user}
+            recoverySaving={recoverySaving}
+            passkeySaving={passkeySaving}
+            createRecoveryCode={() => void makeRecoveryCode(viewer.hasRecoveryCode)}
+            registerPasskey={() => void registerPasskey()}
+            logout={() => void logout()}
+          />
+        )}
       </main>
       {transfer && (
         <div className="modal-cover">
@@ -677,12 +769,18 @@ function Login({
   setInput,
   createGuest,
   recover,
+  passkeyLogin,
+  quickAccounts,
+  quickLogin,
   saving,
 }: {
   input: string;
   setInput: (value: string) => void;
   createGuest: (name: string) => void;
   recover: (name: string, code: string) => void;
+  passkeyLogin: () => void;
+  quickAccounts: DeviceAccount[];
+  quickLogin: (userId: string) => void;
   saving: boolean;
 }) {
   const [mode, setMode] = useState<"new" | "recover">("new");
@@ -694,6 +792,25 @@ function Login({
         <p>COMPANY BADMINTON CLUB</p>
         <h1>下班，一起上場。</h1>
         <span>{mode === "new" ? "第一次使用只需輸入顯示名稱，系統會為這台裝置建立一個新的訪客帳號。" : "輸入原帳號姓名與認領碼或復原碼，即可在這台裝置取回帳號。"}</span>
+        {quickAccounts.length > 0 && (
+          <aside className="quick-accounts">
+            <strong>這台裝置的快速登入</strong>
+            <div>
+              {quickAccounts.map((account) => (
+                <button type="button" key={account.id} disabled={saving} onClick={() => quickLogin(account.id)}>
+                  <i>{account.name.slice(0, 1)}</i>
+                  <span>
+                    <b>{account.name}</b>
+                    <small>{account.role === "ADMIN" ? "幹部" : account.membershipStatus === "MEMBER" ? "社員" : "非社員"} · {account.id.slice(0, 6)}</small>
+                  </span>
+                  <em>登入</em>
+                </button>
+              ))}
+            </div>
+            <small>共享裝置上的其他人也能使用快速登入；共用電腦請使用獨立瀏覽器設定檔。</small>
+          </aside>
+        )}
+        {quickAccounts.length > 0 && <div className="login-divider"><span>使用其他帳號</span></div>}
         <div className="login-tabs" role="tablist" aria-label="登入方式">
           <button type="button" role="tab" aria-selected={mode === "new"} className={mode === "new" ? "active" : ""} onClick={() => setMode("new")}>第一次使用</button>
           <button type="button" role="tab" aria-selected={mode === "recover"} className={mode === "recover" ? "active" : ""} onClick={() => setMode("recover")}>取回既有帳號</button>
@@ -715,6 +832,11 @@ function Login({
           )}
           <button className="primary" disabled={saving}>{saving ? "處理中…" : mode === "new" ? "建立這台裝置的帳號" : "取回帳號"}</button>
         </form>
+        <div className="login-divider"><span>或</span></div>
+        <button type="button" className="passkey-button" disabled={saving} onClick={passkeyLogin}>
+          <strong>使用 Passkey 登入</strong>
+          <span>Windows Hello、Face ID 或裝置 PIN</span>
+        </button>
         <aside className="notice">
           <strong>測試版帳號提醒</strong>
           <span>相同姓名也會建立成不同帳號。未建立復原碼前，清除瀏覽器資料或更換裝置可能導致帳號無法取回。</span>
@@ -742,6 +864,121 @@ function CodeNotice({ notice, onClose }: { notice: { title: string; body: string
         </div>
       </section>
     </div>
+  );
+}
+
+function AccountProfile({
+  viewer,
+  user,
+  recoverySaving,
+  passkeySaving,
+  createRecoveryCode,
+  registerPasskey,
+  logout,
+}: {
+  viewer: Viewer;
+  user: Person;
+  recoverySaving: boolean;
+  passkeySaving: boolean;
+  createRecoveryCode: () => void;
+  registerPasskey: () => void;
+  logout: () => void;
+}) {
+  const accountTypeLabels: Record<Viewer["accountType"], string> = {
+    guest: "裝置訪客帳號",
+    recoverable: "可復原訪客帳號",
+    verified: "已驗證帳號",
+    unclaimed: "待認領帳號",
+  };
+  const securityLabel = viewer.hasPasskey ? "Passkey 已啟用" : viewer.hasRecoveryCode ? "可使用復原碼" : "僅限此裝置";
+  const shortId = viewer.id.length > 16 ? `${viewer.id.slice(0, 8)}…${viewer.id.slice(-4)}` : viewer.id;
+
+  return (
+    <section className="account-page">
+      <article className="account-hero">
+        <div className="account-avatar" aria-hidden="true">{user.name.slice(0, 1)}</div>
+        <div className="account-hero-copy">
+          <p>MY PROFILE</p>
+          <h2>{user.name}</h2>
+          <span>{user.department || "尚未設定部門"} · {user.role === "admin" ? "幹部管理者" : user.member ? "社員" : "非社員"}</span>
+        </div>
+        <Badge tone={viewer.hasPasskey || viewer.hasRecoveryCode ? "green" : "orange"}>{securityLabel}</Badge>
+      </article>
+
+      <div className="account-panels">
+        <section className="account-card identity-card">
+          <div className="account-card-heading">
+            <div>
+              <p>基本資料</p>
+              <h3>帳號資訊</h3>
+            </div>
+            <Badge tone="gray">唯讀</Badge>
+          </div>
+          <dl className="account-details">
+            <div><dt>顯示名稱</dt><dd>{user.name}</dd></div>
+            <div><dt>部門</dt><dd>{user.department || "未填寫"}</dd></div>
+            <div><dt>社員身分</dt><dd>{user.member ? "社員" : "非社員"}</dd></div>
+            <div><dt>系統角色</dt><dd>{user.role === "admin" ? "幹部管理者" : "一般使用者"}</dd></div>
+            <div><dt>帳號類型</dt><dd>{accountTypeLabels[viewer.accountType]}</dd></div>
+            <div><dt>帳號識別碼</dt><dd><code title={viewer.id}>{shortId}</code></dd></div>
+          </dl>
+          <p className="account-note">姓名、部門及社員身分目前由幹部管理，如需變更請聯絡社團幹部。</p>
+        </section>
+
+        <section className="account-card security-card">
+          <div className="account-card-heading">
+            <div>
+              <p>帳號安全</p>
+              <h3>登入與復原方式</h3>
+            </div>
+          </div>
+
+          <article className="security-method">
+            <div className="security-icon" aria-hidden="true">#</div>
+            <div className="security-copy">
+              <div><strong>復原碼</strong><Badge tone={viewer.hasRecoveryCode ? "green" : "orange"}>{viewer.hasRecoveryCode ? "已設定" : "尚未設定"}</Badge></div>
+              <span>{viewer.hasRecoveryCode ? "系統只保存不可逆的驗證資料，因此無法再次顯示原本的復原碼。" : "換裝置或清除網站資料時，可用姓名與復原碼取回帳號。"}</span>
+            </div>
+            <button className="secondary" disabled={recoverySaving} onClick={createRecoveryCode}>
+              {recoverySaving ? "產生中…" : viewer.hasRecoveryCode ? "重新產生復原碼" : "建立復原碼"}
+            </button>
+          </article>
+
+          <article className="security-method">
+            <div className="security-icon" aria-hidden="true">✓</div>
+            <div className="security-copy">
+              <div><strong>Passkey</strong><Badge tone={viewer.hasPasskey ? "green" : "gray"}>{viewer.hasPasskey ? "已啟用" : "未設定"}</Badge></div>
+              <span>使用 Windows Hello、Face ID 或裝置 PIN 登入，不需要輸入復原碼。</span>
+            </div>
+            <button className={viewer.hasPasskey ? "secondary" : "primary small"} disabled={passkeySaving} onClick={registerPasskey}>
+              {passkeySaving ? "處理中…" : viewer.hasPasskey ? "新增另一個 Passkey" : "建立 Passkey"}
+            </button>
+          </article>
+
+          <article className="security-method">
+            <div className="security-icon" aria-hidden="true">◇</div>
+            <div className="security-copy">
+              <div><strong>此裝置快速登入</strong><Badge tone="blue">已記住</Badge></div>
+              <span>登出後仍可在這台裝置的登入頁選擇此帳號；清除網站資料後會失效。</span>
+            </div>
+          </article>
+
+          <aside className="recovery-reminder">
+            <strong>重新產生前請注意</strong>
+            <span>建立新復原碼後，舊碼會立即失效；新碼也只顯示一次，請當下複製保存。</span>
+          </aside>
+        </section>
+      </div>
+
+      <section className="account-card account-session">
+        <div>
+          <p>目前工作階段</p>
+          <h3>要離開這個帳號嗎？</h3>
+          <span>登出不會刪除這台裝置保存的快速登入帳號，也不會刪除雲端資料。</span>
+        </div>
+        <button className="secondary" onClick={logout}>登出</button>
+      </section>
+    </section>
   );
 }
 
@@ -1088,7 +1325,7 @@ function News({ news }: { news: NewsItem[] }) {
     </div>
   );
 }
-function Members({ members }: { members: Person[] }) {
+function Members({ members, admin, issueClaimCode }: { members: Person[]; admin: boolean; issueClaimCode: (person: Person) => void }) {
   return (
     <section className="table">
       <header>
@@ -1102,7 +1339,7 @@ function Members({ members }: { members: Person[] }) {
         <span>姓名</span>
         <span>部門</span>
         <span>身分</span>
-        <span>本週狀態</span>
+        <span>{admin ? "帳號恢復" : "本週狀態"}</span>
       </div>
       {members.map((person) => (
         <div className="row" key={person.id}>
@@ -1114,7 +1351,7 @@ function Members({ members }: { members: Person[] }) {
           <span>
             <Badge tone={person.member ? "green" : "gray"}>{person.member ? "社員" : "非社員"}</Badge>
           </span>
-          <span>{person.member ? "已確認" : "—"}</span>
+          <span>{admin ? <button type="button" className="link claim-button" onClick={() => issueClaimCode(person)}>產生認領碼</button> : person.member ? "已確認" : "—"}</span>
         </div>
       ))}
     </section>

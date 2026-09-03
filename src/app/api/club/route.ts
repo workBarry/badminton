@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  activateDeviceAccount,
   createGuestDeviceAccount,
   createRecoveryCode,
+  deactivateDeviceToken,
   DEVICE_COOKIE,
   DEVICE_SESSION_MAX_AGE,
+  deviceAccountsForToken,
   loginWithRecoveryOrClaimCode,
-  revokeDeviceToken,
+  type Viewer,
   viewerForDeviceToken,
 } from "@/lib/device-auth";
 import { mutate, readState } from "@/lib/firestore-database";
@@ -30,9 +33,15 @@ function assertSameOrigin(request: NextRequest) {
   if (origin && origin !== request.nextUrl.origin) throw new Error("不允許跨網站送出操作");
 }
 
+async function stateForDevice(token: string | null | undefined, viewer: Viewer | null) {
+  const [state, quickAccounts] = await Promise.all([readState(viewer), deviceAccountsForToken(token)]);
+  return { ...state, quickAccounts };
+}
+
 export async function GET(request: NextRequest) {
-  const viewer = await viewerForDeviceToken(request.cookies.get(DEVICE_COOKIE)?.value);
-  return NextResponse.json(await readState(viewer));
+  const token = request.cookies.get(DEVICE_COOKIE)?.value;
+  const viewer = await viewerForDeviceToken(token);
+  return NextResponse.json(await stateForDevice(token, viewer));
 }
 
 export async function POST(request: NextRequest) {
@@ -44,23 +53,28 @@ export async function POST(request: NextRequest) {
     const viewer = await viewerForDeviceToken(currentToken);
 
     if (body.action === "createGuest") {
-      const account = await createGuestDeviceAccount(body.name ?? "");
-      const response = NextResponse.json(await readState(account.viewer));
+      const account = await createGuestDeviceAccount(body.name ?? "", currentToken);
+      const response = NextResponse.json(await stateForDevice(account.token, account.viewer));
       response.cookies.set(sessionCookie(account.token));
       return response;
     }
 
     if (body.action === "recover") {
-      const account = await loginWithRecoveryOrClaimCode(body.name ?? "", body.code ?? "");
-      const response = NextResponse.json({ ...(await readState(account.viewer)), actionResult: { recoveryCode: account.recoveryCode } });
+      const account = await loginWithRecoveryOrClaimCode(body.name ?? "", body.code ?? "", currentToken);
+      const response = NextResponse.json({ ...(await stateForDevice(account.token, account.viewer)), actionResult: { recoveryCode: account.recoveryCode } });
       response.cookies.set(sessionCookie(account.token));
       return response;
     }
 
     if (body.action === "logout") {
-      await revokeDeviceToken(currentToken);
-      const response = NextResponse.json(await readState(null));
-      response.cookies.set({ ...sessionCookie(""), maxAge: 0 });
+      await deactivateDeviceToken(currentToken);
+      return NextResponse.json(await stateForDevice(currentToken, null));
+    }
+
+    if (body.action === "quickLogin") {
+      const quickViewer = await activateDeviceAccount(currentToken, body.userId ?? "");
+      const response = NextResponse.json(await stateForDevice(currentToken, quickViewer));
+      if (currentToken) response.cookies.set(sessionCookie(currentToken));
       return response;
     }
 
@@ -69,11 +83,11 @@ export async function POST(request: NextRequest) {
     if (body.action === "createRecoveryCode") {
       const recoveryCode = await createRecoveryCode(viewer.id);
       const refreshedViewer = await viewerForDeviceToken(currentToken);
-      return NextResponse.json({ ...(await readState(refreshedViewer)), actionResult: { recoveryCode } });
+      return NextResponse.json({ ...(await stateForDevice(currentToken, refreshedViewer)), actionResult: { recoveryCode } });
     }
 
     const actionResult = await mutate(body.action, body, viewer);
-    return NextResponse.json({ ...(await readState(viewer)), ...(actionResult ? { actionResult } : {}) });
+    return NextResponse.json({ ...(await stateForDevice(currentToken, viewer)), ...(actionResult ? { actionResult } : {}) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "資料庫操作失敗" }, { status: 400 });
   }

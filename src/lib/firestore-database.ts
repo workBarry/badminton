@@ -572,6 +572,22 @@ async function reportPayment(invoiceId: string, actor: Viewer) {
   await invoiceRef.update({ status: "REPORTED", reportedAt: new Date(), updatedAt: new Date() });
 }
 
+async function issueClaimCode(memberId: string) {
+  if (!memberId) throw new Error("缺少使用者識別碼");
+  const db = getAdminFirestore();
+  const memberRef = db.collection("members").doc(memberId);
+  const member = await memberRef.get();
+  if (!member.exists) throw new Error("找不到使用者");
+  const claim = createClaimCodeRecord();
+  await memberRef.update({
+    claimCodeSalt: claim.salt,
+    claimCodeHash: claim.hash,
+    claimCodeCreatedAt: new Date(),
+    updatedAt: new Date(),
+  });
+  return { claimCode: claim.code, recipientName: String(member.data()?.displayName ?? "使用者") };
+}
+
 export async function mutate(action: string, input: Record<string, string>, actor: Viewer) {
   if (action === "join") return join(input, actor);
   if (action === "cancel") return cancel(input, actor);
@@ -579,6 +595,7 @@ export async function mutate(action: string, input: Record<string, string>, acto
   if (action === "reportPayment") return reportPayment(input.invoiceId, actor);
 
   if (actor.role !== "ADMIN") throw new Error("只有幹部可以執行這項操作");
+  if (action === "issueClaimCode") return issueClaimCode(input.memberId);
   if (action === "publish") return publish(input);
   if (action === "createEvent") return createEvent(input);
   if (action === "updateEvent") return updateEvent(input);

@@ -13,7 +13,10 @@ export type Viewer = {
   membershipStatus: string;
   accountType: "guest" | "recoverable" | "verified" | "unclaimed";
   hasRecoveryCode: boolean;
+  hasPasskey: boolean;
 };
+
+export type DeviceAccount = Pick<Viewer, "id" | "name" | "role" | "membershipStatus">;
 
 function secretHash(secret: string) {
   return createHash("sha256").update(secret).digest("hex");
@@ -58,6 +61,7 @@ function viewerFromMember(id: string, member: FirebaseFirestore.DocumentData): V
       ? member.accountType as Viewer["accountType"]
       : "unclaimed",
     hasRecoveryCode: Boolean(member.recoveryCodeHash),
+    hasPasskey: Number(member.passkeyCount ?? 0) > 0,
   };
 }
 
@@ -69,11 +73,33 @@ function newDeviceCredential(userId: string) {
   return {
     token: `${credentialId}.${secret}`,
     ref: getAdminFirestore().collection("deviceCredentials").doc(credentialId),
-    data: { userId, secretHash: secretHash(secret), createdAt: now, expiresAt, revokedAt: null },
+    data: {
+      userId,
+      accountIds: [userId],
+      activeUserId: userId,
+      secretHash: secretHash(secret),
+      createdAt: now,
+      lastUsedAt: now,
+      expiresAt,
+      revokedAt: null,
+    },
   };
 }
 
-export async function viewerForDeviceToken(token?: string | null) {
+function rememberedAccountIds(data: FirebaseFirestore.DocumentData) {
+  const ids = Array.isArray(data.accountIds) ? data.accountIds.map(String) : [];
+  if (data.userId) ids.push(String(data.userId));
+  return [...new Set(ids)].slice(0, 8);
+}
+
+function activeAccountId(data: FirebaseFirestore.DocumentData) {
+  if (Object.prototype.hasOwnProperty.call(data, "activeUserId")) {
+    return data.activeUserId ? String(data.activeUserId) : null;
+  }
+  return data.userId ? String(data.userId) : null;
+}
+
+async function credentialForToken(token?: string | null) {
   if (!token) return null;
   const [credentialId, secret, extra] = token.split(".");
   if (!credentialId || !secret || extra) return null;
@@ -85,19 +111,87 @@ export async function viewerForDeviceToken(token?: string | null) {
   if (data.revokedAt || !expiresAt || expiresAt <= new Date()) return null;
   const expectedHash = String(data.secretHash ?? "");
   if (!secureHexEqual(secretHash(secret), expectedHash)) return null;
-  const member = await db.collection("members").doc(String(data.userId)).get();
+  return { token, ref: credential.ref, data };
+}
+
+async function credentialForUser(userId: string, existingToken?: string | null) {
+  const existing = await credentialForToken(existingToken);
+  const now = new Date();
+  if (!existing) return { ...newDeviceCredential(userId), create: true };
+  const accountIds = rememberedAccountIds(existing.data);
+  if (!accountIds.includes(userId) && accountIds.length >= 8) throw new Error("這台裝置記住的帳號已達 8 個，請先使用其他瀏覽器設定檔");
+  return {
+    token: existing.token,
+    ref: existing.ref,
+    create: false,
+    data: {
+      accountIds: FieldValue.arrayUnion(...accountIds, userId),
+      activeUserId: userId,
+      lastUsedAt: now,
+      expiresAt: new Date(now.getTime() + DEVICE_SESSION_MAX_AGE * 1000),
+    },
+  };
+}
+
+export async function viewerForDeviceToken(token?: string | null) {
+  const credential = await credentialForToken(token);
+  if (!credential) return null;
+  const userId = activeAccountId(credential.data);
+  if (!userId) return null;
+  const member = await getAdminFirestore().collection("members").doc(userId).get();
   if (!member.exists) return null;
   return viewerFromMember(member.id, member.data()!);
 }
 
-export async function createGuestDeviceAccount(displayName: string) {
+export async function deviceAccountsForToken(token?: string | null): Promise<DeviceAccount[]> {
+  const credential = await credentialForToken(token);
+  if (!credential) return [];
+  const db = getAdminFirestore();
+  const references = rememberedAccountIds(credential.data).map((id) => db.collection("members").doc(id));
+  if (references.length === 0) return [];
+  const members = await db.getAll(...references);
+  return members
+    .filter((member) => member.exists)
+    .map((member) => {
+      const viewer = viewerFromMember(member.id, member.data()!);
+      return { id: viewer.id, name: viewer.name, role: viewer.role, membershipStatus: viewer.membershipStatus };
+    });
+}
+
+export async function activateDeviceAccount(token: string | null | undefined, userId: string) {
+  const credential = await credentialForToken(token);
+  if (!credential || !rememberedAccountIds(credential.data).includes(userId)) throw new Error("這台裝置沒有記住此帳號");
+  const db = getAdminFirestore();
+  const member = await db.collection("members").doc(userId).get();
+  if (!member.exists) throw new Error("找不到使用者");
+  const now = new Date();
+  await credential.ref.update({
+    accountIds: rememberedAccountIds(credential.data),
+    activeUserId: userId,
+    lastUsedAt: now,
+    expiresAt: new Date(now.getTime() + DEVICE_SESSION_MAX_AGE * 1000),
+  });
+  return viewerFromMember(member.id, member.data()!);
+}
+
+export async function deactivateDeviceToken(token?: string | null) {
+  const credential = await credentialForToken(token);
+  if (!credential) return;
+  await credential.ref.update({
+    accountIds: rememberedAccountIds(credential.data),
+    activeUserId: null,
+    loggedOutAt: new Date(),
+  });
+}
+
+export async function createGuestDeviceAccount(displayName: string, existingToken?: string | null) {
   const name = displayName.trim();
   if (!name) throw new Error("請輸入使用者名稱");
   if (name.length > 40) throw new Error("使用者名稱不能超過 40 個字元");
   const db = getAdminFirestore();
   const userId = randomUUID();
   const memberRef = db.collection("members").doc(userId);
-  const credential = newDeviceCredential(userId);
+  const credential = await credentialForUser(userId, existingToken);
   const now = new Date();
   const batch = db.batch();
   batch.create(memberRef, {
@@ -113,12 +207,13 @@ export async function createGuestDeviceAccount(displayName: string) {
     createdAt: now,
     updatedAt: now,
   });
-  batch.create(credential.ref, credential.data);
+  if (credential.create) batch.create(credential.ref, credential.data);
+  else batch.update(credential.ref, credential.data);
   await batch.commit();
   return { token: credential.token, viewer: viewerFromMember(userId, { displayName: name, role: "MEMBER", membershipStatus: "GUEST", accountType: "guest" }) };
 }
 
-export async function loginWithRecoveryOrClaimCode(displayName: string, code: string) {
+export async function loginWithRecoveryOrClaimCode(displayName: string, code: string, existingToken?: string | null) {
   const name = displayName.trim();
   const cleanCode = normalizedCode(code);
   if (!name || cleanCode.length !== 16) throw new Error("姓名或認領／復原碼不正確");
@@ -140,9 +235,10 @@ export async function loginWithRecoveryOrClaimCode(displayName: string, code: st
 
   const nextRecoveryCode = recoveryCode();
   const recoverySalt = randomBytes(16).toString("hex");
-  const credential = newDeviceCredential(matched.id);
+  const credential = await credentialForUser(matched.id, existingToken);
   const batch = db.batch();
-  batch.create(credential.ref, credential.data);
+  if (credential.create) batch.create(credential.ref, credential.data);
+  else batch.update(credential.ref, credential.data);
   batch.update(matched.ref, {
     accountType: "recoverable",
     recoveryCodeSalt: recoverySalt,
@@ -175,9 +271,18 @@ export async function createRecoveryCode(userId: string) {
   return code;
 }
 
+export async function createDeviceSessionForUser(userId: string, existingToken?: string | null) {
+  const db = getAdminFirestore();
+  const member = await db.collection("members").doc(userId).get();
+  if (!member.exists) throw new Error("找不到使用者");
+  const credential = await credentialForUser(userId, existingToken);
+  if (credential.create) await credential.ref.create(credential.data);
+  else await credential.ref.update(credential.data);
+  return { token: credential.token, viewer: viewerFromMember(member.id, member.data()!) };
+}
+
 export async function revokeDeviceToken(token?: string | null) {
-  if (!token) return;
-  const [credentialId] = token.split(".");
-  if (!credentialId) return;
-  await getAdminFirestore().collection("deviceCredentials").doc(credentialId).update({ revokedAt: new Date() }).catch(() => undefined);
+  const credential = await credentialForToken(token);
+  if (!credential) return;
+  await credential.ref.update({ revokedAt: new Date(), activeUserId: null });
 }
