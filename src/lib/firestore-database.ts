@@ -64,6 +64,118 @@ function memberAt(member: DocumentData, at: Date) {
   return member.membershipStatus === "EXITING" && Boolean(endingAt && endingAt >= at);
 }
 
+const MEMBER_DEFAULTS_VERSION = 1;
+
+function defaultMemberBooking(eventId: string, memberId: string, member: DocumentData, now: Date) {
+  return {
+    id: `${eventId}-${memberId}`,
+    eventId,
+    memberId,
+    displayNameSnapshot: String(member.displayName ?? "未知使用者"),
+    kindSnapshot: "MEMBER",
+    status: "REGULAR",
+    confirmedAt: now,
+    autoEnrolledAt: now,
+    attendanceSource: "MEMBER_DEFAULT",
+    cancelledAt: null,
+    updatedAt: now,
+  };
+}
+
+async function ensureMemberFutureBookings(memberId: string) {
+  const db = getAdminFirestore();
+  const now = new Date();
+  const [memberSnapshot, eventSnapshot] = await Promise.all([
+    db.collection("members").doc(memberId).get(),
+    db.collection("events").get(),
+  ]);
+  if (!memberSnapshot.exists) return;
+  const member = memberSnapshot.data()!;
+
+  for (const eventDocument of eventSnapshot.docs) {
+    const eventData = eventDocument.data();
+    const startsAt = dateValue(eventData.startsAt);
+    if (eventData.status !== "SCHEDULED" || !startsAt || startsAt <= now || !memberAt(member, startsAt)) continue;
+    const bookingRef = eventDocument.ref.collection("bookings").doc(memberId);
+    await db.runTransaction(async (transaction) => {
+      const [freshEvent, booking] = await transaction.getAll(eventDocument.ref, bookingRef);
+      if (!freshEvent.exists || freshEvent.data()?.status !== "SCHEDULED") return;
+      const freshStartsAt = dateValue(freshEvent.data()?.startsAt);
+      if (!freshStartsAt || freshStartsAt <= now || !memberAt(member, freshStartsAt)) return;
+      if (booking.exists) {
+        const status = String(booking.data()?.status ?? "");
+        if (status === "STANDBY") {
+          transaction.update(bookingRef, { kindSnapshot: "MEMBER", status: "REGULAR", promotedAt: now, updatedAt: now });
+          transaction.update(eventDocument.ref, {
+            regularCount: FieldValue.increment(1),
+            standbyCount: FieldValue.increment(-1),
+            updatedAt: now,
+          });
+        } else if (status === "REGULAR" && booking.data()?.kindSnapshot !== "MEMBER") {
+          transaction.update(bookingRef, { kindSnapshot: "MEMBER", updatedAt: now });
+        }
+        return;
+      }
+      transaction.create(bookingRef, defaultMemberBooking(eventDocument.id, memberId, member, now));
+      transaction.update(eventDocument.ref, { regularCount: FieldValue.increment(1), updatedAt: now });
+    });
+  }
+}
+
+async function backfillDefaultMemberBookings() {
+  const db = getAdminFirestore();
+  const now = new Date();
+  const eventSnapshot = await db.collection("events").get();
+  const events = eventSnapshot.docs.filter((document) => {
+    const event = document.data();
+    const startsAt = dateValue(event.startsAt);
+    return event.status === "SCHEDULED"
+      && Boolean(startsAt && startsAt > now)
+      && Number(event.memberDefaultsVersion ?? 0) < MEMBER_DEFAULTS_VERSION;
+  });
+  if (events.length === 0) return;
+  const memberSnapshot = await db.collection("members").get();
+
+  for (const eventDocument of events) {
+    await db.runTransaction(async (transaction) => {
+      const [freshEvent, bookings] = await Promise.all([
+        transaction.get(eventDocument.ref),
+        transaction.get(eventDocument.ref.collection("bookings")),
+      ]);
+      const event = freshEvent.data();
+      const startsAt = dateValue(event?.startsAt);
+      if (!freshEvent.exists || event?.status !== "SCHEDULED" || !startsAt || startsAt <= now) return;
+      if (Number(event.memberDefaultsVersion ?? 0) >= MEMBER_DEFAULTS_VERSION) return;
+
+      const bookingsByMember = new Map(bookings.docs.map((document) => [document.id, document]));
+      let addedRegular = 0;
+      let promotedFromStandby = 0;
+      for (const memberDocument of memberSnapshot.docs.filter((document) => memberAt(document.data(), startsAt))) {
+        const existing = bookingsByMember.get(memberDocument.id);
+        if (!existing) {
+          const bookingRef = eventDocument.ref.collection("bookings").doc(memberDocument.id);
+          transaction.create(bookingRef, defaultMemberBooking(eventDocument.id, memberDocument.id, memberDocument.data(), now));
+          addedRegular += 1;
+          continue;
+        }
+        const status = String(existing.data().status ?? "");
+        if (status === "STANDBY") {
+          transaction.update(existing.ref, { kindSnapshot: "MEMBER", status: "REGULAR", promotedAt: now, updatedAt: now });
+          promotedFromStandby += 1;
+        } else if (status === "REGULAR" && existing.data().kindSnapshot !== "MEMBER") {
+          transaction.update(existing.ref, { kindSnapshot: "MEMBER", updatedAt: now });
+        }
+      }
+      transaction.update(eventDocument.ref, {
+        regularCount: FieldValue.increment(addedRegular + promotedFromStandby),
+        standbyCount: FieldValue.increment(-promotedFromStandby),
+        memberDefaultsVersion: MEMBER_DEFAULTS_VERSION,
+        updatedAt: now,
+      });
+    });
+  }
+}
+
 function notificationData({
   title,
   message,
@@ -279,6 +391,7 @@ async function cancelEventInTransaction(
 }
 
 export async function readState(viewer: Viewer | null = null) {
+  if (viewer?.role === "ADMIN") await backfillDefaultMemberBookings();
   const db = getAdminFirestore();
   const isAdmin = viewer?.role === "ADMIN";
   const invoiceQuery = isAdmin
@@ -483,7 +596,13 @@ async function join(input: Record<string, string>, actor: Viewer) {
     const standbyCount = Number(event.standbyCount ?? 0);
     const regularCapacity = Number(event.regularCapacity ?? 10);
     const standbyCapacity = Number(event.standbyCapacity ?? 4);
-    const status = regularCount < regularCapacity ? "REGULAR" : standbyCount < standbyCapacity ? "STANDBY" : null;
+    const status = kind === "MEMBER"
+      ? "REGULAR"
+      : regularCount < regularCapacity
+        ? "REGULAR"
+        : standbyCount < standbyCapacity
+          ? "STANDBY"
+          : null;
     if (!status) throw new Error("本場正取與候補名額皆已額滿");
 
     transaction.set(bookingRef, {
@@ -494,6 +613,7 @@ async function join(input: Record<string, string>, actor: Viewer) {
       kindSnapshot: kind,
       status,
       confirmedAt: now,
+      attendanceSource: kind === "MEMBER" ? "MEMBER_REJOIN" : "SELF_REGISTERED",
       cancelledAt: null,
       updatedAt: now,
     }, { merge: true });
@@ -725,10 +845,12 @@ function validatedEventInput(input: Record<string, string>) {
 async function createEvent(input: Record<string, string>) {
   const values = validatedEventInput(input);
   const db = getAdminFirestore();
-  const [memberFeeSnapshot, guestFeeSnapshot] = await Promise.all([
+  const [memberFeeSnapshot, guestFeeSnapshot, memberSnapshot] = await Promise.all([
     activeFee(db, "MEMBER_VISIT", values.startsAt),
     activeFee(db, "GUEST_VISIT", values.startsAt),
+    db.collection("members").get(),
   ]);
+  const defaultMembers = memberSnapshot.docs.filter((document) => memberAt(document.data(), values.startsAt));
   const eventRef = db.collection("events").doc();
   const eventDateRef = db.collection("eventDates").doc(values.date);
   const notificationRef = input.notify === "false" ? null : db.collection("notifications").doc();
@@ -745,14 +867,21 @@ async function createEvent(input: Record<string, string>) {
       standbyCapacity: values.standbyCapacity,
       memberFeeSnapshot,
       guestFeeSnapshot,
-      regularCount: 0,
+      regularCount: defaultMembers.length,
       standbyCount: 0,
+      memberDefaultsVersion: MEMBER_DEFAULTS_VERSION,
       status: "SCHEDULED",
       createdAt: now,
       updatedAt: now,
     });
     transaction.create(eventDateRef, { eventId: eventRef.id, date: values.date, createdAt: now });
-    if (notificationRef) transaction.create(notificationRef, notificationData({ title: "新活動開放確認", message: `${values.date} ${values.courts}，可前往活動頁確認參加`, type: "EVENT", tab: "活動" }));
+    for (const memberDocument of defaultMembers) {
+      transaction.create(
+        eventRef.collection("bookings").doc(memberDocument.id),
+        defaultMemberBooking(eventRef.id, memberDocument.id, memberDocument.data(), now),
+      );
+    }
+    if (notificationRef) transaction.create(notificationRef, notificationData({ title: "新活動已排程", message: `${values.date} ${values.courts}；社員已預設正取，非社員可依剩餘名額報名`, type: "EVENT", tab: "活動" }));
   });
 }
 
@@ -776,8 +905,7 @@ async function updateEvent(input: Record<string, string>) {
 
     const regularCount = Number(event.regularCount ?? 0);
     const standbyCount = Number(event.standbyCount ?? 0);
-    if (values.regularCapacity < regularCount) throw new Error(`正取已有 ${regularCount} 人，容量不能調低於目前人數`);
-    const promoted = await promoteStandbyInTransaction(transaction, eventRef, event, values.regularCapacity - regularCount, now);
+    const promoted = await promoteStandbyInTransaction(transaction, eventRef, event, Math.max(0, values.regularCapacity - regularCount), now);
     const remainingStandby = standbyCount - promoted;
     if (values.standbyCapacity < remainingStandby) throw new Error(`調整後仍有 ${remainingStandby} 位候補，候補容量不能低於目前人數`);
 
@@ -874,7 +1002,7 @@ async function generateWeeklyEvents(input: Record<string, string>) {
   }
   if (createdCount > 0) {
     const notificationRef = db.collection("notifications").doc();
-    await notificationRef.set(notificationData({ title: "未來活動已開放確認", message: `新增 ${createdCount} 場週五活動，可前往活動頁查看`, type: "EVENT", tab: "活動" }));
+    await notificationRef.set(notificationData({ title: "未來活動已建立", message: `新增 ${createdCount} 場週五活動，社員已預設列為正取`, type: "EVENT", tab: "活動" }));
   }
   return { createdCount };
 }
@@ -1182,13 +1310,13 @@ async function reviewMembershipRequest(requestId: string, decision: string, acto
     const freshMember = snapshots[1];
     const lock = snapshots[2];
     const existingInvoice = invoiceRef ? snapshots[3] : null;
-    if (!freshRequest.exists || freshRequest.data()?.status !== "PENDING") return { amount: 0 };
+    if (!freshRequest.exists || freshRequest.data()?.status !== "PENDING") return { amount: 0, joined: false };
     if (!freshMember.exists) throw new Error("找不到申請人");
     if (decision === "REJECT") {
       transaction.update(requestRef, { status: "REJECTED", reviewedAt: now, reviewedBy: actor.id, updatedAt: now });
       if (lock.exists && lock.data()?.requestId === requestId) transaction.delete(lockRef);
       transaction.create(notificationRef, notificationData({ title: "社員申請結果", message: `你的${kind === "JOIN" ? "加入" : "退出"}社員申請未獲核准`, type: "MEMBERSHIP", tab: "個人資訊", recipientId: memberId }));
-      return { amount: 0 };
+      return { amount: 0, joined: false };
     }
 
     const member = freshMember.data()!;
@@ -1228,7 +1356,7 @@ async function reviewMembershipRequest(requestId: string, decision: string, acto
       transaction.update(requestRef, { status: "APPROVED", reviewedAt: now, reviewedBy: actor.id, proratedAmount: amount, updatedAt: now });
       if (lock.exists && lock.data()?.requestId === requestId) transaction.delete(lockRef);
       transaction.create(notificationRef, notificationData({ title: "已加入社員", message: amount > 0 ? `申請已核准，本期應付 NT$${amount}` : "申請已核准，社員身分已立即生效", type: "MEMBERSHIP", tab: amount > 0 ? "費用管理" : "個人資訊", recipientId: memberId }));
-      return { amount };
+      return { amount, joined: true };
     }
 
     const endingAt = periodDocument ? billingBoundary(String(period?.endDate), true) : now;
@@ -1240,8 +1368,9 @@ async function reviewMembershipRequest(requestId: string, decision: string, acto
     transaction.update(requestRef, { status: "APPROVED", reviewedAt: now, reviewedBy: actor.id, effectiveAt: endingAt, updatedAt: now });
     if (lock.exists && lock.data()?.requestId === requestId) transaction.delete(lockRef);
     transaction.create(notificationRef, notificationData({ title: "退出申請已核准", message: periodDocument ? `社員身分將維持至 ${String(period?.endDate)}` : "社員身分已結束", type: "MEMBERSHIP", tab: "個人資訊", recipientId: memberId }));
-    return { amount: 0, endingAt: endingAt.toISOString() };
+    return { amount: 0, endingAt: endingAt.toISOString(), joined: false };
   });
+  if (result.joined) await ensureMemberFutureBookings(memberId);
   return result;
 }
 
@@ -1325,6 +1454,7 @@ async function updateMember(input: Record<string, string>, actor: Viewer) {
       });
     }
   });
+  if (membershipStatus === "MEMBER") await ensureMemberFutureBookings(memberId);
 }
 
 async function issueClaimCode(memberId: string) {

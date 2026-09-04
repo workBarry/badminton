@@ -44,7 +44,8 @@ type ClubEvent = {
   courts: string;
   regular: number;
   wait: number;
-  booked: number;
+  regularBooked: number;
+  waitBooked: number;
   memberFee: number;
   guestFee: number;
   bookings: Booking[];
@@ -142,7 +143,7 @@ export default function Home() {
       const endsAt = new Date(item.ends_at);
       const date = `${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "numeric" })} ${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", day: "numeric" })}`;
       const time = `${startsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })} – ${endsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })}`;
-      return { id: item.id, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, booked: item.regular_count + item.standby_count, memberFee: item.member_fee, guestFee: item.guest_fee, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
+      return { id: item.id, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, regularBooked: item.regular_count, waitBooked: item.standby_count, memberFee: item.member_fee, guestFee: item.guest_fee, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
     }));
     setNews(state.announcements.map((item) => ({
       id: item.id,
@@ -777,9 +778,10 @@ export default function Home() {
               </div>
               <label>集合／活動場地<input name="courts" defaultValue={editingEvent.courts} required /></label>
               <div className="capacity-fields">
-                <label>正取可參加人數<input name="regular" type="number" min="1" defaultValue={editingEvent.regular} required /></label>
+                <label>正取基準人數<input name="regular" type="number" min="1" defaultValue={editingEvent.regular} required /></label>
                 <label>候補可參加人數<input name="standby" type="number" min="0" defaultValue={editingEvent.wait} required /></label>
               </div>
+              <p className="form-note">社員會自動列為正取並保證名額；社員超過基準人數時不會被排入候補。</p>
               <button className="primary" disabled={managerSaving}>{managerSaving ? "儲存中…" : "儲存變更"}</button>
             </form>
           </section>
@@ -862,7 +864,7 @@ function ActivityManagerModal({
             </label>
             <div className="capacity-fields">
               <label>
-                正取可參加人數
+                正取基準人數
                 <input name="regular" type="number" min="1" max="100" defaultValue="10" required />
               </label>
               <label>
@@ -870,7 +872,7 @@ function ActivityManagerModal({
                 <input name="standby" type="number" min="0" max="100" defaultValue="4" required />
               </label>
             </div>
-            <p className="form-note">候補名額也可到場，正取與候補都會依社員／非社員身分計費。</p>
+            <p className="form-note">有效社員建立場次時會自動列為正取並保證名額；非社員使用剩餘正取名額，滿額後才列入候補，候補仍可到場。</p>
             <button className="primary" disabled={saving}>{saving ? "建立中…" : "建立活動"}</button>
           </form>
         )}
@@ -902,7 +904,7 @@ function ActivityManagerModal({
             </label>
             <div className="capacity-fields">
               <label>
-                每場正取人數
+                每場正取基準人數
                 <input name="regular" type="number" min="1" max="100" defaultValue="10" required />
               </label>
               <label>
@@ -910,7 +912,7 @@ function ActivityManagerModal({
                 <input name="standby" type="number" min="0" max="100" defaultValue="4" required />
               </label>
             </div>
-            <p className="form-note">已存在的活動與休團日會自動略過，不會重複建立。</p>
+            <p className="form-note">已存在的活動與休團日會自動略過；每場都會先將有效社員預設列為正取。</p>
             <button className="primary" disabled={saving}>{saving ? "建立中…" : "建立未來場次"}</button>
           </form>
         )}
@@ -1179,7 +1181,7 @@ function Login({
                 <article key={event.id}>
                   <div><strong>{event.date}</strong><small>{event.weekday}</small></div>
                   <span><strong>{event.time}</strong><small>{event.courts}</small></span>
-                  <Badge tone="green">尚有 {Math.max(0, event.regular + event.wait - event.booked)} 位</Badge>
+                  <Badge tone="green">尚有 {Math.max(0, event.regular - event.regularBooked) + Math.max(0, event.wait - event.waitBooked)} 位</Badge>
                 </article>
               ))}
             </div>
@@ -1517,6 +1519,7 @@ function Overview({
 
   const regular = event.bookings.filter((entry) => entry.rank === "正取").length;
   const wait = event.bookings.filter((entry) => entry.rank === "候補").length;
+  const displayedRegularCapacity = Math.max(event.regular, regular);
   const regularRemaining = Math.max(0, event.regular - regular);
   const waitRemaining = Math.max(0, event.wait - wait);
   const dateParts = event.date.match(/(\d+)\s*月\s*(\d+)/);
@@ -1528,7 +1531,9 @@ function Overview({
         ? { label: "已回報轉帳", tone: "blue" }
         : { label: "待轉帳", tone: "orange" };
   const invoiceLabel = invoice?.type === "SINGLE_EVENT" ? "本次活動費" : "三個月社員費";
-  const capacityTitle = regularRemaining > 0
+  const capacityTitle = user.member && !booking
+    ? "社員仍保有正取名額"
+    : regularRemaining > 0
     ? `尚有 ${regularRemaining} 個正取名額`
     : waitRemaining > 0
       ? `正取已滿，候補尚有 ${waitRemaining} 位`
@@ -1558,7 +1563,7 @@ function Overview({
         <div className="attendance-summary" aria-label="本場參加人數">
           <div>
             <small>正取</small>
-            <strong>{regular}<span>／{event.regular}</span></strong>
+            <strong>{regular}<span>／{displayedRegularCapacity}</span></strong>
           </div>
           <div>
             <small>候補</small>
@@ -1579,15 +1584,15 @@ function Overview({
           <span>
             {booking
               ? booking.kind === "社員"
-                ? "本次費用已包含在三個月社員預收中。"
+                ? "社員已預設列為正取，本次費用包含在三個月社員預收中。"
                 : `非社員單次費 NT$${event.guestFee.toLocaleString("zh-TW")}，可到費用管理回報轉帳。`
               : user.member
-                ? "請確認是否參加；正取額滿後才會排入候補。"
+                ? "社員預設參加並保證正取名額；若曾取消，可以重新恢復參加。"
                 : "完成報名後會依剩餘名額列為正取或候補。"}
           </span>
           <div className="status-actions">
             {!booking ? (
-              <button className="primary" onClick={join}>{user.member ? "確認參加" : "我要報名"}</button>
+              <button className="primary" onClick={join}>{user.member ? "恢復參加" : "我要報名"}</button>
             ) : (
               <>
                 <button className="secondary" onClick={cancel}>取消參加</button>
@@ -1613,7 +1618,7 @@ function Overview({
             <div>
               <p>名額提醒</p>
               <h3>{capacityTitle}</h3>
-              <span>候補也可參加；正取取消時，社員候補會優先依確認時間遞補。</span>
+              <span>社員均預設正取且保證名額；非社員在正取額滿後才列入候補，候補仍可參加。</span>
             </div>
           </section>
         </div>
@@ -1768,6 +1773,7 @@ function Events({
         const entry = event.bookings.find((item) => item.memberId === viewerId);
         const regular = event.bookings.filter((item) => item.rank === "正取").length;
         const wait = event.bookings.filter((item) => item.rank === "候補").length;
+        const displayedRegularCapacity = Math.max(event.regular, regular);
         const dateParts = event.date.match(/(\d+)\s*月\s*(\d+)/);
         return (
           <article key={event.id} id={`event-${event.id}`}>
@@ -1781,7 +1787,7 @@ function Events({
                 {event.time} <Badge tone="blue">{event.courts}</Badge>
               </h3>
               <p>
-                正取 {regular}/{event.regular} · 候補 {wait}/{event.wait}（候補也可參加）
+                正取 {regular}/{displayedRegularCapacity} · 候補 {wait}/{event.wait}（社員保證正取，候補也可參加）
               </p>
               <div className="chips">
                 {event.bookings.slice(0, 5).map((item) => (
@@ -1807,7 +1813,7 @@ function Events({
                 </>
               ) : (
                 <button className="primary small" onClick={() => join(event.id)}>
-                  {user.member ? "確認參加" : "報名"}
+                  {user.member ? "恢復參加" : "報名"}
                 </button>
               )}
               {isAdmin && <button className="link" onClick={() => editEvent(event)}>編輯</button>}
