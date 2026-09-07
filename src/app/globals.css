@@ -1010,6 +1010,169 @@ select {
   font-size: 13px;
   line-height: 1.6;
 }
+.calendar-hint {
+  margin: 12px 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.activity-calendar .calendar-day {
+  min-height: 120px;
+}
+.calendar-event {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  flex: 1;
+  margin-top: 8px;
+  padding: 6px 3px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--green);
+  text-align: left;
+}
+.calendar-event:hover {
+  background: #d6eae1;
+}
+.calendar-day .calendar-event strong {
+  margin-top: 0;
+}
+.calendar-event-count {
+  font-size: 10px;
+  color: #58776c;
+}
+.calendar-event .badge {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 2px 5px;
+  font-size: 8px;
+  line-height: 1.2;
+}
+.calendar-day.calendar-create:hover {
+  background: #e3f1eb;
+  color: var(--green);
+}
+.calendar-event:focus-visible,
+.calendar-create:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+dialog.event-dialog {
+  position: fixed;
+  inset: 0;
+  width: min(620px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  overflow-y: auto;
+  border: 0;
+  color: var(--ink);
+}
+.event-dialog::backdrop {
+  background: #102a2780;
+}
+.event-dialog h2 {
+  padding-right: 20px;
+  overflow-wrap: anywhere;
+}
+.event-dialog > .form-note {
+  margin: 16px 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: normal;
+}
+.event-dialog-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 20px 0;
+}
+.event-dialog-facts > div {
+  display: flex;
+  gap: 12px;
+}
+.event-dialog-facts dt {
+  flex: 0 0 95px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.event-dialog-facts dd {
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.event-dialog-status,
+.event-dialog-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.event-dialog-status {
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.event-dialog-roster h3 {
+  margin: 20px 0 12px;
+  font-size: 15px;
+}
+.event-dialog-roster ul {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.event-dialog-roster li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f6f9f8;
+  font-size: 13px;
+}
+.event-dialog-roster li > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.event-dialog-roster small {
+  margin-left: 8px;
+  color: var(--muted);
+}
+.event-dialog-actions {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+@media (max-width: 620px) {
+  .activity-calendar .calendar-day {
+    min-height: 95px;
+    padding: 5px 3px;
+  }
+  .calendar-event {
+    padding: 5px 0;
+  }
+  .calendar-event-count {
+    font-size: 9px;
+  }
+  dialog.event-dialog {
+    padding: 26px 20px;
+  }
+  .event-dialog h2 {
+    font-size: 21px;
+  }
+  .event-dialog-actions > button {
+    flex: 1 1 42%;
+  }
+}
 .activities-page {
   display: flex;
   flex-direction: column;
@@ -1486,6 +1649,30 @@ select {
 .invoice-description small {
   color: var(--muted);
   font-size: 10px;
+}
+.billing .row > strong:first-child {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 3px;
+}
+.billing .row > strong:first-child small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+.invoice-event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 3px 0;
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.invoice-event-list > span::before {
+  content: "•";
+  margin-right: 5px;
+  color: var(--green);
 }
 .billing-empty {
   padding: 34px 24px;
@@ -2214,6 +2401,30 @@ select {
   }
   .row > *:nth-child(2) {
     display: none;
+  }
+  .billing .row.head {
+    display: none;
+  }
+  .billing .row:not(.head) {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    padding-top: 17px;
+    padding-bottom: 17px;
+  }
+  .billing .row:not(.head) > *:nth-child(1) {
+    flex: 1 1 55%;
+  }
+  .billing .row:not(.head) > *:nth-child(2) {
+    display: flex;
+    flex: 0 0 100%;
+    order: 4;
+    margin-top: 7px;
+    padding-top: 9px;
+    border-top: 1px dashed var(--line);
+  }
+  .billing .row:not(.head) > *:nth-child(3),
+  .billing .row:not(.head) > *:nth-child(4) {
+    flex: 0 1 auto;
   }
   .row > *:nth-child(1) { flex: 1.25; }
   .row > *:nth-child(3) { flex: .8; }

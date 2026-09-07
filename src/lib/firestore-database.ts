@@ -497,15 +497,31 @@ export async function readState(viewer: Viewer | null = null) {
       };
     })
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || String(b.publishedAt).localeCompare(String(a.publishedAt)));
+  const eventSchedulesById = new Map(eventSnapshot.docs.map((document) => {
+    const event = document.data();
+    return [document.id, {
+      id: document.id,
+      starts_at: iso(event.startsAt),
+      ends_at: iso(event.endsAt),
+      courts: String(event.courts ?? ""),
+    }];
+  }));
 
   const invoices = (invoiceSnapshot?.docs ?? [])
     .map((document) => {
       const invoice = document.data();
       const member = membersById.get(String(invoice.memberId));
+      const directEventId = invoice.eventId ? String(invoice.eventId) : null;
+      const eventIds = Array.isArray(invoice.eventIds) ? invoice.eventIds.map(String) : directEventId ? [directEventId] : [];
       return {
         id: document.id,
         member_id: String(invoice.memberId ?? ""),
-        event_id: invoice.eventId ? String(invoice.eventId) : null,
+        event_id: directEventId,
+        event_ids: eventIds,
+        event_schedules: eventIds.flatMap((eventId) => {
+          const schedule = eventSchedulesById.get(eventId);
+          return schedule ? [schedule] : [];
+        }),
         memberName: String(invoice.memberNameSnapshot ?? member?.displayName ?? "未知使用者"),
         type: String(invoice.type ?? ""),
         gross_amount: Number(invoice.grossAmount ?? invoice.amount ?? 0),
@@ -1192,6 +1208,39 @@ async function confirmPayment(invoiceId: string) {
   await batch.commit();
 }
 
+async function remindPayment(invoiceId: string, actor: Viewer) {
+  if (!invoiceId) throw new Error("缺少帳單識別碼");
+  const db = getAdminFirestore();
+  const invoiceRef = db.collection("invoices").doc(invoiceId);
+  const invoice = await invoiceRef.get();
+  if (!invoice.exists) throw new Error("找不到帳單");
+  const data = invoice.data()!;
+  if (data.status !== "PENDING") throw new Error("只有未繳帳單可以發送催款通知");
+  const lastRemindedAt = dateValue(data.lastRemindedAt);
+  if (lastRemindedAt && Date.now() - lastRemindedAt.getTime() < 60_000) throw new Error("催款通知剛剛已發送，請稍候再試");
+  const memberId = String(data.memberId ?? "");
+  if (!memberId) throw new Error("帳單缺少使用者資料");
+  const amount = Number(data.amount ?? 0);
+  const periodLabel = String(data.periodLabel ?? "羽球活動費");
+  const now = new Date();
+  const notificationRef = db.collection("notifications").doc();
+  const batch = db.batch();
+  batch.set(notificationRef, notificationData({
+    title: "活動費用尚未繳納",
+    message: `${periodLabel} 尚有 NT$${amount.toLocaleString("zh-TW")} 未繳，請完成轉帳後至費用管理點選「我已轉帳」。`,
+    type: "PAYMENT_REMINDER",
+    tab: "費用管理",
+    recipientId: memberId,
+  }));
+  batch.update(invoiceRef, {
+    lastRemindedAt: now,
+    lastRemindedBy: actor.id,
+    reminderCount: FieldValue.increment(1),
+    updatedAt: now,
+  });
+  await batch.commit();
+}
+
 async function markNotificationsRead(input: Record<string, string>, actor: Viewer) {
   const notificationIds = [...new Set((input.notificationIds ?? "").split(",").map((id) => id.trim()).filter(Boolean))];
   if (notificationIds.length === 0) return;
@@ -1484,6 +1533,7 @@ export async function mutate(action: string, input: Record<string, string>, acto
   if (actor.role !== "ADMIN") throw new Error("只有幹部可以執行這項操作");
   if (action === "reviewMembershipRequest") return reviewMembershipRequest(input.requestId, input.decision, actor);
   if (action === "confirmPayment") return confirmPayment(input.invoiceId);
+  if (action === "remindPayment") return remindPayment(input.invoiceId, actor);
   if (action === "createQuarterlyInvoices") return createQuarterlyInvoices(input);
   if (action === "setFeeRates") return setFeeRates(input);
   if (action === "updateMember") return updateMember(input, actor);

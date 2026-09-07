@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import type {
   AuthenticationResponseJSON,
@@ -16,7 +16,8 @@ type BillingManagerTab = "quarterly" | "rates";
 type Person = { id: string; name: string; department?: string; role: Role; member: boolean; membershipStatus?: string; creditBalance?: number; primaryAdmin?: boolean };
 type Booking = { memberId: string; name: string; kind: "社員" | "非社員"; rank: "正取" | "候補"; transferred?: boolean };
 type NewsItem = { id: string; title: string; content: string; date: string; linkUrl?: string; pinned: boolean };
-type Invoice = { id: string; member_id: string; memberName: string; type: string; gross_amount: number; credit_applied: number; amount: number; status: string; period_label?: string; due_at?: string | null };
+type InvoiceEventSchedule = { id: string; starts_at: string | null; ends_at: string | null; courts: string };
+type Invoice = { id: string; member_id: string; event_id?: string | null; event_ids?: string[]; event_schedules?: InvoiceEventSchedule[]; memberName: string; type: string; gross_amount: number; credit_applied: number; amount: number; status: string; period_label?: string; due_at?: string | null };
 type RestDay = { id: string; date: string; label: string };
 type FeeRate = { id: string; kind: string; amount: number; effective_from: string | null; effective_to: string | null };
 type MembershipRequest = { id: string; memberId: string; memberName: string; kind: "JOIN" | "EXIT"; status: "PENDING" | "APPROVED" | "REJECTED"; requestedAt: string | null; reviewedAt: string | null };
@@ -76,6 +77,31 @@ function Badge({
   return <span className={`badge ${tone}`}>{children}</span>;
 }
 
+type PaymentTone = "green" | "orange" | "blue" | "gray";
+const PAYMENT_STATUS: Record<string, { label: string; tone: PaymentTone }> = {
+  PENDING: { label: "未繳", tone: "orange" },
+  REPORTED: { label: "已回報，待確認", tone: "blue" },
+  CONFIRMED: { label: "已繳", tone: "green" },
+  VOID: { label: "已作廢", tone: "gray" },
+  CREDITED: { label: "已轉為餘額", tone: "gray" },
+};
+
+function invoiceIncludesEvent(invoice: Invoice, eventId: string) {
+  return invoice.event_id === eventId || invoice.event_ids?.includes(eventId) === true;
+}
+
+function formatInvoiceEventSchedule(event: InvoiceEventSchedule) {
+  if (!event.starts_at) return "活動時間未設定";
+  const startsAt = new Date(event.starts_at);
+  const date = taipeiDateParts(startsAt);
+  const weekday = new Intl.DateTimeFormat("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }).format(startsAt);
+  const startTime = taipeiInputTime(event.starts_at);
+  const endTime = taipeiInputTime(event.ends_at ?? undefined);
+  const dateLabel = `${date.year}/${String(date.month).padStart(2, "0")}/${String(date.day).padStart(2, "0")}（${weekday}）`;
+  const timeLabel = endTime ? `${startTime}–${endTime}` : startTime;
+  return `${dateLabel} ${timeLabel}${event.courts ? ` · ${event.courts}` : ""}`;
+}
+
 export default function Home() {
   const [viewer, setViewer] = useState<Viewer | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
@@ -103,6 +129,7 @@ export default function Home() {
   const [editingEvent, setEditingEvent] = useState<ClubEvent | null>(null);
   const [managerTab, setManagerTab] = useState<ActivityManagerTab>("single");
   const [managerOpen, setManagerOpen] = useState(false);
+  const [managerDate, setManagerDate] = useState("");
   const [managerSaving, setManagerSaving] = useState(false);
   const [announcementOpen, setAnnouncementOpen] = useState(false);
   const [editingAnnouncement, setEditingAnnouncement] = useState<NewsItem | null>(null);
@@ -301,8 +328,8 @@ export default function Home() {
       });
     }
   };
-  const join = (eventId: string) => { if (viewer) void execute("join", { eventId }); };
-  const cancel = (eventId: string) => { if (viewer) void execute("cancel", { eventId }); };
+  const join = async (eventId: string) => { if (viewer) await execute("join", { eventId }); };
+  const cancel = async (eventId: string) => { if (viewer) await execute("cancel", { eventId }); };
   const submitTransfer = async () => {
     const clean = recipient.trim();
     if (!clean || !viewer || !transferEventId) return;
@@ -472,6 +499,15 @@ export default function Home() {
       setBillingSaving(false);
     }
   };
+  const remindInvoicePayment = async (invoiceId: string) => {
+    setBillingSaving(true);
+    try {
+      const payload = await execute("remindPayment", { invoiceId });
+      if (payload) window.alert("已發送站內催款通知。");
+    } finally {
+      setBillingSaving(false);
+    }
+  };
   const createQuarterlyInvoices = async (form: FormEvent<HTMLFormElement>) => {
     form.preventDefault();
     const data = new FormData(form.currentTarget);
@@ -637,6 +673,7 @@ export default function Home() {
                 className="primary small"
                 onClick={() => {
                   if (tab === "活動") {
+                    setManagerDate("");
                     setManagerTab("single");
                     setManagerOpen(true);
                   } else if (tab === "費用管理") {
@@ -670,6 +707,7 @@ export default function Home() {
         {tab === "活動" && (
           <Events
             list={events}
+            invoices={invoices}
             viewerId={viewer.id}
             user={user}
             join={join}
@@ -678,6 +716,7 @@ export default function Home() {
             isAdmin={isAdmin}
             cancelEvent={(eventId) => void cancelClubEvent(eventId)}
             editEvent={setEditingEvent}
+            createOnDate={(date) => { setManagerDate(date); setManagerTab("single"); setManagerOpen(true); }}
           />
         )}
         {tab === "公告" && <News news={news} admin={isAdmin} saving={announcementSaving} edit={(announcement) => { setEditingAnnouncement(announcement); setAnnouncementOpen(true); }} remove={(announcement) => void deleteAnnouncement(announcement)} togglePinned={(announcement) => void toggleAnnouncementPinned(announcement)} />}
@@ -690,6 +729,7 @@ export default function Home() {
             saving={billingSaving}
             reportPayment={reportInvoicePayment}
             confirmPayment={confirmInvoicePayment}
+            remindPayment={remindInvoicePayment}
             openRates={() => {
               setBillingManagerTab("rates");
               setBillingManagerOpen(true);
@@ -733,6 +773,7 @@ export default function Home() {
       )}
       {isAdmin && managerOpen && (
         <ActivityManagerModal
+          initialDate={managerDate}
           tab={managerTab}
           saving={managerSaving}
           setTab={setManagerTab}
@@ -796,6 +837,7 @@ export default function Home() {
 }
 
 function ActivityManagerModal({
+  initialDate,
   tab,
   saving,
   setTab,
@@ -806,6 +848,7 @@ function ActivityManagerModal({
   restDays,
   removeRestDay,
 }: {
+  initialDate: string;
   tab: ActivityManagerTab;
   saving: boolean;
   setTab: (tab: ActivityManagerTab) => void;
@@ -846,7 +889,7 @@ function ActivityManagerModal({
           <form className="manager-form" onSubmit={createEvent}>
             <label>
               活動日期
-              <input name="date" type="date" required autoFocus />
+              <input name="date" type="date" defaultValue={initialDate} required autoFocus />
             </label>
             <div className="time-pair">
               <label>
@@ -1663,20 +1706,24 @@ function taipeiDateParts(value: Date) {
   return { year: number("year"), month: number("month"), day: number("day") };
 }
 
-function ActivityCalendar({ list }: { list: ClubEvent[] }) {
+function ActivityCalendar({ list, invoices, viewerId, openEvent, createOnDate }: {
+  list: ClubEvent[];
+  invoices: Invoice[];
+  viewerId: string;
+  openEvent: (id: string) => void;
+  createOnDate?: (date: string) => void;
+}) {
   const today = taipeiDateParts(new Date());
   const [visibleMonth, setVisibleMonth] = useState({ year: today.year, month: today.month });
   const firstWeekday = new Date(Date.UTC(visibleMonth.year, visibleMonth.month - 1, 1)).getUTCDay();
   const daysInMonth = new Date(Date.UTC(visibleMonth.year, visibleMonth.month, 0)).getUTCDate();
   const eventsByDay = new Map<number, ClubEvent[]>();
-
   for (const event of list) {
     if (!event.startsAt) continue;
     const date = taipeiDateParts(new Date(event.startsAt));
     if (date.year !== visibleMonth.year || date.month !== visibleMonth.month) continue;
     eventsByDay.set(date.day, [...(eventsByDay.get(date.day) ?? []), event]);
   }
-
   const changeMonth = (offset: number) => {
     setVisibleMonth((current) => {
       const next = new Date(Date.UTC(current.year, current.month - 1 + offset, 1));
@@ -1685,6 +1732,7 @@ function ActivityCalendar({ list }: { list: ClubEvent[] }) {
   };
   const isCurrentMonth = visibleMonth.year === today.year && visibleMonth.month === today.month;
   const eventCount = [...eventsByDay.values()].reduce((total, events) => total + events.length, 0);
+  const todayKey = `${today.year}-${String(today.month).padStart(2, "0")}-${String(today.day).padStart(2, "0")}`;
 
   return (
     <section className="activity-calendar" aria-label={`${visibleMonth.year} 年 ${visibleMonth.month} 月活動月曆`}>
@@ -1692,7 +1740,7 @@ function ActivityCalendar({ list }: { list: ClubEvent[] }) {
         <div>
           <p>活動月曆</p>
           <h2>{visibleMonth.year} 年 {visibleMonth.month} 月</h2>
-          <span>本月共 {eventCount} 場活動</span>
+          <span>本月共 {eventCount} 場活動 · 點選活動查看詳情</span>
         </div>
         <div className="calendar-controls">
           <button type="button" onClick={() => changeMonth(-1)} aria-label="上個月">‹</button>
@@ -1701,129 +1749,204 @@ function ActivityCalendar({ list }: { list: ClubEvent[] }) {
         </div>
       </div>
       <div className="calendar-weekdays" aria-hidden="true">
-        {['日', '一', '二', '三', '四', '五', '六'].map((weekday) => <span key={weekday}>{weekday}</span>)}
+        {["日", "一", "二", "三", "四", "五", "六"].map((weekday) => <span key={weekday}>{weekday}</span>)}
       </div>
       <div className="calendar-days">
         {Array.from({ length: firstWeekday }, (_, index) => <span className="calendar-day empty" key={`empty-${index}`} aria-hidden="true" />)}
         {Array.from({ length: daysInMonth }, (_, index) => {
           const day = index + 1;
           const dayEvents = eventsByDay.get(day) ?? [];
-          const firstEvent = dayEvents[0];
           const isToday = isCurrentMonth && day === today.day;
-          const content = (
-            <>
-              <span className="calendar-day-number">{day}{isToday && <i>今天</i>}</span>
-              {firstEvent && <strong>{firstEvent.time.split(" – ")[0]}</strong>}
-              {firstEvent && <small title={firstEvent.courts}>{firstEvent.courts}</small>}
-              {dayEvents.length > 1 && <em>另有 {dayEvents.length - 1} 場</em>}
-            </>
-          );
-          return firstEvent ? (
+          const dateKey = `${visibleMonth.year}-${String(visibleMonth.month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+          const canCreate = createOnDate && dayEvents.length === 0 && dateKey >= todayKey;
+          if (canCreate) return (
             <button
               type="button"
-              className={`calendar-day has-event${isToday ? " today" : ""}`}
+              className={`calendar-day calendar-create${isToday ? " today" : ""}`}
               key={day}
-              aria-label={`${visibleMonth.month} 月 ${day} 日，${dayEvents.length} 場活動`}
-              onClick={() => document.getElementById(`event-${firstEvent.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" })}
+              aria-label={`新增 ${dateKey} 的活動`}
+              aria-haspopup="dialog"
+              onClick={() => createOnDate(dateKey)}
             >
-              {content}
+              <span className="calendar-day-number">{day}{isToday && <i>今天</i>}</span>
             </button>
-          ) : (
-            <span className={`calendar-day${isToday ? " today" : ""}`} key={day}>{content}</span>
+          );
+          return (
+            <div className={`calendar-day${dayEvents.length ? " has-event" : ""}${isToday ? " today" : ""}`} key={day}>
+              <span className="calendar-day-number">{day}{isToday && <i>今天</i>}</span>
+              {dayEvents.map((event) => {
+                const isParticipating = event.bookings.some((booking) => booking.memberId === viewerId);
+                const invoice = invoices.find((item) => item.member_id === viewerId && invoiceIncludesEvent(item, event.id));
+                const payment = !isParticipating
+                  ? { label: "未參加", tone: "gray" as PaymentTone }
+                  : invoice
+                    ? PAYMENT_STATUS[invoice.status] ?? { label: invoice.status, tone: "gray" as PaymentTone }
+                    : { label: "尚未開帳", tone: "gray" as PaymentTone };
+                return (
+                  <button
+                  type="button"
+                  className="calendar-event"
+                  key={event.id}
+                  aria-haspopup="dialog"
+                  aria-label={`${dateKey} ${event.time}，${event.courts}，付款狀態：${payment.label}，查看活動詳情`}
+                  onClick={() => openEvent(event.id)}
+                >
+                  <strong>{event.time.split(" – ")[0]}</strong>
+                  <small title={event.courts}>{event.courts}</small>
+                  <span className="calendar-event-count">{event.regularBooked + event.waitBooked} 人</span>
+                  <Badge tone={payment.tone}>{payment.label}</Badge>
+                  </button>
+                );
+              })}
+            </div>
           );
         })}
       </div>
+      {eventCount === 0 && <p className="calendar-hint">本月尚無活動。</p>}
     </section>
   );
 }
 
 function Events({
-  list,
-  viewerId,
-  user,
-  join,
-  cancel,
-  transfer,
-  isAdmin,
-  cancelEvent,
-  editEvent,
+  list, invoices, viewerId, user, join, cancel, transfer, isAdmin, cancelEvent, editEvent, createOnDate,
 }: {
   list: ClubEvent[];
+  invoices: Invoice[];
   viewerId: string;
   user: Person;
-  join: (id: string) => void;
-  cancel: (id: string) => void;
+  join: (id: string) => Promise<void>;
+  cancel: (id: string) => Promise<void>;
   transfer: (eventId: string) => void;
   isAdmin: boolean;
   cancelEvent: (id: string) => void;
   editEvent: (event: ClubEvent) => void;
+  createOnDate: (date: string) => void;
 }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedEvent = list.find((event) => event.id === selectedId);
+  const close = useCallback(() => setSelectedId(null), []);
   return (
     <div className="activities-page">
-      <ActivityCalendar list={list} />
-      <div className="event-list-heading">
-        <div>
-          <p>活動明細</p>
-          <h2>全部場次</h2>
-        </div>
-        <span>共 {list.length} 場</span>
-      </div>
-      <section className="event-list">
-        {list.map((event) => {
-        const entry = event.bookings.find((item) => item.memberId === viewerId);
-        const regular = event.bookings.filter((item) => item.rank === "正取").length;
-        const wait = event.bookings.filter((item) => item.rank === "候補").length;
-        const displayedRegularCapacity = Math.max(event.regular, regular);
-        const dateParts = event.date.match(/(\d+)\s*月\s*(\d+)/);
-        return (
-          <article key={event.id} id={`event-${event.id}`}>
-            <div className="calendar">
-              <b>{dateParts?.[2] ?? event.date}</b>
-              <span>{dateParts ? `${dateParts[1]}月` : ""}</span>
-              <small>{event.weekday}</small>
-            </div>
-            <div className="event-detail">
-              <h3>
-                {event.time} <Badge tone="blue">{event.courts}</Badge>
-              </h3>
-              <p>
-                正取 {regular}/{displayedRegularCapacity} · 候補 {wait}/{event.wait}（社員保證正取，候補也可參加）
-              </p>
-              <div className="chips">
-                {event.bookings.slice(0, 5).map((item) => (
-                  <span key={item.memberId}>
-                    {item.name}
-                    <i className={item.rank === "正取" ? "green-dot" : "orange-dot"} />
-                  </span>
-                ))}
-              </div>
-            </div>
-            <div className="event-buttons">
-              {entry ? (
-                <>
-                  <Badge tone={entry.rank === "正取" ? "green" : "orange"}>{entry.rank}</Badge>
-                  <button className="link" onClick={() => cancel(event.id)}>
-                    取消
-                  </button>
-                  {entry.kind === "社員" && (
-                    <button className="link" onClick={() => transfer(event.id)}>
-                      轉讓
-                    </button>
-                  )}
-                </>
-              ) : (
-                <button className="primary small" onClick={() => join(event.id)}>
-                  {user.member ? "恢復參加" : "報名"}
-                </button>
-              )}
-              {isAdmin && <button className="link" onClick={() => editEvent(event)}>編輯</button>}
-              {isAdmin && <button className="link danger" onClick={() => cancelEvent(event.id)}>取消活動</button>}
-            </div>
-          </article>
-        );
-        })}
-      </section>
+      <ActivityCalendar list={list} invoices={invoices} viewerId={viewerId} openEvent={setSelectedId} createOnDate={isAdmin ? createOnDate : undefined} />
+      {selectedEvent && (
+        <EventDetailsDialog
+          key={selectedEvent.id}
+          event={selectedEvent}
+          viewerId={viewerId}
+          user={user}
+          isAdmin={isAdmin}
+          close={close}
+          join={join}
+          cancel={cancel}
+          transfer={() => { close(); transfer(selectedEvent.id); }}
+          edit={() => { close(); editEvent(selectedEvent); }}
+          cancelEvent={() => { close(); cancelEvent(selectedEvent.id); }}
+        />
+      )}
     </div>
+  );
+}
+
+function EventDetailsDialog({ event, viewerId, user, isAdmin, close, join, cancel, transfer, edit, cancelEvent }: {
+  event: ClubEvent;
+  viewerId: string;
+  user: Person;
+  isAdmin: boolean;
+  close: () => void;
+  join: (id: string) => Promise<void>;
+  cancel: (id: string) => Promise<void>;
+  transfer: () => void;
+  edit: () => void;
+  cancelEvent: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const previousFocus = document.activeElement;
+    const previousOverflow = document.body.style.overflow;
+    dialog.showModal();
+    document.body.style.overflow = "hidden";
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => {
+      window.clearInterval(timer);
+      dialog.close();
+      document.body.style.overflow = previousOverflow;
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, []);
+  const entry = event.bookings.find((booking) => booking.memberId === viewerId);
+  const started = Boolean(event.startsAt && new Date(event.startsAt).getTime() <= now);
+  const ended = Boolean(event.endsAt && new Date(event.endsAt).getTime() <= now);
+  const full = event.regularBooked >= event.regular && event.waitBooked >= event.wait;
+  const updateAttendance = async (action: (id: string) => Promise<void>) => {
+    if (saving) return;
+    setSaving(true);
+    setError("");
+    try { await action(event.id); }
+    catch { setError("操作失敗，請稍後再試。"); }
+    finally { setSaving(false); }
+  };
+  return (
+    <dialog
+      ref={dialogRef}
+      className="modal event-dialog"
+      aria-labelledby="event-dialog-title"
+      onCancel={(e) => { e.preventDefault(); if (!saving) close(); }}
+      onClick={(e) => { if (e.target === e.currentTarget && !saving) {
+        const rect = e.currentTarget.getBoundingClientRect();
+        if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) close();
+      } }}
+    >
+      <button type="button" className="close" aria-label="關閉活動詳情" disabled={saving} onClick={close} autoFocus>×</button>
+      <p>活動詳情</p>
+      <h2 id="event-dialog-title">{event.startsAt ? taipeiInputDate(event.startsAt) : event.date}（{event.weekday}）</h2>
+      <dl className="event-dialog-facts">
+        <div><dt>時間</dt><dd>{event.time}</dd></div>
+        <div><dt>場地</dt><dd>{event.courts}</dd></div>
+        <div><dt>正取</dt><dd>{event.regularBooked} / {Math.max(event.regular, event.regularBooked)} 人</dd></div>
+        <div><dt>候補</dt><dd>{event.waitBooked} / {event.wait} 人</dd></div>
+        <div><dt>社員單次費</dt><dd>NT$ {event.memberFee.toLocaleString("zh-TW")}（三個月預收）</dd></div>
+        <div><dt>非社員單次費</dt><dd>NT$ {event.guestFee.toLocaleString("zh-TW")}</dd></div>
+      </dl>
+      <p className="form-note">社員預設參加並保證正取；非社員正取滿額後列入候補，候補也可到場。</p>
+      <div className="event-dialog-status">
+        <strong>我的狀態</strong>
+        <Badge tone={entry?.rank === "正取" ? "green" : entry ? "orange" : "gray"}>{entry?.rank ?? "未參加"}</Badge>
+        {started && <Badge tone="gray">{ended ? "已結束" : "進行中"}</Badge>}
+      </div>
+      <section className="event-dialog-roster" aria-label="參加名單">
+        <h3>參加名單（{event.bookings.length} 人）</h3>
+        {event.bookings.length === 0 ? <p>目前尚無人報名。</p> : (
+          <ul>{[...event.bookings].sort((a, b) => Number(a.rank === "候補") - Number(b.rank === "候補")).map((booking) => (
+            <li key={booking.memberId}>
+              <span>{booking.name}{booking.memberId === viewerId ? "（我）" : ""}<small>{booking.kind}</small></span>
+              <Badge tone={booking.rank === "正取" ? "green" : "orange"}>{booking.rank}</Badge>
+            </li>
+          ))}</ul>
+        )}
+      </section>
+      {error && <p role="alert">{error}</p>}
+      <div className="event-dialog-actions">
+        {!started && (entry ? (
+          <>
+            <button type="button" className="secondary" disabled={saving} onClick={() => void updateAttendance(cancel)}>{saving ? "處理中…" : "取消參加"}</button>
+            {entry.kind === "社員" && <button type="button" className="primary" disabled={saving} onClick={transfer}>轉讓名額</button>}
+          </>
+        ) : (
+          <button type="button" className="primary" disabled={saving || (!user.member && full)} onClick={() => void updateAttendance(join)}>
+            {saving ? "處理中…" : user.member ? "恢復參加" : full ? "本場已額滿" : "報名活動"}
+          </button>
+        ))}
+        {isAdmin && !ended && <>
+          <button type="button" className="secondary" disabled={saving} onClick={edit}>編輯活動</button>
+          <button type="button" className="link danger" disabled={saving} onClick={cancelEvent}>取消活動</button>
+        </>}
+      </div>
+    </dialog>
   );
 }
 function News({
@@ -1953,6 +2076,7 @@ function Billing({
   saving,
   reportPayment,
   confirmPayment,
+  remindPayment,
   openRates,
 }: {
   admin: boolean;
@@ -1961,24 +2085,21 @@ function Billing({
   saving: boolean;
   reportPayment: (invoiceId: string) => void;
   confirmPayment: (invoiceId: string) => void;
+  remindPayment: (invoiceId: string) => void;
   openRates: () => void;
 }) {
-  const status: Record<string, { label: string; tone: "green" | "orange" | "blue" | "gray" }> = {
-    PENDING: { label: "待轉帳", tone: "orange" },
-    REPORTED: { label: "待幹部確認", tone: "blue" },
-    CONFIRMED: { label: "已確認", tone: "green" },
-    VOID: { label: "已作廢", tone: "gray" },
-    CREDITED: { label: "已轉餘額", tone: "gray" },
-  };
+  const status = PAYMENT_STATUS;
   const invoiceType = (invoice: Invoice) => invoice.type === "QUARTERLY_MEMBER" ? "三個月社員預收" : invoice.type === "MEMBERSHIP_PRORATED" ? "中途加入社員費" : invoice.type === "SINGLE_EVENT" ? "非社員單次活動" : "帳務調整";
-  const confirmedTotal = invoices.filter((invoice) => invoice.status === "CONFIRMED").reduce((total, invoice) => total + invoice.amount, 0);
-  const openInvoices = invoices.filter((invoice) => invoice.status === "PENDING" || invoice.status === "REPORTED");
+  // 作廢帳單保留在資料庫供稽核，但沒有實際收付款，不顯示在帳單紀錄中。
+  const visibleInvoices = invoices.filter((invoice) => invoice.status !== "VOID");
+  const confirmedTotal = visibleInvoices.filter((invoice) => invoice.status === "CONFIRMED").reduce((total, invoice) => total + invoice.amount, 0);
+  const openInvoices = visibleInvoices.filter((invoice) => invoice.status === "PENDING" || invoice.status === "REPORTED");
   const amountDue = openInvoices.reduce((total, invoice) => total + invoice.amount, 0);
   const exportInvoices = () => {
     const escape = (value: string | number) => `"${String(value).replaceAll('"', '""')}"`;
     const rows = [
-      ["使用者", "類型", "期間", "原始金額", "餘額抵扣", "應付金額", "狀態"],
-      ...invoices.map((invoice) => [invoice.memberName, invoiceType(invoice), invoice.period_label ?? "", invoice.gross_amount, invoice.credit_applied, invoice.amount, status[invoice.status]?.label ?? invoice.status]),
+      ["使用者", "類型", "期間", "活動日期與時間", "原始金額", "餘額抵扣", "應付金額", "狀態"],
+      ...visibleInvoices.map((invoice) => [invoice.memberName, invoiceType(invoice), invoice.period_label ?? "", invoice.event_schedules?.map(formatInvoiceEventSchedule).join("；") ?? "", invoice.gross_amount, invoice.credit_applied, invoice.amount, status[invoice.status]?.label ?? invoice.status]),
     ];
     const blob = new Blob([`\uFEFF${rows.map((row) => row.map(escape).join(",")).join("\r\n")}`], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -1997,7 +2118,7 @@ function Billing({
           <h3>{admin ? "目前收款概況" : "待處理費用"}</h3>
         </div>
         <strong>NT$ {(admin ? confirmedTotal : amountDue).toLocaleString("zh-TW")}</strong>
-        <span>{admin ? `${invoices.filter((invoice) => invoice.status === "CONFIRMED").length} 筆已確認 · ${openInvoices.length} 筆待處理` : `${openInvoices.length} 筆待處理 · 帳戶餘額 NT$${viewer.creditBalance.toLocaleString("zh-TW")}`}</span>
+        <span>{admin ? `${visibleInvoices.filter((invoice) => invoice.status === "CONFIRMED").length} 筆已確認 · ${openInvoices.length} 筆待處理` : `${openInvoices.length} 筆待處理 · 帳戶餘額 NT$${viewer.creditBalance.toLocaleString("zh-TW")}`}</span>
       </section>
       <section className="table">
         <header>
@@ -2005,23 +2126,34 @@ function Billing({
             <p>{admin ? "帳務清單" : "帳單明細"}</p>
             <h3>{admin ? "付款確認" : "我的帳單紀錄"}</h3>
           </div>
-          {admin && <div className="billing-tools"><button className="secondary" onClick={openRates}>費率設定</button><button className="secondary" disabled={invoices.length === 0} onClick={exportInvoices}>匯出 CSV</button></div>}
+          {admin && <div className="billing-tools"><button className="secondary" onClick={openRates}>費率設定</button><button className="secondary" disabled={visibleInvoices.length === 0} onClick={exportInvoices}>匯出 CSV</button></div>}
         </header>
         <div className="row head">
           <span>{admin ? "使用者" : "項目"}</span>
-          <span>內容</span>
+          <span>活動日期與時間</span>
           <span>金額</span>
           <span>狀態</span>
         </div>
-        {invoices.length === 0 ? <div className="billing-empty">目前沒有帳單</div> : invoices.map((invoice) => {
+        {visibleInvoices.length === 0 ? <div className="billing-empty">目前沒有帳單</div> : visibleInvoices.map((invoice) => {
           const invoiceState = status[invoice.status] ?? { label: invoice.status, tone: "gray" as const };
+          const schedules = invoice.event_schedules ?? [];
           return (
           <div className="row" key={invoice.id}>
-            <strong>{admin ? invoice.memberName : invoiceType(invoice)}</strong>
-            <span className="invoice-description"><strong>{invoice.period_label ?? invoiceType(invoice)}</strong>{invoice.credit_applied > 0 && <small>已抵扣餘額 NT${invoice.credit_applied.toLocaleString("zh-TW")}</small>}</span>
+            <strong><span>{admin ? invoice.memberName : invoiceType(invoice)}</span><small>{admin ? invoiceType(invoice) : invoice.period_label}</small></strong>
+            <span className="invoice-description">
+              <strong>{invoice.period_label ?? invoiceType(invoice)}</strong>
+              <span className="invoice-event-list">
+                {schedules.length > 0
+                  ? schedules.map((event) => <span key={event.id}>{formatInvoiceEventSchedule(event)}</span>)
+                  : <span>此帳務調整未關聯活動場次</span>}
+              </span>
+              {invoice.due_at && <small>繳費期限：{new Date(invoice.due_at).toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei" })}</small>}
+              {invoice.credit_applied > 0 && <small>已抵扣餘額 NT${invoice.credit_applied.toLocaleString("zh-TW")}</small>}
+            </span>
             <strong>NT$ {invoice.amount.toLocaleString("zh-TW")}</strong>
             <span className="billing-status">
               <Badge tone={invoiceState.tone}>{invoiceState.label}</Badge>
+              {admin && invoice.status === "PENDING" && <button className="link" disabled={saving} onClick={() => remindPayment(invoice.id)}>催款</button>}
               {!admin && invoice.status === "PENDING" && <button className="link" disabled={saving} onClick={() => reportPayment(invoice.id)}>我已轉帳</button>}
               {admin && invoice.status === "REPORTED" && <button className="link" disabled={saving} onClick={() => confirmPayment(invoice.id)}>確認收款</button>}
             </span>
