@@ -698,8 +698,6 @@ export default function Home() {
             user={user}
             invoice={invoice}
             join={() => event && join(event.id)}
-            cancel={() => event && cancel(event.id)}
-            transfer={() => event && setTransferEventId(event.id)}
             showEvents={() => setTab("活動")}
             showBilling={() => setTab("費用管理")}
           />
@@ -720,7 +718,7 @@ export default function Home() {
           />
         )}
         {tab === "公告" && <News news={news} admin={isAdmin} saving={announcementSaving} edit={(announcement) => { setEditingAnnouncement(announcement); setAnnouncementOpen(true); }} remove={(announcement) => void deleteAnnouncement(announcement)} togglePinned={(announcement) => void toggleAnnouncementPinned(announcement)} />}
-        {tab === "社員名單" && <Members members={members} requests={membershipRequests} admin={isAdmin} saving={membershipSaving || memberSaving} issueClaimCode={issueClaimCode} reviewRequest={reviewMembershipRequest} manageMember={setEditingMember} />}
+        {tab === "社員名單" && <Members members={members} requests={membershipRequests} currentUser={user} admin={isAdmin} saving={membershipSaving || memberSaving} requestMembership={() => void requestMembershipChange("JOIN")} issueClaimCode={issueClaimCode} reviewRequest={reviewMembershipRequest} manageMember={setEditingMember} />}
         {tab === "費用管理" && (
           <Billing
             admin={isAdmin}
@@ -1526,8 +1524,6 @@ function Overview({
   user,
   invoice,
   join,
-  cancel,
-  transfer,
   showEvents,
   showBilling,
 }: {
@@ -1536,8 +1532,6 @@ function Overview({
   user: Person;
   invoice?: Invoice;
   join: () => void;
-  cancel: () => void;
-  transfer: () => void;
   showEvents: () => void;
   showBilling: () => void;
 }) {
@@ -1565,7 +1559,7 @@ function Overview({
   const displayedRegularCapacity = Math.max(event.regular, regular);
   const regularRemaining = Math.max(0, event.regular - regular);
   const waitRemaining = Math.max(0, event.wait - wait);
-  const dateParts = event.date.match(/(\d+)\s*月\s*(\d+)/);
+  const nextEventDate = event.startsAt ? taipeiDateParts(new Date(event.startsAt)) : null;
   const invoiceState: { label: string; tone: "green" | "orange" | "blue" | "gray" } = !invoice
     ? { label: "目前無帳單", tone: "gray" }
     : invoice.status === "CONFIRMED"
@@ -1594,8 +1588,8 @@ function Overview({
 
       <section className="next-event-card">
         <div className="overview-date">
-          <strong>{dateParts?.[2] ?? event.date}</strong>
-          <span>{dateParts ? `${dateParts[1]}月` : ""}</span>
+          <strong>{nextEventDate?.day ?? event.date}</strong>
+          <span>{nextEventDate ? `${nextEventDate.month}月` : ""}</span>
           <small>{event.weekday}</small>
         </div>
         <div className="next-event-detail">
@@ -1616,7 +1610,7 @@ function Overview({
       </section>
 
       <div className="overview-lower">
-        <section className="my-status overview-status">
+        <section className="overview-card overview-status">
           <div className="status-heading">
             <div>
               <p>我的參加狀態</p>
@@ -1637,34 +1631,29 @@ function Overview({
             {!booking ? (
               <button className="primary" onClick={join}>{user.member ? "恢復參加" : "我要報名"}</button>
             ) : (
-              <>
-                <button className="secondary" onClick={cancel}>取消參加</button>
-                {booking.kind === "社員" && <button className="link" onClick={transfer}>轉讓本次名額 →</button>}
-              </>
+              <button className="link" onClick={showEvents}>查看活動詳情 →</button>
             )}
           </div>
         </section>
 
-        <div className="overview-side">
-          <section className="overview-card payment-summary">
-            <div>
-              <p>{invoiceLabel}</p>
-              <Badge tone={invoiceState.tone}>{invoiceState.label}</Badge>
-            </div>
-            <strong>{invoice ? `NT$ ${invoice.amount.toLocaleString("zh-TW")}` : "無待處理費用"}</strong>
-            <span>{invoice?.period_label ?? "目前沒有需要處理的付款項目"}</span>
-            <button className="link" onClick={showBilling}>查看費用明細 →</button>
-          </section>
+        <section className="overview-card payment-summary">
+          <div>
+            <p>{invoiceLabel}</p>
+            <Badge tone={invoiceState.tone}>{invoiceState.label}</Badge>
+          </div>
+          <strong>{invoice ? `NT$ ${invoice.amount.toLocaleString("zh-TW")}` : "無待處理費用"}</strong>
+          <span>{invoice?.period_label ?? "目前沒有需要處理的付款項目"}</span>
+          <button className="link" onClick={showBilling}>查看費用明細 →</button>
+        </section>
 
-          <section className="overview-card capacity-note">
-            <b>✦</b>
-            <div>
-              <p>名額提醒</p>
-              <h3>{capacityTitle}</h3>
-              <span>社員均預設正取且保證名額；非社員在正取額滿後才列入候補，候補仍可參加。</span>
-            </div>
-          </section>
-        </div>
+        <section className="overview-card capacity-note">
+          <b>✦</b>
+          <div>
+            <p>名額概況</p>
+            <h3>{capacityTitle}</h3>
+            <span>社員預設正取且保證名額；非社員在正取滿額後列入候補，候補仍可參加。</span>
+          </div>
+        </section>
       </div>
     </div>
   );
@@ -1994,16 +1983,20 @@ function News({
 function Members({
   members,
   requests,
+  currentUser,
   admin,
   saving,
+  requestMembership,
   issueClaimCode,
   reviewRequest,
   manageMember,
 }: {
   members: Person[];
   requests: MembershipRequest[];
+  currentUser: Person;
   admin: boolean;
   saving: boolean;
+  requestMembership: () => void;
   issueClaimCode: (person: Person) => void;
   reviewRequest: (request: MembershipRequest, decision: "APPROVE" | "REJECT") => void;
   manageMember: (person: Person) => void;
@@ -2012,9 +2005,23 @@ function Members({
   const normalizedQuery = query.trim().toLocaleLowerCase("zh-Hant");
   const visibleMembers = members.filter((person) => !normalizedQuery || person.name.toLocaleLowerCase("zh-Hant").includes(normalizedQuery) || person.department?.toLocaleLowerCase("zh-Hant").includes(normalizedQuery));
   const pendingRequests = requests.filter((request) => request.status === "PENDING");
+  const myPendingRequest = pendingRequests.find((request) => request.memberId === currentUser.id);
   const membershipLabel = (person: Person) => person.membershipStatus === "EXITING" ? "本期後退出" : person.member ? "社員" : "非社員";
   return (
     <div className="member-page">
+      {!currentUser.member && (
+        <section className="membership-join-cta">
+          <div className="membership-join-icon" aria-hidden="true">＋</div>
+          <div>
+            <p>加入羽球社</p>
+            <h3>{myPendingRequest ? "入社申請審核中" : "想固定參加每週活動？"}</h3>
+            <span>{myPendingRequest ? "幹部完成審核前仍維持非社員身分，請留意站內通知。" : "送出後由幹部審核；核准後立即成為社員，並依剩餘活動場次計費。"}</span>
+          </div>
+          <button type="button" className="primary small" disabled={saving || Boolean(myPendingRequest)} onClick={requestMembership}>
+            {saving ? "送出中…" : myPendingRequest ? "等待審核" : "申請入社"}
+          </button>
+        </section>
+      )}
       {admin && (
         <section className="membership-requests">
           <header>

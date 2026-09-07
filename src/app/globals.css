@@ -635,15 +635,20 @@ select {
   display: flex;
   gap: 15px;
   align-items: center;
+  padding-right: 52px;
 }
 .bell {
-  position: relative;
+  position: fixed;
+  z-index: 101;
+  top: calc(20px + env(safe-area-inset-top));
+  right: calc(24px + env(safe-area-inset-right));
   width: 36px;
   height: 36px;
   border: 1px solid var(--line);
   border-radius: 50%;
   background: #fff;
   color: var(--green);
+  box-shadow: 0 8px 24px #173f3720;
 }
 .bell em {
   position: absolute;
@@ -662,10 +667,10 @@ select {
   font-style: normal;
 }
 .notification-panel {
-  position: absolute;
-  z-index: 9;
-  top: 48px;
-  right: 0;
+  position: fixed;
+  z-index: 100;
+  top: calc(68px + env(safe-area-inset-top));
+  right: calc(24px + env(safe-area-inset-right));
   display: flex;
   overflow: hidden;
   width: min(390px, calc(100vw - 32px));
@@ -877,9 +882,9 @@ select {
 }
 .overview-lower {
   display: flex;
+  flex-wrap: wrap;
   gap: 18px;
 }
-.my-status,
 .overview-card,
 .overview-empty,
 .table,
@@ -890,14 +895,10 @@ select {
   background: var(--card);
   box-shadow: 0 5px 18px #173f3706;
 }
-.my-status {
+.overview-status {
   display: flex;
-  flex: 1 1 56%;
   flex-direction: column;
   justify-content: space-between;
-  min-height: 280px;
-  padding: 28px;
-  border-radius: 18px;
 }
 .status-heading {
   display: flex;
@@ -905,7 +906,7 @@ select {
   align-items: flex-start;
   justify-content: space-between;
 }
-.my-status p,
+.overview-status p,
 .overview-card p {
   margin: 0 0 5px;
   color: var(--green);
@@ -913,11 +914,11 @@ select {
   font-weight: 800;
   letter-spacing: 0.11em;
 }
-.my-status h3 {
+.overview-status h3 {
   margin: 0 0 4px;
   font-size: 24px;
 }
-.my-status span {
+.overview-status > span {
   display: block;
   max-width: 520px;
   margin-top: 13px;
@@ -929,18 +930,18 @@ select {
   display: flex;
   gap: 13px;
   align-items: center;
-  margin-top: 26px;
-}
-.overview-side {
-  display: flex;
-  flex: 1 1 360px;
-  flex-direction: column;
-  gap: 18px;
+  margin-top: auto;
+  padding-top: 22px;
 }
 .overview-card {
-  flex: 1;
+  flex: 1 1 260px;
+  min-height: 190px;
   padding: 22px 24px;
   border-radius: 18px;
+}
+.payment-summary {
+  display: flex;
+  flex-direction: column;
 }
 .payment-summary > div {
   display: flex;
@@ -957,6 +958,11 @@ select {
   margin-bottom: 8px;
   color: var(--muted);
   font-size: 12px;
+}
+.payment-summary > button {
+  align-self: flex-start;
+  margin-top: auto;
+  padding-top: 12px;
 }
 .capacity-note {
   display: flex;
@@ -1107,7 +1113,7 @@ dialog.event-dialog {
 .event-dialog-status,
 .event-dialog-actions {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   flex-wrap: wrap;
   gap: 10px;
 }
@@ -1815,6 +1821,51 @@ dialog.event-dialog {
   flex-direction: column;
   gap: 18px;
 }
+.membership-join-cta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 22px 24px;
+  border: 1px solid #cfe4d9;
+  border-radius: 18px;
+  background: linear-gradient(110deg, #eff8f3, #fbfdf1);
+  box-shadow: 0 5px 18px #173f3706;
+}
+.membership-join-icon {
+  display: flex;
+  flex: 0 0 44px;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+  background: var(--green);
+  color: #fff;
+  font-size: 23px;
+}
+.membership-join-cta > div:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.membership-join-cta p {
+  margin: 0 0 4px;
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+.membership-join-cta h3 {
+  margin: 0 0 5px;
+  font-size: 19px;
+}
+.membership-join-cta span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.membership-join-cta > button {
+  flex: 0 0 auto;
+}
 .membership-requests {
   overflow: hidden;
   border: 1px solid #e7eeee;
@@ -2169,9 +2220,9 @@ dialog.event-dialog {
   .overview-lower {
     flex-direction: column;
   }
-  .my-status,
-  .overview-side {
-    flex-basis: auto;
+  .overview-lower > .overview-card {
+    width: 100%;
+    min-height: 0;
   }
   .news-layout {
     flex-direction: column;
@@ -2267,11 +2318,13 @@ dialog.event-dialog {
     flex-direction: column;
   }
   .membership-action,
+  .membership-join-cta,
   .membership-requests article {
     align-items: flex-start;
     flex-direction: column;
   }
   .membership-action > button,
+  .membership-join-cta > button,
   .request-actions {
     width: 100%;
   }
@@ -2279,11 +2332,17 @@ dialog.event-dialog {
     flex: 1;
   }
   .notification-panel {
-    position: fixed;
-    top: 72px;
-    right: 16px;
-    left: 16px;
+    top: calc(64px + env(safe-area-inset-top));
+    right: calc(16px + env(safe-area-inset-right));
+    left: calc(16px + env(safe-area-inset-left));
     width: auto;
+  }
+  .header-actions {
+    padding-right: 46px;
+  }
+  .bell {
+    top: calc(14px + env(safe-area-inset-top));
+    right: calc(16px + env(safe-area-inset-right));
   }
   .overview-heading {
     align-items: center;
@@ -2320,11 +2379,7 @@ dialog.event-dialog {
   .attendance-summary strong {
     font-size: 24px;
   }
-  .my-status {
-    min-height: 0;
-    padding: 22px;
-  }
-  .my-status h3 {
+  .overview-status h3 {
     font-size: 20px;
   }
   .status-actions {
