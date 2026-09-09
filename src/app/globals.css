@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./billing-dashboard.css";
 
 :root {
   --ink: #1a2940;
@@ -1489,63 +1490,60 @@ dialog.event-dialog {
 .time-pair, .capacity-fields { display: flex; gap: 8px; }
 .time-pair label, .time-pair input, .time-pair select, .capacity-fields label { min-width: 0; flex: 1; }
 .form-note { margin: 2px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
-.rest-day-manager {
+
+.quarter-planner, .quarter-summary, .quarter-suggestions, .quarter-activity, .quarter-select {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 12px;
+  min-width: 0;
 }
-.rest-day-manager .manager-form {
-  min-height: 0;
-}
-.rest-day-list {
+.quarter-planner fieldset {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-}
-.rest-day-list > div,
-.rest-day-list article {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 11px 13px;
-}
-.rest-day-list > div {
-  background: #f7faf9;
-  color: var(--green);
-  font-size: 12px;
-}
-.rest-day-list > div span,
-.rest-day-list > p {
-  color: var(--muted);
-  font-size: 11px;
-}
-.rest-day-list > p {
+  gap: 12px;
+  min-width: 0;
   margin: 0;
-  padding: 18px 13px;
-  text-align: center;
+  padding: 0;
+  border: 0;
 }
-.rest-day-list article {
-  border-top: 1px solid var(--line);
-}
-.rest-day-list article > span {
+.quarter-planner label {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 0;
 }
-.rest-day-list article strong {
+.quarter-planner input, .quarter-planner select, .quarter-planner textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.quarter-planner label.quarter-check { flex-direction: row; align-items: center; }
+.quarter-check input { width: 16px; height: 16px; }
+.quarter-summary, .quarter-activity {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f7faf9;
   font-size: 12px;
 }
-.rest-day-list article small {
+.quarter-summary strong { color: var(--green); }
+.quarter-summary small, .quarter-planner small, .quarter-suggestions header span {
   color: var(--muted);
   font-size: 11px;
+  line-height: 1.6;
 }
-.rest-day-list button:disabled {
-  cursor: wait;
-  opacity: .55;
-}
+.quarter-suggestions header { display: flex; flex-direction: column; gap: 6px; }
+.quarter-suggestions > fieldset { max-height: 420px; overflow-y: auto; padding-right: 5px; }
+.quarter-activity-heading, .quarter-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.quarter-actions { flex-wrap: wrap; padding-top: 8px; }
+.quarter-actions button { flex: 1; }
+.quarter-feedback { margin: 0; padding: 12px; background: #eef6f2; color: var(--green); border-radius: 8px; font-size: 12px; line-height: 1.6; }
+.invoice-adjustments { margin-top: 8px; font-size: 11px; }
+.invoice-adjustments summary { cursor: pointer; color: var(--green); }
+.invoice-adjustments div { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; padding: 8px; border-left: 2px solid var(--line); }
+.invoice-adjustments div strong, .invoice-adjustments div span { font-size: 11px; overflow-wrap: anywhere; }
 .publish textarea {
   resize: vertical;
 }

@@ -2,6 +2,10 @@
 
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
+import QuarterPlanner from "@/app/quarter-planner";
+import BillingDashboard, { type BillingProps } from "@/app/billing-dashboard";
+import { activityPayments, isPrincipal, type ManagedInvoice } from "@/lib/billing-view";
+import type { QuarterPlan } from "@/lib/quarter-planning";
 import type {
   AuthenticationResponseJSON,
   PublicKeyCredentialCreationOptionsJSON,
@@ -11,14 +15,12 @@ import type {
 
 type Role = "admin" | "member";
 type Tab = "總覽" | "活動" | "公告" | "社員名單" | "費用管理" | "個人資訊";
-type ActivityManagerTab = "single" | "weekly" | "rest";
+type ActivityManagerTab = "single" | "quarter";
 type BillingManagerTab = "quarterly" | "rates";
 type Person = { id: string; name: string; department?: string; role: Role; member: boolean; membershipStatus?: string; creditBalance?: number; primaryAdmin?: boolean };
 type Booking = { memberId: string; name: string; kind: "社員" | "非社員"; rank: "正取" | "候補"; transferred?: boolean };
 type NewsItem = { id: string; title: string; content: string; date: string; linkUrl?: string; pinned: boolean };
-type InvoiceEventSchedule = { id: string; starts_at: string | null; ends_at: string | null; courts: string };
-type Invoice = { id: string; member_id: string; event_id?: string | null; event_ids?: string[]; event_schedules?: InvoiceEventSchedule[]; memberName: string; type: string; gross_amount: number; credit_applied: number; amount: number; status: string; period_label?: string; due_at?: string | null };
-type RestDay = { id: string; date: string; label: string };
+type Invoice = ManagedInvoice;
 type FeeRate = { id: string; kind: string; amount: number; effective_from: string | null; effective_to: string | null };
 type MembershipRequest = { id: string; memberId: string; memberName: string; kind: "JOIN" | "EXIT"; status: "PENDING" | "APPROVED" | "REJECTED"; requestedAt: string | null; reviewedAt: string | null };
 type ClubNotification = { id: string; title: string; message: string; type: string; tab: string; createdAt: string | null; read: boolean };
@@ -33,10 +35,11 @@ type Viewer = {
   hasRecoveryCode: boolean;
   hasPasskey: boolean;
 };
-type ActionResult = { recoveryCode?: string; claimCode?: string; recipientName?: string; invoiceCount?: number; eventCount?: number; totalAmount?: number; periodLabel?: string; createdCount?: number };
+type ActionResult = { results?: { id: string; success: boolean; error?: string }[]; invoiceId?: string; planId?: string; revision?: number; recoveryCode?: string; claimCode?: string; recipientName?: string; invoiceCount?: number; eventCount?: number; totalAmount?: number; periodLabel?: string; createdDate?: string | null; targetDate?: string; status?: string };
 type DeviceAccount = { id: string; name: string; role: "ADMIN" | "MEMBER"; membershipStatus: string };
 type ClubEvent = {
   id: string;
+  memberBilling?: string;
   startsAt?: string;
   endsAt?: string;
   date: string;
@@ -55,10 +58,10 @@ type ClubEvent = {
 type ApiState = {
   viewer: Viewer | null;
   members: { id: string; name: string; department?: string; role: string; membershipStatus: string; creditBalance?: number; primaryAdmin?: boolean }[];
-  events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; regular_count: number; standby_count: number; member_fee: number; guest_fee: number; bookings: { memberId: string; name: string; kind: string; status: string }[] }[];
+  events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; regular_count: number; standby_count: number; member_fee: number; guest_fee: number; member_billing?: string; bookings: { memberId: string; name: string; kind: string; status: string; transferred?: boolean }[] }[];
   announcements: { id: string; title: string; content: string; publishedAt: string; linkUrl?: string; pinned: boolean }[];
   invoices: Invoice[];
-  restDays: RestDay[];
+  quarterPlans: QuarterPlan[];
   feeRates: FeeRate[];
   membershipRequests: MembershipRequest[];
   notifications: ClubNotification[];
@@ -78,29 +81,8 @@ function Badge({
 }
 
 type PaymentTone = "green" | "orange" | "blue" | "gray";
-const PAYMENT_STATUS: Record<string, { label: string; tone: PaymentTone }> = {
-  PENDING: { label: "未繳", tone: "orange" },
-  REPORTED: { label: "已回報，待確認", tone: "blue" },
-  CONFIRMED: { label: "已繳", tone: "green" },
-  VOID: { label: "已作廢", tone: "gray" },
-  CREDITED: { label: "已轉為餘額", tone: "gray" },
-};
 
-function invoiceIncludesEvent(invoice: Invoice, eventId: string) {
-  return invoice.event_id === eventId || invoice.event_ids?.includes(eventId) === true;
-}
 
-function formatInvoiceEventSchedule(event: InvoiceEventSchedule) {
-  if (!event.starts_at) return "活動時間未設定";
-  const startsAt = new Date(event.starts_at);
-  const date = taipeiDateParts(startsAt);
-  const weekday = new Intl.DateTimeFormat("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }).format(startsAt);
-  const startTime = taipeiInputTime(event.starts_at);
-  const endTime = taipeiInputTime(event.ends_at ?? undefined);
-  const dateLabel = `${date.year}/${String(date.month).padStart(2, "0")}/${String(date.day).padStart(2, "0")}（${weekday}）`;
-  const timeLabel = endTime ? `${startTime}–${endTime}` : startTime;
-  return `${dateLabel} ${timeLabel}${event.courts ? ` · ${event.courts}` : ""}`;
-}
 
 export default function Home() {
   const [viewer, setViewer] = useState<Viewer | null>(null);
@@ -116,7 +98,7 @@ export default function Home() {
   const [news, setNews] = useState<NewsItem[]>([]);
   const [members, setMembers] = useState<Person[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [restDays, setRestDays] = useState<RestDay[]>([]);
+  const [quarterPlans, setQuarterPlans] = useState<QuarterPlan[]>([]);
   const [feeRates, setFeeRates] = useState<FeeRate[]>([]);
   const [membershipRequests, setMembershipRequests] = useState<MembershipRequest[]>([]);
   const [notifications, setNotifications] = useState<ClubNotification[]>([]);
@@ -127,7 +109,7 @@ export default function Home() {
   const [transferEventId, setTransferEventId] = useState<string | null>(null);
   const [recipient, setRecipient] = useState("");
   const [editingEvent, setEditingEvent] = useState<ClubEvent | null>(null);
-  const [managerTab, setManagerTab] = useState<ActivityManagerTab>("single");
+  const [managerTab, setManagerTab] = useState<ActivityManagerTab>("quarter");
   const [managerOpen, setManagerOpen] = useState(false);
   const [managerDate, setManagerDate] = useState("");
   const [managerSaving, setManagerSaving] = useState(false);
@@ -170,7 +152,7 @@ export default function Home() {
       const endsAt = new Date(item.ends_at);
       const date = `${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "numeric" })} ${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", day: "numeric" })}`;
       const time = `${startsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })} – ${endsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })}`;
-      return { id: item.id, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, regularBooked: item.regular_count, waitBooked: item.standby_count, memberFee: item.member_fee, guestFee: item.guest_fee, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
+      return { id: item.id, memberBilling: item.member_billing, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, regularBooked: item.regular_count, waitBooked: item.standby_count, memberFee: item.member_fee, guestFee: item.guest_fee, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, transferred: booking.transferred, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
     }));
     setNews(state.announcements.map((item) => ({
       id: item.id,
@@ -181,7 +163,7 @@ export default function Home() {
       pinned: item.pinned,
     })));
     setInvoices(state.invoices ?? []);
-    setRestDays(state.restDays ?? []);
+    setQuarterPlans(state.quarterPlans ?? []);
     setFeeRates(state.feeRates ?? []);
     setMembershipRequests(state.membershipRequests ?? []);
     setNotifications(state.notifications ?? []);
@@ -233,7 +215,7 @@ export default function Home() {
   const event = events.find((item) => !item.endsAt || new Date(item.endsAt) > new Date());
   const headerDate = event?.startsAt ? new Intl.DateTimeFormat("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "long" }).format(new Date(event.startsAt)) : "台北時間 · UTC+8";
   const booking = event?.bookings.find((item) => item.memberId === viewer?.id);
-  const invoice = invoices.find((item) => item.member_id === viewer?.id && ["PENDING", "REPORTED", "CONFIRMED"].includes(item.status));
+  const invoice = invoices.find((item) => item.member_id === viewer?.id && isPrincipal(item) && ["PENDING", "REPORTED", "CONFIRMED"].includes(item.status));
   const createGuest = async (candidate: string) => {
     const clean = candidate.trim();
     if (!clean) return;
@@ -412,7 +394,7 @@ export default function Home() {
     if (!times) return;
     setManagerSaving(true);
     try {
-      if (await execute("createEvent", { ...times, courts: String(data.get("courts")), regularCapacity: String(data.get("regular")), standbyCapacity: String(data.get("standby")) })) {
+      if (await execute("createEvent", { ...times, memberBilling: String(data.get("memberBilling")), billingReason: String(data.get("billingReason")), courts: String(data.get("courts")), regularCapacity: String(data.get("regular")), standbyCapacity: String(data.get("standby")) })) {
         element.reset();
         setManagerOpen(false);
       }
@@ -435,53 +417,17 @@ export default function Home() {
       setManagerSaving(false);
     }
   };
-  const addRestDay = async (form: FormEvent<HTMLFormElement>) => {
-    form.preventDefault();
-    const element = form.currentTarget;
-    const data = new FormData(element);
-    setManagerSaving(true);
-    try {
-      if (await execute("addRestDay", { date: new Date(`${data.get("date")}T00:00:00.000Z`).toISOString(), label: String(data.get("label")).trim() })) {
-        element.reset();
-      }
-    } finally {
-      setManagerSaving(false);
-    }
-  };
-  const removeRestDay = async (restDay: RestDay) => {
-    if (!window.confirm(`確定要移除「${restDay.label}（${restDay.date}）」嗎？`)) return;
-    setManagerSaving(true);
-    try {
-      await execute("removeRestDay", { restDayId: restDay.id });
-    } finally {
-      setManagerSaving(false);
-    }
-  };
   const cancelClubEvent = async (eventId: string) => {
-    if (!window.confirm("確定要取消這場活動嗎？報名紀錄與相關單次帳單會一併處理。")) return;
+    if (!window.confirm("確定取消這場活動？季度原始計費基準會保留：未繳款另列減收紀錄，已繳款退回帳戶餘額，已回報轉帳則待幹部確認後退回。")) return;
     await execute("cancelEvent", { eventId });
   };
-  const generateWeeklyEvents = async (form: FormEvent<HTMLFormElement>) => {
-    form.preventDefault();
-    const element = form.currentTarget;
-    const data = new FormData(element);
-    const start = String(data.get("start") ?? "");
-    const end = String(data.get("end") ?? "");
-    if (end <= start) {
-      window.alert("結束時間必須晚於開始時間");
-      return;
-    }
+
+  const quarterAction = async (action: string, input: Record<string, string>) => {
     setManagerSaving(true);
     try {
-      const payload = await execute("generateWeeklyEvents", { startDate: String(data.get("startDate")), weeks: String(data.get("weeks")), startTime: start, endTime: end, courts: String(data.get("courts")), regularCapacity: String(data.get("regular")), standbyCapacity: String(data.get("standby")) });
-      if (payload) {
-        element.reset();
-        setManagerOpen(false);
-        window.alert(payload.actionResult?.createdCount ? `已建立 ${payload.actionResult.createdCount} 場活動。` : "沒有建立新活動；所選期間可能已存在活動或休團日。");
-      }
-    } finally {
-      setManagerSaving(false);
-    }
+      const payload = await execute(action, input);
+      return payload?.actionResult ?? null;
+    } finally { setManagerSaving(false); }
   };
   const reportInvoicePayment = async (invoiceId: string) => {
     setBillingSaving(true);
@@ -490,6 +436,12 @@ export default function Home() {
     } finally {
       setBillingSaving(false);
     }
+  };
+
+  const manageInvoiceAction = async (action: string, input: Record<string, string>) => {
+    setBillingSaving(true);
+    try { const payload = await execute(action, input); return payload?.actionResult ?? null; }
+    finally { setBillingSaving(false); }
   };
   const confirmInvoicePayment = async (invoiceId: string) => {
     setBillingSaving(true);
@@ -514,10 +466,8 @@ export default function Home() {
     setBillingSaving(true);
     try {
       const payload = await execute("createQuarterlyInvoices", {
-        startDate: String(data.get("startDate")),
-        endDate: String(data.get("endDate")),
+        planId: String(data.get("planId")),
         dueDate: String(data.get("dueDate")),
-        label: String(data.get("label")).trim(),
       });
       if (payload) {
         const result = payload.actionResult;
@@ -674,7 +624,7 @@ export default function Home() {
                 onClick={() => {
                   if (tab === "活動") {
                     setManagerDate("");
-                    setManagerTab("single");
+                    setManagerTab("quarter");
                     setManagerOpen(true);
                   } else if (tab === "費用管理") {
                     setBillingManagerTab("quarterly");
@@ -723,6 +673,8 @@ export default function Home() {
           <Billing
             admin={isAdmin}
             invoices={invoices}
+            events={events}
+            manage={manageInvoiceAction}
             viewer={viewer}
             saving={billingSaving}
             reportPayment={reportInvoicePayment}
@@ -777,10 +729,8 @@ export default function Home() {
           setTab={setManagerTab}
           onClose={() => setManagerOpen(false)}
           createEvent={createEvent}
-          generateWeeklyEvents={generateWeeklyEvents}
-          addRestDay={addRestDay}
-          restDays={restDays}
-          removeRestDay={removeRestDay}
+          plans={quarterPlans}
+          quarterAction={quarterAction}
         />
       )}
       {isAdmin && announcementOpen && (
@@ -798,6 +748,7 @@ export default function Home() {
           saving={billingSaving}
           currentFees={currentFees}
           feeRates={feeRates}
+          plans={quarterPlans}
           onClose={() => setBillingManagerOpen(false)}
           createQuarterlyInvoices={createQuarterlyInvoices}
           saveFeeRates={saveFeeRates}
@@ -841,10 +792,8 @@ function ActivityManagerModal({
   setTab,
   onClose,
   createEvent,
-  generateWeeklyEvents,
-  addRestDay,
-  restDays,
-  removeRestDay,
+  plans,
+  quarterAction,
 }: {
   initialDate: string;
   tab: ActivityManagerTab;
@@ -852,10 +801,8 @@ function ActivityManagerModal({
   setTab: (tab: ActivityManagerTab) => void;
   onClose: () => void;
   createEvent: (form: FormEvent<HTMLFormElement>) => void;
-  generateWeeklyEvents: (form: FormEvent<HTMLFormElement>) => void;
-  addRestDay: (form: FormEvent<HTMLFormElement>) => void;
-  restDays: RestDay[];
-  removeRestDay: (restDay: RestDay) => void;
+  plans: QuarterPlan[];
+  quarterAction: (action: string, input: Record<string, string>) => Promise<ActionResult | null>;
 }) {
   return (
     <div
@@ -873,13 +820,10 @@ function ActivityManagerModal({
         <h2 id="activity-manager-title">活動管理</h2>
         <div className="manager-tabs" role="tablist" aria-label="活動管理功能">
           <button type="button" role="tab" aria-selected={tab === "single"} className={tab === "single" ? "active" : ""} onClick={() => setTab("single")}>
-            建立活動
+            單次加場
           </button>
-          <button type="button" role="tab" aria-selected={tab === "weekly"} className={tab === "weekly" ? "active" : ""} onClick={() => setTab("weekly")}>
-            未來場次
-          </button>
-          <button type="button" role="tab" aria-selected={tab === "rest"} className={tab === "rest" ? "active" : ""} onClick={() => setTab("rest")}>
-            休團日
+          <button type="button" role="tab" aria-selected={tab === "quarter"} className={tab === "quarter" ? "active" : ""} onClick={() => setTab("quarter")}>
+            季度規劃
           </button>
         </div>
 
@@ -914,80 +858,15 @@ function ActivityManagerModal({
               </label>
             </div>
             <p className="form-note">有效社員建立場次時會自動列為正取並保證名額；非社員使用剩餘正取名額，滿額後才列入候補，候補仍可到場。</p>
+
+            <label>加場社員收費<select name="memberBilling" required defaultValue=""><option value="" disabled>請選擇收費方式</option><option value="NO_CHARGE">不另收社員費</option><option value="EXTRA">另建社員加場補收帳單</option></select></label>
+            <label>加場收費／免收原因<input name="billingReason" maxLength={200} required placeholder="例如：額外租場，另收單次社員費" /></label>
+            <p className="form-note">加場不會增加已確認季度的原始場數。選擇補收時，依本場社員費率為預設參加社員另建帳單。</p>
             <button className="primary" disabled={saving}>{saving ? "建立中…" : "建立活動"}</button>
           </form>
         )}
 
-        {tab === "weekly" && (
-          <form className="manager-form" onSubmit={generateWeeklyEvents}>
-            <label>
-              起始日期
-              <input name="startDate" type="date" required autoFocus />
-            </label>
-            <label>
-              建立週數
-              <input name="weeks" type="number" min="1" max="16" defaultValue="12" required />
-              <small>系統會從起始日期往後尋找週五，最多一次建立 16 週。</small>
-            </label>
-            <div className="time-pair">
-              <label>
-                每場開始時間
-                <input name="start" type="time" defaultValue="19:00" required />
-              </label>
-              <label>
-                每場結束時間
-                <input name="end" type="time" defaultValue="21:00" required />
-              </label>
-            </div>
-            <label>
-              預設活動場地
-              <input name="courts" defaultValue="公司體育館 A 場" required />
-            </label>
-            <div className="capacity-fields">
-              <label>
-                每場正取基準人數
-                <input name="regular" type="number" min="1" max="100" defaultValue="10" required />
-              </label>
-              <label>
-                每場候補人數
-                <input name="standby" type="number" min="0" max="100" defaultValue="4" required />
-              </label>
-            </div>
-            <p className="form-note">已存在的活動與休團日會自動略過；每場都會先將有效社員預設列為正取。</p>
-            <button className="primary" disabled={saving}>{saving ? "建立中…" : "建立未來場次"}</button>
-          </form>
-        )}
-
-        {tab === "rest" && (
-          <div className="rest-day-manager">
-            <form className="manager-form" onSubmit={addRestDay}>
-              <label>
-                休團日期
-                <input name="date" type="date" required autoFocus />
-              </label>
-              <label>
-                休團原因
-                <input name="label" placeholder="例如：國定假日、公司休假" required />
-              </label>
-              <p className="form-note">若當天已有活動，儲存休團日後會同步取消該活動並處理相關報名與單次帳單。</p>
-              <button className="primary" disabled={saving}>{saving ? "儲存中…" : "儲存休團日"}</button>
-            </form>
-            <section className="rest-day-list" aria-label="已設定休團日">
-              <div>
-                <strong>已設定休團日</strong>
-                <span>{restDays.length} 天</span>
-              </div>
-              {restDays.length === 0 ? (
-                <p>目前沒有休團日</p>
-              ) : restDays.map((restDay) => (
-                <article key={restDay.id}>
-                  <span><strong>{restDay.date}</strong><small>{restDay.label}</small></span>
-                  <button type="button" className="link danger" disabled={saving} onClick={() => removeRestDay(restDay)}>移除</button>
-                </article>
-              ))}
-            </section>
-          </div>
-        )}
+        {tab === "quarter" && <QuarterPlanner plans={plans} saving={saving} perform={quarterAction} />}
       </section>
     </div>
   );
@@ -1113,6 +992,7 @@ function BillingManagerModal({
   saving,
   currentFees,
   feeRates,
+  plans,
   onClose,
   createQuarterlyInvoices,
   saveFeeRates,
@@ -1122,18 +1002,19 @@ function BillingManagerModal({
   saving: boolean;
   currentFees: { member: number; guest: number };
   feeRates: FeeRate[];
+  plans: QuarterPlan[];
   onClose: () => void;
   createQuarterlyInvoices: (form: FormEvent<HTMLFormElement>) => void;
   saveFeeRates: (form: FormEvent<HTMLFormElement>) => void;
 }) {
   const today = taipeiDateParts(new Date());
   const start = new Date(Date.UTC(today.year, today.month - 1, today.day));
-  const end = new Date(Date.UTC(today.year, today.month - 1 + 3, today.day));
-  end.setUTCDate(end.getUTCDate() - 1);
   const due = new Date(start);
   due.setUTCDate(due.getUTCDate() + 14);
   const inputDate = (date: Date) => date.toISOString().slice(0, 10);
-  const periodLabel = `${today.year} 年 ${today.month} 月起三個月`;
+  const billablePlans = plans.filter((plan) => plan.status === "CONFIRMED" && !plan.billed);
+  const [selectedPlanId, setSelectedPlanId] = useState(billablePlans[0]?.id ?? "");
+  const selectedPlan = billablePlans.find((plan) => plan.id === selectedPlanId);
 
   return (
     <div className="modal-cover" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
@@ -1148,14 +1029,15 @@ function BillingManagerModal({
 
         {tab === "quarterly" && (
           <form className="manager-form" onSubmit={createQuarterlyInvoices}>
-            <label>帳單期間名稱<input name="label" defaultValue={periodLabel} maxLength={60} required /></label>
-            <div className="time-pair">
-              <label>開始日期<input name="startDate" type="date" defaultValue={inputDate(start)} required /></label>
-              <label>結束日期<input name="endDate" type="date" defaultValue={inputDate(end)} required /></label>
-            </div>
+
+            <label>已確認季度<select name="planId" value={selectedPlanId} onChange={(event) => setSelectedPlanId(event.target.value)} required>
+              <option value="">選擇季度</option>
+              {billablePlans.map((plan) => <option key={plan.id} value={plan.id}>{plan.label} · {plan.eventCount} 場</option>)}
+            </select></label>
+            {selectedPlan && <div className="quarter-summary"><strong>{selectedPlan.startDate} ～ {selectedPlan.endDate}</strong><span>原始計費基準：{selectedPlan.eventCount} 場 · NT$ {Number(selectedPlan.grossAmount).toLocaleString("zh-TW")}／人</span></div>}
             <label>繳費期限<input name="dueDate" type="date" defaultValue={inputDate(due)} required /></label>
-            <p className="form-note">系統會統計期間內已排程活動，依各場建立時保存的社員費率加總，為目前社員建立預收帳單，並自動抵扣帳戶餘額。</p>
-            <button className="primary" disabled={saving}>{saving ? "建立中…" : "計算並建立帳單"}</button>
+            <p className="form-note">依季度確認時保存的場次與費率開單，並抵扣帳戶餘額；確認後取消的場次會另列減收紀錄，不會改掉原始基準。若沒有可選季度，請先到活動管理確認季度規劃。</p>
+            <button className="primary" disabled={saving || !selectedPlan}>{saving ? "建立中…" : "依確認基準建立帳單"}</button>
           </form>
         )}
 
@@ -1765,12 +1647,14 @@ function ActivityCalendar({ list, invoices, viewerId, openEvent, createOnDate }:
               <span className="calendar-day-number">{day}{isToday && <i>今天</i>}</span>
               {dayEvents.map((event) => {
                 const isParticipating = event.bookings.some((booking) => booking.memberId === viewerId);
-                const invoice = invoices.find((item) => item.member_id === viewerId && invoiceIncludesEvent(item, event.id));
-                const payment = !isParticipating
-                  ? { label: "未參加", tone: "gray" as PaymentTone }
-                  : invoice
-                    ? PAYMENT_STATUS[invoice.status] ?? { label: invoice.status, tone: "gray" as PaymentTone }
-                    : { label: "尚未開帳", tone: "gray" as PaymentTone };
+
+                const row = activityPayments(event, invoices.filter((item) => item.member_id === viewerId)).rows.find((entry) => entry.memberId === viewerId);
+                const payment = !isParticipating ? { label: "未參加", tone: "gray" as PaymentTone }
+                  : row?.status === "SETTLED" ? { label: "已結清", tone: "green" as PaymentTone }
+                  : row?.status === "PENDING" ? { label: "未繳", tone: "orange" as PaymentTone }
+                  : row?.status === "REPORTED" ? { label: "待確認", tone: "blue" as PaymentTone }
+                  : row?.status === "TRANSFER" || row?.status === "EXEMPT" ? { label: "免收", tone: "gray" as PaymentTone }
+                  : { label: "尚未開帳", tone: "gray" as PaymentTone };
                 return (
                   <button
                   type="button"
@@ -2076,98 +1960,6 @@ function Members({
     </div>
   );
 }
-function Billing({
-  admin,
-  invoices,
-  viewer,
-  saving,
-  reportPayment,
-  confirmPayment,
-  remindPayment,
-  openRates,
-}: {
-  admin: boolean;
-  invoices: Invoice[];
-  viewer: Viewer;
-  saving: boolean;
-  reportPayment: (invoiceId: string) => void;
-  confirmPayment: (invoiceId: string) => void;
-  remindPayment: (invoiceId: string) => void;
-  openRates: () => void;
-}) {
-  const status = PAYMENT_STATUS;
-  const invoiceType = (invoice: Invoice) => invoice.type === "QUARTERLY_MEMBER" ? "三個月社員預收" : invoice.type === "MEMBERSHIP_PRORATED" ? "中途加入社員費" : invoice.type === "SINGLE_EVENT" ? "非社員單次活動" : "帳務調整";
-  // 作廢帳單保留在資料庫供稽核，但沒有實際收付款，不顯示在帳單紀錄中。
-  const visibleInvoices = invoices.filter((invoice) => invoice.status !== "VOID");
-  const confirmedTotal = visibleInvoices.filter((invoice) => invoice.status === "CONFIRMED").reduce((total, invoice) => total + invoice.amount, 0);
-  const openInvoices = visibleInvoices.filter((invoice) => invoice.status === "PENDING" || invoice.status === "REPORTED");
-  const amountDue = openInvoices.reduce((total, invoice) => total + invoice.amount, 0);
-  const exportInvoices = () => {
-    const escape = (value: string | number) => `"${String(value).replaceAll('"', '""')}"`;
-    const rows = [
-      ["使用者", "類型", "期間", "活動日期與時間", "原始金額", "餘額抵扣", "應付金額", "狀態"],
-      ...visibleInvoices.map((invoice) => [invoice.memberName, invoiceType(invoice), invoice.period_label ?? "", invoice.event_schedules?.map(formatInvoiceEventSchedule).join("；") ?? "", invoice.gross_amount, invoice.credit_applied, invoice.amount, status[invoice.status]?.label ?? invoice.status]),
-    ];
-    const blob = new Blob([`\uFEFF${rows.map((row) => row.map(escape).join(",")).join("\r\n")}`], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `badminton-invoices-${new Date().toISOString().slice(0, 10)}.csv`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  };
-
-  return (
-    <div className="billing">
-      <section className="billing-top">
-        <div>
-          <p>{admin ? "帳務總覽" : "我的帳務"}</p>
-          <h3>{admin ? "目前收款概況" : "待處理費用"}</h3>
-        </div>
-        <strong>NT$ {(admin ? confirmedTotal : amountDue).toLocaleString("zh-TW")}</strong>
-        <span>{admin ? `${visibleInvoices.filter((invoice) => invoice.status === "CONFIRMED").length} 筆已確認 · ${openInvoices.length} 筆待處理` : `${openInvoices.length} 筆待處理 · 帳戶餘額 NT$${viewer.creditBalance.toLocaleString("zh-TW")}`}</span>
-      </section>
-      <section className="table">
-        <header>
-          <div>
-            <p>{admin ? "帳務清單" : "帳單明細"}</p>
-            <h3>{admin ? "付款確認" : "我的帳單紀錄"}</h3>
-          </div>
-          {admin && <div className="billing-tools"><button className="secondary" onClick={openRates}>費率設定</button><button className="secondary" disabled={visibleInvoices.length === 0} onClick={exportInvoices}>匯出 CSV</button></div>}
-        </header>
-        <div className="row head">
-          <span>{admin ? "使用者" : "項目"}</span>
-          <span>活動日期與時間</span>
-          <span>金額</span>
-          <span>狀態</span>
-        </div>
-        {visibleInvoices.length === 0 ? <div className="billing-empty">目前沒有帳單</div> : visibleInvoices.map((invoice) => {
-          const invoiceState = status[invoice.status] ?? { label: invoice.status, tone: "gray" as const };
-          const schedules = invoice.event_schedules ?? [];
-          return (
-          <div className="row" key={invoice.id}>
-            <strong><span>{admin ? invoice.memberName : invoiceType(invoice)}</span><small>{admin ? invoiceType(invoice) : invoice.period_label}</small></strong>
-            <span className="invoice-description">
-              <strong>{invoice.period_label ?? invoiceType(invoice)}</strong>
-              <span className="invoice-event-list">
-                {schedules.length > 0
-                  ? schedules.map((event) => <span key={event.id}>{formatInvoiceEventSchedule(event)}</span>)
-                  : <span>此帳務調整未關聯活動場次</span>}
-              </span>
-              {invoice.due_at && <small>繳費期限：{new Date(invoice.due_at).toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei" })}</small>}
-              {invoice.credit_applied > 0 && <small>已抵扣餘額 NT${invoice.credit_applied.toLocaleString("zh-TW")}</small>}
-            </span>
-            <strong>NT$ {invoice.amount.toLocaleString("zh-TW")}</strong>
-            <span className="billing-status">
-              <Badge tone={invoiceState.tone}>{invoiceState.label}</Badge>
-              {admin && invoice.status === "PENDING" && <button className="link" disabled={saving} onClick={() => remindPayment(invoice.id)}>催款</button>}
-              {!admin && invoice.status === "PENDING" && <button className="link" disabled={saving} onClick={() => reportPayment(invoice.id)}>我已轉帳</button>}
-              {admin && invoice.status === "REPORTED" && <button className="link" disabled={saving} onClick={() => confirmPayment(invoice.id)}>確認收款</button>}
-            </span>
-          </div>
-        );
-        })}
-      </section>
-    </div>
-  );
+function Billing(props: BillingProps) {
+  return <BillingDashboard {...props} />;
 }
