@@ -15,6 +15,41 @@ function loadTs(relative, dependencies = {}) {
 }
 const planning = loadTs("src/lib/quarter-planning.ts");
 const billingView = loadTs("src/lib/billing-view.ts");
+const shuttleArt = loadTs("src/app/shuttle-art.tsx");
+const loadingScreen = loadTs("src/app/loading-screen.tsx", { "@/app/shuttle-art": shuttleArt });
+test("loading screen renders deterministic accessible shuttle animation", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const render = () => renderToStaticMarkup(React.createElement(loadingScreen.default));
+  assert.equal(render(), render());
+  assert.match(render(), /<main class="loading-screen"/);
+  assert.match(render(), /role="status"/);
+  assert.match(render(), /正在準備球場/);
+  assert.match(render(), /shuttle-loader__bird/);
+  assert.match(render(), /shuttle-loader__racket/);
+  assert.match(render(), /translate\(86 114\.4\) scale\(0\.6\)/);
+});
+test("compact login loading avoids a nested main landmark", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const html = renderToStaticMarkup(React.createElement(loadingScreen.default, { compact: true, title: "正在處理登入…" }));
+  assert.match(html, /shuttle-loader--compact/);
+  assert.match(html, /正在處理登入/);
+  assert.doesNotMatch(html, /<main/);
+});
+test("loading failure offers retry and styles stop motion for reduced-motion preference", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const html = renderToStaticMarkup(React.createElement(loadingScreen.default, { error: true, title: "暫時無法載入", onRetry() {} }));
+  assert.match(html, /role="alert"/);
+  assert.match(html, /重新載入/);
+  assert.doesNotMatch(html, /shuttle-loader__dots/);
+  const css = fs.readFileSync(path.resolve(__dirname, "../src/app/loading-screen.css"), "utf8");
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*animation: none/);
+  assert.match(css, /@keyframes shuttle-bounce/);
+  assert.match(css, /@keyframes racket-tap/);
+  assert.doesNotMatch(css, /shuttle-float/);
+});
 function managementInput(s, id = "quarter-test-plan-member", extra = {}) {
  const invoice = s.db.data("invoices/" + id);
  return { invoiceId: id, expectedStatus: invoice.status, expectedAmount: String(planning.effectiveInvoiceAmounts(invoice).amount), reason: "更正測試帳單", ...extra };
@@ -145,6 +180,8 @@ test("billing renders self-payment for admin's own bill, reminders for others an
   const loaded = { exports: {} };
   const dashboard = loadTs("src/app/billing-dashboard.tsx", { "@/lib/billing-view": billingView });
   const dependencies = { "@simplewebauthn/browser": {}, "@/app/quarter-planner": { default: () => null }, "@/app/billing-dashboard": dashboard, "@/lib/billing-view": billingView, "@/lib/quarter-planning": planning };
+  dependencies["@/app/loading-screen"] = loadingScreen;
+  dependencies["@/app/shuttle-art"] = shuttleArt;
   new Function("require", "module", "exports", code + "\nmodule.exports.BillingForTest = Billing;")((id) => dependencies[id] ?? require(id), loaded, loaded.exports);
   const props = { admin: true, viewer: { ...admin, creditBalance: 0 }, saving: false, reportPayment() {}, confirmPayment() {}, remindPayment() {}, openRates() {} };
   const invoice = { id: "invoice", member_id: admin.id, memberName: admin.name, type: "QUARTERLY_MEMBER", gross_amount: 1500, credit_applied: 0, amount: 1500, status: "PENDING" };

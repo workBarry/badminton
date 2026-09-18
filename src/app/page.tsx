@@ -3,6 +3,8 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import QuarterPlanner from "@/app/quarter-planner";
+import LoadingScreen from "@/app/loading-screen";
+import ShuttleArt from "@/app/shuttle-art";
 import BillingDashboard, { type BillingProps } from "@/app/billing-dashboard";
 import { activityPayments, isPrincipal, type ManagedInvoice } from "@/lib/billing-view";
 import type { QuarterPlan } from "@/lib/quarter-planning";
@@ -87,6 +89,7 @@ type PaymentTone = "green" | "orange" | "blue" | "gray";
 export default function Home() {
   const [viewer, setViewer] = useState<Viewer | null>(null);
   const [sessionReady, setSessionReady] = useState(false);
+  const [sessionError, setSessionError] = useState(false);
   const [input, setInput] = useState("");
   const [authSaving, setAuthSaving] = useState(false);
   const [passkeySaving, setPasskeySaving] = useState(false);
@@ -170,17 +173,25 @@ export default function Home() {
     setCurrentFees(state.currentFees ?? { member: 150, guest: 180 });
   }, []);
 
-  const refresh = useCallback(async () => {
-    try {
-      const response = await fetch("/api/club", { cache: "no-store" });
-      if (response.ok) applyState(await response.json() as ApiState);
-    } finally {
+  const refresh = useCallback((signal?: AbortSignal) => {
+    const timeout = AbortSignal.timeout(20000);
+    const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    return fetch("/api/club", { cache: "no-store", signal: requestSignal }).then(async (response) => {
+      if (!response.ok) throw new Error("Unable to load club data");
+      return await response.json() as ApiState;
+    }).then((state) => {
+      if (signal?.aborted) return;
+      applyState(state);
       setSessionReady(true);
-    }
+    }).catch(() => {
+      if (!signal?.aborted) setSessionError(true);
+    });
   }, [applyState]);
 
   useEffect(() => {
-    void refresh();
+    const controller = new AbortController();
+    void refresh(controller.signal);
+    return () => controller.abort();
   }, [refresh]);
 
   const execute = async (action: string, data: Record<string, string>) => {
@@ -553,7 +564,12 @@ export default function Home() {
   };
   const unreadNotifications = notifications.filter((notification) => !notification.read);
 
-  if (!sessionReady) return <main className="login"><section className="session-loading"><div className="login-logo">羽</div><h1>正在確認此裝置…</h1><span>請稍候，系統正在安全地恢復登入狀態。</span></section></main>;
+  if (!sessionReady) return <LoadingScreen
+    error={sessionError}
+    title={sessionError ? "暫時無法載入" : "正在準備球場…"}
+    description={sessionError ? "連線逾時或暫時無法取得資料，請檢查網路後再試一次。" : "正在讀取活動與帳號資訊，請稍候。"}
+    onRetry={() => { setSessionError(false); void refresh(); }}
+  />;
   if (!viewer) return <Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} passkeyLogin={loginWithPasskey} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving || passkeySaving} events={events} news={news} />;
   const isAdmin = user.role === "admin";
   return (
@@ -569,7 +585,13 @@ export default function Home() {
           {sidebarCollapsed ? "›" : "‹"}
         </button>
         <div className="brand">
-          <b>羽</b>
+          <b role="img" aria-label="羽球">
+            <svg viewBox="-8 -4 84 88" fill="none" aria-hidden="true" focusable="false">
+              <g transform="rotate(22 32 40)">
+                <ShuttleArt monochrome />
+              </g>
+            </svg>
+          </b>
           <span>
             <strong>球友會</strong>
             <small>BADMINTON CLUB</small>
@@ -1168,6 +1190,7 @@ function Login({
           <strong>使用 Passkey 登入</strong>
           <span>Windows Hello、Face ID 或裝置 PIN</span>
         </button>
+        {saving && <LoadingScreen compact title="正在處理登入…" description="若出現裝置驗證視窗，請依提示完成。" />}
         <aside className="notice">
           <strong>測試版帳號提醒</strong>
           <span>相同姓名也會建立成不同帳號。未建立復原碼前，清除瀏覽器資料或更換裝置可能導致帳號無法取回。</span>

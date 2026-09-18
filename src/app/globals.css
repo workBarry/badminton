@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./billing-dashboard.css";
+@import "./loading-screen.css";
 
 :root {
   --ink: #1a2940;
@@ -410,15 +411,6 @@ select {
   color: var(--muted);
   font-size: 11px;
 }
-.session-loading {
-  text-align: center;
-}
-.session-loading .login-logo {
-  margin: 0 auto 24px;
-}
-.session-loading h1 {
-  font-size: 28px;
-}
 .recent {
   margin-top: 23px;
 }
@@ -521,8 +513,14 @@ select {
 .brand > b {
   width: 38px;
   height: 38px;
+  flex-shrink: 0;
   border-radius: 12px;
   font-size: 21px;
+}
+.brand > b svg {
+  display: block;
+  width: 26px;
+  height: 30px;
 }
 .brand strong,
 .brand small,
