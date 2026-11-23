@@ -2185,6 +2185,8 @@ function Members({
   manageMember: (person: Person) => void;
 }) {
   const [query, setQuery] = useState("");
+  const reviewDialog = useRef<HTMLDialogElement>(null);
+  const reviewTrigger = useRef<HTMLButtonElement>(null);
   const normalizedQuery = query.trim().toLocaleLowerCase("zh-Hant");
   const visibleMembers = members.filter((person) => !normalizedQuery || person.name.toLocaleLowerCase("zh-Hant").includes(normalizedQuery) || person.accountName?.toLocaleLowerCase("zh-Hant").includes(normalizedQuery) || person.department?.toLocaleLowerCase("zh-Hant").includes(normalizedQuery));
   const pendingRequests = requests.filter((request) => request.status === "PENDING");
@@ -2204,36 +2206,29 @@ function Members({
           </button>
         </section>
       )}
-      {admin && (
-        <section className="membership-requests">
-          <header>
-            <div><p>待辦事項</p><h3>社員申請審核</h3></div>
-            <Badge tone={pendingRequests.length > 0 ? "orange" : "green"}>{pendingRequests.length} 筆待處理</Badge>
-          </header>
-          {pendingRequests.length === 0 ? (
-            <div className="membership-request-empty">目前沒有待審核申請</div>
-          ) : pendingRequests.map((request) => (
-            <article key={request.id}>
-              <div>
-                <strong>{request.memberName}</strong>
-                {request.accountName && <small className="account-name">帳號：{request.accountName}</small>}
-                <span>{request.kind === "JOIN" ? "申請加入社員" : "申請退出社員"} · {request.requestedAt ? new Date(request.requestedAt).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}</span>
-              </div>
-              <div className="request-actions">
-                <button className="secondary" disabled={saving} onClick={() => reviewRequest(request, "REJECT")}>拒絕</button>
-                <button className="primary small" disabled={saving} onClick={() => reviewRequest(request, "APPROVE")}>核准</button>
-              </div>
-            </article>
-          ))}
-        </section>
-      )}
       <section className="table">
-        <header>
+        <header className="members-header">
           <div>
             <p>社員名單</p>
             <h3>一起上場的夥伴</h3>
           </div>
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋顯示名稱、帳號或部門" aria-label="搜尋顯示名稱、帳號或部門" />
+          <div className="members-header-actions">
+            {admin && (
+              <button
+                ref={reviewTrigger}
+                type="button"
+                className="secondary member-review-trigger"
+                aria-haspopup="dialog"
+                aria-controls="membership-review-dialog"
+                aria-label={`社員申請審核，${pendingRequests.length} 筆待審核`}
+                onClick={() => reviewDialog.current?.showModal()}
+              >
+                社員申請審核
+                <Badge tone={pendingRequests.length > 0 ? "orange" : "gray"}>{pendingRequests.length}</Badge>
+              </button>
+            )}
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋顯示名稱、帳號或部門" aria-label="搜尋顯示名稱、帳號或部門" />
+          </div>
         </header>
         <div className="row head">
           <span>顯示名稱／帳號</span>
@@ -2255,6 +2250,38 @@ function Members({
           </div>
         ))}
       </section>
+      {admin && (
+        <dialog
+          ref={reviewDialog}
+          id="membership-review-dialog"
+          className="modal membership-requests"
+          aria-labelledby="membership-review-title"
+          onClose={() => reviewTrigger.current?.focus()}
+        >
+          <header>
+            <h2 id="membership-review-title">社員申請審核</h2>
+            <button type="button" className="close" onClick={() => reviewDialog.current?.close()} aria-label="關閉社員申請審核">×</button>
+          </header>
+          {pendingRequests.length === 0 ? (
+            <div className="membership-request-empty" role="status">目前沒有待審核申請</div>
+          ) : pendingRequests.map((request) => (
+            <article key={request.id}>
+              <div>
+                <strong>{request.memberName}</strong>
+                {request.accountName && <small className="account-name">帳號：{request.accountName}</small>}
+                <span>
+                  {request.kind === "JOIN" ? "申請加入社員" : "申請退出社員"}
+                  {request.requestedAt && <> · {new Date(request.requestedAt).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</>}
+                </span>
+              </div>
+              <div className="request-actions">
+                <button type="button" className="secondary" disabled={saving} onClick={() => reviewRequest(request, "REJECT")}>拒絕</button>
+                <button type="button" className="primary small" disabled={saving} onClick={() => reviewRequest(request, "APPROVE")}>核准</button>
+              </div>
+            </article>
+          ))}
+        </dialog>
+      )}
     </div>
   );
 }

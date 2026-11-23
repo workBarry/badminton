@@ -76,7 +76,8 @@ select {
 .primary:hover {
   background: #0b4d48;
 }
-.primary.small {
+.primary.small,
+.request-actions > button {
   padding: 9px 12px;
   font-size: 13px;
 }
@@ -1641,6 +1642,32 @@ dialog.event-dialog {
   padding: 9px 11px;
   font-size: 12px;
 }
+.table > .members-header {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.members-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+}
+.members-header-actions > input {
+  flex: 1 1 210px;
+  min-width: 0;
+}
+.member-review-trigger {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 8px 10px;
+  font-size: 13px;
+  white-space: nowrap;
+}
 .row {
   display: flex;
   gap: 14px;
@@ -2439,30 +2466,42 @@ dialog.event-dialog {
   flex: 0 0 auto;
 }
 .membership-requests {
-  overflow: hidden;
-  border: 1px solid #e7eeee;
-  border-radius: 18px;
+  position: fixed;
+  inset: 0;
+  width: min(560px, calc(100% - 32px));
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 0;
   background: var(--card);
-  box-shadow: 0 5px 18px #173f3706;
+  color: var(--ink);
+}
+.membership-requests::backdrop {
+  background: #102a2780;
 }
 .membership-requests > header {
   display: flex;
+  position: sticky;
+  z-index: 1;
+  top: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 20px 24px;
+  gap: 12px;
+  padding: 14px 18px 14px 24px;
   border-bottom: 1px solid var(--line);
+  background: var(--card);
 }
-.membership-requests > header p {
-  margin: 0 0 4px;
-  color: var(--green);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: .08em;
+.membership-requests > header > .close {
+  position: static;
+  flex: 0 0 40px;
+  height: 40px;
+  border-radius: 10px;
 }
-.membership-requests > header h3 {
-  margin: 0;
-  font-size: 19px;
+.membership-requests > header > .close:hover {
+  background: #edf4f1;
 }
 .membership-requests article {
   display: flex;
@@ -2479,6 +2518,8 @@ dialog.event-dialog {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .membership-requests article span,
 .membership-request-empty {
@@ -3086,6 +3127,12 @@ dialog.event-dialog {
   }
   .table header input {
     display: none;
+  }
+  .members-header-actions {
+    width: 100%;
+  }
+  .table .members-header-actions > input {
+    display: block;
   }
   .row {
     padding: 13px 17px;
