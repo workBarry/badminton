@@ -1882,7 +1882,8 @@ dialog.event-dialog {
   position: relative;
   max-width: 100%;
 }
-.member-account-menu summary {
+.member-account-menu summary,
+.balance-history-settings-button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1895,7 +1896,9 @@ dialog.event-dialog {
   list-style: none;
   cursor: pointer;
 }
-.member-account-menu summary:hover {
+.member-account-menu summary:hover,
+.balance-history-settings-button:hover:not(:disabled),
+.balance-history-settings-button[aria-expanded="true"] {
   background: #edf4f1;
   color: var(--green);
 }
@@ -1911,7 +1914,8 @@ dialog.event-dialog {
   opacity: .6;
   cursor: wait;
 }
-.member-account-menu-panel {
+.member-account-menu-panel,
+.balance-history-settings-panel {
   position: absolute;
   z-index: 1;
   top: calc(100% + 7px);
@@ -1926,13 +1930,15 @@ dialog.event-dialog {
   background: #fff;
   box-shadow: 0 12px 28px #173f3720;
 }
-.member-account-menu-panel > button {
+.member-account-menu-panel > button,
+.balance-history-settings-panel > button {
   min-height: 44px;
   padding: 8px;
   border-radius: 7px;
   text-align: left;
 }
-.member-account-menu-panel > button:hover {
+.member-account-menu-panel > button:hover,
+.balance-history-settings-panel > button:hover {
   background: #edf4f1;
 }
 .member-account-menu-panel > .member-account-entry {
@@ -2041,7 +2047,28 @@ dialog.event-dialog {
 .balance-history-member span {
   color: var(--muted);
 }
-.balance-history-header > .close {
+.balance-history-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+.balance-history-settings {
+  position: relative;
+}
+.balance-history-settings-button {
+  background: transparent;
+  font-size: 24px;
+  line-height: 1;
+}
+.balance-history-settings-button:disabled {
+  opacity: .6;
+  cursor: wait;
+}
+.balance-history-settings-panel {
+  width: min(176px, calc(100vw - 120px));
+}
+.balance-history-actions > .close {
   position: static;
   display: flex;
   flex: 0 0 40px;
@@ -2052,7 +2079,7 @@ dialog.event-dialog {
   padding: 0;
   border-radius: 10px;
 }
-.balance-history-header > .close:hover {
+.balance-history-actions > .close:hover {
   background: #edf4f1;
 }
 .balance-history-content {
@@ -2127,8 +2154,42 @@ dialog.event-dialog {
 .balance-history-gap p {
   margin: 5px 0 0;
 }
+.balance-adjustment-dialog {
+  position: fixed;
+  inset: 0;
+  width: min(440px, calc(100% - 32px));
+  max-height: 85vh;
+  max-height: 85dvh;
+  margin: auto;
+  padding: clamp(18px, 5vw, 28px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.balance-adjustment-dialog::backdrop {
+  background: #102a2780;
+}
+.balance-adjustment-dialog h2 { padding-right: 24px; }
+.balance-adjustment-dialog h2:focus { outline: none; }
+.balance-adjustment-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 18px;
+}
+.balance-adjustment-form label { color: var(--muted); font-size: 13px; font-weight: 700; }
+.balance-adjustment-dialog .balance-adjustment-form input { margin: 0; min-width: 0; width: 100%; }
+.balance-adjustment-form small { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.balance-adjustment-form > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.balance-adjustment-reload { align-self: flex-start; }
+.balance-adjustment-preview { margin: 2px 0; font-size: 13px; }
+.balance-adjustment-error { margin: 0; color: #9e4a31; font-size: 13px; line-height: 1.6; }
+.balance-adjustment-success { margin: 0 0 16px; padding: 12px 14px; border-radius: 10px; color: var(--green); background: #edf5f2; font-size: 13px; line-height: 1.6; }
 .balance-history-list-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -2143,46 +2204,93 @@ dialog.event-dialog {
   font-size: 12px;
 }
 .balance-history-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  overflow: hidden;
   margin: 0;
   padding: 0;
-  list-style: none;
-}
-.balance-history-list > li {
-  min-width: 0;
-  padding: 16px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  overflow-wrap: anywhere;
+  list-style: none;
 }
-.balance-history-entry-top {
+.balance-history-list > li + li {
+  border-top: 1px solid var(--line);
+}
+.balance-history-entry-summary {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px 12px;
+  align-items: center;
+  gap: 12px;
+  min-height: 60px;
+  padding: 10px 14px;
+  list-style: none;
+  cursor: pointer;
 }
-.balance-history-entry-top time {
+.balance-history-entry-summary::-webkit-details-marker {
+  display: none;
+}
+.balance-history-entry-summary:hover,
+.balance-history-list details[open] > summary {
+  background: #f4f8f7;
+}
+.balance-history-entry-summary:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
+}
+.balance-history-entry-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.balance-history-entry-reason,
+.balance-history-entry-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.balance-history-entry-reason {
+  font-size: 14px;
+}
+.balance-history-entry-meta {
   color: var(--muted);
   font-size: 12px;
 }
-.balance-history-entry-top strong {
-  font-size: 17px;
-  font-variant-numeric: tabular-nums;
+.balance-history-entry-time-full,
+.balance-history-list details[open] .balance-history-entry-time-short {
+  display: none;
 }
-.balance-history-reason {
-  margin: 10px 0;
-  font-size: 14px;
-  line-height: 1.6;
+.balance-history-list details[open] .balance-history-entry-time-full {
+  display: inline;
+}
+.balance-history-list details[open] .balance-history-entry-reason,
+.balance-history-list details[open] .balance-history-entry-meta {
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+.balance-history-entry-amount {
+  flex: 0 0 auto;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.balance-history-entry-chevron {
+  flex: 0 0 7px;
+  height: 7px;
+  margin-right: 2px;
+  border: solid var(--muted);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(-45deg);
+}
+.balance-history-list details[open] .balance-history-entry-chevron {
+  transform: rotate(45deg);
 }
 .balance-history-entry-details {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
   margin: 0;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+  background: #f8faf9;
   font-size: 12px;
   line-height: 1.6;
 }
@@ -2198,18 +2306,10 @@ dialog.event-dialog {
 .balance-history-entry-details dd {
   min-width: 0;
   margin: 0;
+  overflow-wrap: anywhere;
 }
 .balance-history-entry-details small {
   display: block;
-  color: var(--muted);
-  font-size: 11px;
-}
-.balance-history-legacy {
-  display: inline-block;
-  margin-top: 10px;
-  padding: 3px 7px;
-  border-radius: 6px;
-  background: #f1f4f5;
   color: var(--muted);
   font-size: 11px;
 }
@@ -2250,8 +2350,12 @@ dialog.event-dialog {
   .balance-history-current dd {
     font-size: 24px;
   }
-  .balance-history-list > li {
-    padding: 13px;
+  .balance-history-entry-summary {
+    gap: 8px;
+    padding-inline: 10px;
+  }
+  .balance-history-entry-amount {
+    font-size: 14px;
   }
 }
 .primary:disabled,

@@ -1505,6 +1505,80 @@ async function updateDisplayName(input: Record<string, string>, actor: Viewer) {
 }
 
 
+async function adjustMemberBalance(input: Record<string, string>, actor: Viewer) {
+  const allowedFields = new Set(["action", "memberId", "balanceAdjustment", "adjustmentNote", "expectedBalance", "requestId"]);
+  if (Object.keys(input).some((field) => !allowedFields.has(field) || typeof input[field] !== "string")) throw new Error("餘額調整資料不正確");
+  if (input.action !== undefined && input.action !== "adjustMemberBalance") throw new Error("餘額調整操作不正確");
+  const memberId = input.memberId;
+  if (!memberId || memberId !== memberId.trim() || Buffer.byteLength(memberId, "utf8") > 1500 || /[\/\p{Cc}]/u.test(memberId) || [".", ".."].includes(memberId)) throw new Error("使用者識別碼不正確");
+  if (!input.balanceAdjustment?.trim()) throw new Error("請填寫餘額調整金額");
+  const balanceAdjustment = Number(input.balanceAdjustment);
+  if (!Number.isSafeInteger(balanceAdjustment) || balanceAdjustment === 0 || Math.abs(balanceAdjustment) > 100000) throw new Error("餘額調整必須是介於 -100,000 到 100,000 的非零整數");
+  if (!input.expectedBalance?.trim()) throw new Error("缺少目前餘額，請重新載入後再試");
+  const expectedBalance = Number(input.expectedBalance);
+  if (!Number.isSafeInteger(expectedBalance) || expectedBalance < 0) throw new Error("目前餘額不正確，請重新載入後再試");
+  const adjustmentNote = input.adjustmentNote?.trim() ?? "";
+  if (!adjustmentNote) throw new Error("調整帳戶餘額時必須填寫原因");
+  if (adjustmentNote.length > 200) throw new Error("調整原因不能超過 200 個字元");
+  const requestId = input.requestId;
+  if (!requestId || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) throw new Error("餘額調整識別碼不正確，請重新載入後再試");
+
+  const db = getAdminFirestore();
+  const memberRef = db.collection("members").doc(memberId);
+  const actorRef = db.collection("members").doc(actor.id);
+  const adjustmentRef = db.collection("invoices").doc(`adjustment-${requestId.toLowerCase()}`);
+  const auditRef = db.collection("auditLogs").doc();
+  return db.runTransaction(async (transaction) => {
+    const [memberSnapshot, actorSnapshot, existingAdjustment] = await transaction.getAll(memberRef, actorRef, adjustmentRef);
+    if (actorSnapshot.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
+    if (!memberSnapshot.exists) throw new Error("找不到使用者");
+    const member = memberSnapshot.data()!;
+    const currentBalance = Number(member.creditBalance ?? 0);
+    if (!Number.isSafeInteger(currentBalance) || currentBalance < 0) throw new Error("目前餘額資料不正確，請重新載入後再試");
+
+    // The committed invoice is the receipt: an exact retry succeeds even after the balance changes.
+    if (existingAdjustment.exists) {
+      const receipt = existingAdjustment.data()!;
+      if (receipt.type !== "ADJUSTMENT" || receipt.memberId !== memberId || receipt.confirmedBy !== actor.id || receipt.amount !== -balanceAdjustment || receipt.note !== adjustmentNote) throw new Error("餘額調整識別碼已使用，請重新載入後再試");
+      return { memberId, creditBalance: currentBalance, adjustmentInvoiceId: adjustmentRef.id };
+    }
+    if (currentBalance !== expectedBalance) throw new Error("餘額已變更，請重新載入後再試");
+    const nextBalance = currentBalance + balanceAdjustment;
+    if (!Number.isSafeInteger(nextBalance) || nextBalance < 0) throw new Error("調整後的帳戶餘額不能小於零或超過安全整數範圍");
+    const now = new Date();
+    transaction.update(memberRef, { creditBalance: nextBalance, updatedAt: now });
+    transaction.create(adjustmentRef, {
+      id: adjustmentRef.id,
+      memberId,
+      memberNameSnapshot: String(member.displayName ?? "未知使用者"),
+      eventId: null,
+      type: "ADJUSTMENT",
+      grossAmount: -balanceAdjustment,
+      creditApplied: 0,
+      amount: -balanceAdjustment,
+      status: "CONFIRMED",
+      periodLabel: "幹部手動餘額調整",
+      confirmedAt: now,
+      confirmedBy: actor.id,
+      note: adjustmentNote,
+      createdAt: now,
+      updatedAt: now,
+    });
+    recordBalanceMovement(transaction, db, { memberId, amount: balanceAdjustment, reason: adjustmentNote, sourceKey: `invoice:${adjustmentRef.id}:adjustment`, invoiceId: adjustmentRef.id, actorId: actor.id, actorName: actor.name, createdAt: now });
+    transaction.create(auditRef, {
+      actorId: actor.id,
+      actorNameSnapshot: actor.name,
+      action: "UPDATE_MEMBER",
+      targetMemberId: memberId,
+      before: { creditBalance: currentBalance },
+      after: { creditBalance: nextBalance },
+      note: adjustmentNote,
+      createdAt: now,
+    });
+    return { memberId, creditBalance: nextBalance, adjustmentInvoiceId: adjustmentRef.id };
+  });
+}
+
 async function updateMember(input: Record<string, string>, actor: Viewer) {
   assertImmutableAccountName(input);
   const memberId = input.memberId;
@@ -1661,6 +1735,7 @@ export async function mutate(action: string, input: Record<string, string>, acto
   if (actor.role !== "ADMIN") throw new Error("只有幹部可以執行這項操作");
   const currentActor = await getAdminFirestore().collection("members").doc(actor.id).get();
   if (currentActor.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
+  if (action === "adjustMemberBalance") return adjustMemberBalance(input, actor);
   if (action === "transferPresident") return transferPresident(input, actor);
   if (["voidInvoice", "reissueInvoice", "refundInvoice", "rejectPaymentReport"].includes(action)) return manageInvoice(action, input, actor);
   if (action === "voidInvoiceBatch") return voidInvoiceBatch(input, actor);

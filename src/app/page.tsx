@@ -6,7 +6,7 @@ import QuarterPlanner from "@/app/quarter-planner";
 import LoadingScreen from "@/app/loading-screen";
 import ShuttleArt from "@/app/shuttle-art";
 import BillingDashboard, { type BillingProps } from "@/app/billing-dashboard";
-import BalanceHistoryDialog from "@/app/balance-history-dialog";
+import BalanceHistoryDialog, { type BalanceAdjustmentInput } from "@/app/balance-history-dialog";
 import { activityPayments, isPrincipal, type ManagedInvoice } from "@/lib/billing-view";
 import type { CalendarNotices, OfficialClosure } from "@/lib/official-closures";
 import type { QuarterPlan } from "@/lib/quarter-planning";
@@ -42,7 +42,7 @@ type Viewer = {
   hasRecoveryCode: boolean;
   hasPasskey: boolean;
 };
-type ActionResult = { results?: { id: string; success: boolean; error?: string }[]; invoiceId?: string; planId?: string; revision?: number; recoveryCode?: string; claimCode?: string; recipientName?: string; invoiceCount?: number; eventCount?: number; totalAmount?: number; periodLabel?: string; createdDate?: string | null; targetDate?: string; status?: string };
+type ActionResult = { creditBalance?: number; memberId?: string; adjustmentInvoiceId?: string; results?: { id: string; success: boolean; error?: string }[]; invoiceId?: string; planId?: string; revision?: number; recoveryCode?: string; claimCode?: string; recipientName?: string; invoiceCount?: number; eventCount?: number; totalAmount?: number; periodLabel?: string; createdDate?: string | null; targetDate?: string; status?: string };
 type DeviceAccount = { id: string; name: string; accountName: string; role: "ADMIN" | "MEMBER"; membershipStatus: string; primaryAdmin: boolean };
 type ClubEvent = {
   id: string;
@@ -139,7 +139,7 @@ export default function Home() {
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !memberSaving && !claimCodeSaving && !codeNotice) {
+      if (event.key === "Escape" && !event.defaultPrevented && !document.getElementById("member-balance-history") && !memberSaving && !claimCodeSaving && !codeNotice) {
         setManagerOpen(false);
         setAnnouncementOpen(false);
         setEditingAnnouncement(null);
@@ -592,13 +592,28 @@ export default function Home() {
         department: String(data.get("department") ?? "").trim(),
         role: String(data.get("role") ?? "MEMBER"),
         membershipStatus: String(data.get("membershipStatus") ?? "GUEST"),
-        balanceAdjustment: String(data.get("balanceAdjustment") ?? "0"),
-        adjustmentNote: String(data.get("adjustmentNote") ?? "").trim(),
       })) {
         setEditingMember(null);
       }
     } finally {
       setMemberSaving(false);
+    }
+  };
+  const adjustMemberBalance = async (input: BalanceAdjustmentInput) => {
+    const response = await fetch("/api/club", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "adjustMemberBalance", ...input }),
+    });
+    const payload = await response.json() as ApiState & { error?: string };
+    if (!response.ok) {
+      if (response.status === 401) setViewer(null);
+      throw new Error(payload.error ?? "無法儲存餘額調整，請稍後重試。");
+    }
+    applyState(payload);
+    const balance = payload.actionResult?.creditBalance ?? payload.members.find((member) => member.id === input.memberId)?.creditBalance;
+    if (typeof balance === "number" && Number.isSafeInteger(balance)) {
+      setEditingMember((current) => current?.id === input.memberId ? { ...current, creditBalance: balance } : current);
     }
   };
   const markNotificationsRead = async (notificationIds: string[]) => {
@@ -860,7 +875,7 @@ export default function Home() {
         </div>
       )}
       {isAdmin && editingMember && (
-        <MemberManagerModal member={editingMember} saving={memberSaving} covered={Boolean(codeNotice)} claimCodeSaving={claimCodeSaving} issueClaimCode={issueClaimCode} onClose={() => setEditingMember(null)} save={updateMember} />
+        <MemberManagerModal member={editingMember} saving={memberSaving} covered={Boolean(codeNotice)} claimCodeSaving={claimCodeSaving} issueClaimCode={issueClaimCode} adjustBalance={adjustMemberBalance} onClose={() => setEditingMember(null)} save={updateMember} />
       )}
       {codeNotice && <CodeNotice notice={codeNotice} onClose={() => {
         setCodeNotice(null);
@@ -1012,6 +1027,7 @@ function MemberManagerModal({
   claimCodeSaving = false,
   covered = false,
   issueClaimCode,
+  adjustBalance,
   onClose,
   save,
 }: {
@@ -1020,6 +1036,7 @@ function MemberManagerModal({
   claimCodeSaving?: boolean;
   covered?: boolean;
   issueClaimCode: (person: Person) => void;
+  adjustBalance: (input: BalanceAdjustmentInput) => Promise<void>;
   onClose: () => void;
   save: (form: FormEvent<HTMLFormElement>) => void;
 }) {
@@ -1079,7 +1096,7 @@ function MemberManagerModal({
         <p>幹部工具</p>
         <h2 id="member-manager-title">管理 {member.name}</h2>
         {member.accountName && <p className="account-name">帳號：{member.accountName}</p>}
-        <span>身分異動立即生效；餘額調整會另外留下帳務與稽核紀錄。</span>
+        <span>可管理部門與社員身分；餘額調整請點選下方的目前帳戶餘額。</span>
 
         <form className="manager-form" onSubmit={save}>
           <label>
@@ -1112,24 +1129,15 @@ function MemberManagerModal({
             </label>
           </div>
           <button ref={balanceTrigger} type="button" className="member-balance-summary" disabled={busy} aria-haspopup="dialog" aria-expanded={historyOpen} aria-controls="member-balance-history" onClick={() => setHistoryOpen(true)}>
-            <span><span>目前帳戶餘額</span><small>查看紀錄 ›</small></span>
+            <span><span>目前帳戶餘額</span><small>查看紀錄與調整 ›</small></span>
             <strong>NT$ {Number(member.creditBalance ?? 0).toLocaleString("zh-TW")}</strong>
           </button>
-          <label>
-            餘額調整（選填）
-            <input name="balanceAdjustment" type="number" step="1" min="-100000" max="100000" defaultValue="0" />
-            <small>正數代表增加可抵扣餘額，負數代表扣除；不調整請維持 0。</small>
-          </label>
-          <label>
-            餘額調整原因
-            <input name="adjustmentNote" maxLength={200} placeholder="有調整餘額時必填，例如：特殊退款" />
-          </label>
           <p className="form-note">直接改為非社員屬於幹部例外處理，不會自動退款；一般退出請優先使用申請審核流程。</p>
           <button className="primary" disabled={busy}>{saving ? "儲存中…" : "儲存社員資料"}</button>
         </form>
       </section>
     </div>
-    {historyOpen && <BalanceHistoryDialog key={member.id} member={member} onClose={closeBalanceHistory} />}
+    {historyOpen && <BalanceHistoryDialog key={member.id} member={member} adjustBalance={adjustBalance} onClose={closeBalanceHistory} />}
     </>
   );
 }

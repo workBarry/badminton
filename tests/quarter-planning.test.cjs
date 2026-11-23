@@ -693,7 +693,7 @@ test("president management form fixes role and membership instead of offering a 
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
   const { MemberManagerForTest } = accountComponentsForTest();
-  const html = renderToStaticMarkup(React.createElement(MemberManagerForTest, { member: accountProfileProps(true).user, saving: false, issueClaimCode() {}, save() {}, onClose() {} }));
+  const html = renderToStaticMarkup(React.createElement(MemberManagerForTest, { member: accountProfileProps(true).user, saving: false, issueClaimCode() {}, async adjustBalance() {}, save() {}, onClose() {} }));
   assert.match(html, /<input type="hidden" name="role" value="ADMIN"/);
   assert.match(html, /<input type="hidden" name="membershipStatus" value="MEMBER"/);
   assert.equal((html.match(/<select[^>]*disabled/g) ?? []).length, 2);
