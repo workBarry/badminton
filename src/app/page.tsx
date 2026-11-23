@@ -8,6 +8,7 @@ import ShuttleArt from "@/app/shuttle-art";
 import BillingDashboard, { type BillingProps } from "@/app/billing-dashboard";
 import BalanceHistoryDialog from "@/app/balance-history-dialog";
 import { activityPayments, isPrincipal, type ManagedInvoice } from "@/lib/billing-view";
+import type { CalendarNotices, OfficialClosure } from "@/lib/official-closures";
 import type { QuarterPlan } from "@/lib/quarter-planning";
 import { clubIdentityLabel } from "@/lib/club-roles";
 import type {
@@ -1819,6 +1820,33 @@ function ActivityCalendar({ list, invoices, viewerId, openEvent, createOnDate }:
 }) {
   const today = taipeiDateParts(new Date());
   const [visibleMonth, setVisibleMonth] = useState({ year: today.year, month: today.month });
+  const [noticeResult, setNoticeResult] = useState<(CalendarNotices & { month: string }) | null>(null);
+  const [noticeAttempt, setNoticeAttempt] = useState(0);
+  const monthKey = `${visibleMonth.year}-${String(visibleMonth.month).padStart(2, "0")}`;
+  useEffect(() => {
+    const controller = new AbortController();
+    async function loadNotices() {
+      try {
+        const response = await fetch(`/api/club/calendar-notices?month=${monthKey}`, { signal: controller.signal });
+        if (!response.ok) throw new Error("Calendar notices request failed");
+        const result = await response.json() as CalendarNotices;
+        if (!controller.signal.aborted) setNoticeResult({ ...result, month: monthKey });
+      } catch {
+        if (!controller.signal.aborted) setNoticeResult({ month: monthKey, notices: [], unavailable: ["holiday", "closure"] });
+      }
+    }
+    void loadNotices();
+    return () => controller.abort();
+  }, [monthKey, noticeAttempt]);
+  const currentNotices = noticeResult?.month === monthKey ? noticeResult : null;
+  const notices = currentNotices?.notices ?? [];
+  const unavailable = currentNotices?.unavailable ?? [];
+  const noticesByDate = new Map<string, OfficialClosure[]>();
+  for (const notice of notices) {
+    const dateNotices = noticesByDate.get(notice.date);
+    if (dateNotices) dateNotices.push(notice);
+    else noticesByDate.set(notice.date, [notice]);
+  }
   const firstWeekday = new Date(Date.UTC(visibleMonth.year, visibleMonth.month - 1, 1)).getUTCDay();
   const daysInMonth = new Date(Date.UTC(visibleMonth.year, visibleMonth.month, 0)).getUTCDate();
   const eventsByDay = new Map<number, ClubEvent[]>();
@@ -1852,6 +1880,10 @@ function ActivityCalendar({ list, invoices, viewerId, openEvent, createOnDate }:
           <button type="button" onClick={() => changeMonth(1)} aria-label="下個月">›</button>
         </div>
       </div>
+      {unavailable.length > 0 && <div className="calendar-notice-status">
+        <span role="status">{unavailable.map((kind) => kind === "holiday" ? "國定假日" : "停班停課公告").join("、")}暫時無法載入</span>
+        <button type="button" className="link" onClick={() => setNoticeAttempt((attempt) => attempt + 1)}>重試</button>
+      </div>}
       <div className="calendar-weekdays" aria-hidden="true">
         {["日", "一", "二", "三", "四", "五", "六"].map((weekday) => <span key={weekday}>{weekday}</span>)}
       </div>
@@ -1861,23 +1893,31 @@ function ActivityCalendar({ list, invoices, viewerId, openEvent, createOnDate }:
           const day = index + 1;
           const dayEvents = eventsByDay.get(day) ?? [];
           const isToday = isCurrentMonth && day === today.day;
-          const dateKey = `${visibleMonth.year}-${String(visibleMonth.month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+          const dateKey = `${monthKey}-${String(day).padStart(2, "0")}`;
+          const dayNotices = noticesByDate.get(dateKey) ?? [];
+          const noticeLabels = dayNotices.map((notice) => (
+            <span key={notice.kind} className={`calendar-notice calendar-notice-${notice.kind}`} title={notice.name}>
+              {notice.kind === "closure" ? "停班停課" : notice.name}
+            </span>
+          ));
           const canCreate = createOnDate && dayEvents.length === 0 && dateKey >= todayKey;
           if (canCreate) return (
             <button
               type="button"
               className={`calendar-day calendar-create${isToday ? " today" : ""}`}
               key={day}
-              aria-label={`新增 ${dateKey} 的活動`}
+              aria-label={[`新增 ${dateKey} 的活動`, ...dayNotices.map((notice) => notice.name)].join("，")}
               aria-haspopup="dialog"
               onClick={() => createOnDate(dateKey)}
             >
               <span className="calendar-day-number">{day}{isToday && <i>今天</i>}</span>
+              {noticeLabels}
             </button>
           );
           return (
             <div className={`calendar-day${dayEvents.length ? " has-event" : ""}${isToday ? " today" : ""}`} key={day}>
               <span className="calendar-day-number">{day}{isToday && <i>今天</i>}</span>
+              {noticeLabels}
               {dayEvents.map((event) => {
                 const isParticipating = event.bookings.some((booking) => booking.memberId === viewerId);
 
@@ -1908,6 +1948,10 @@ function ActivityCalendar({ list, invoices, viewerId, openEvent, createOnDate }:
           );
         })}
       </div>
+      {notices.length > 0 && <details className="calendar-notice-details">
+        <summary>本月國定假日與停班停課</summary>
+        <ul>{notices.map((notice) => <li key={`${notice.date}-${notice.kind}`}><time dateTime={notice.date}>{visibleMonth.month}/{Number(notice.date.slice(-2))}</time> {notice.name}</li>)}</ul>
+      </details>}
       {eventCount === 0 && <p className="calendar-hint">本月尚無活動。</p>}
     </section>
   );

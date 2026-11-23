@@ -4,6 +4,11 @@ export type OfficialClosure = {
   kind: "holiday" | "closure";
 };
 
+export type CalendarNotices = {
+  notices: OfficialClosure[];
+  unavailable: OfficialClosure["kind"][];
+};
+
 const CALENDAR_URL = "https://data.ntpc.gov.tw/api/datasets/308dcd75-6434-45bc-a95f-584da4fed251/csv/file";
 const DISASTER_URL = "https://www.dgpa.gov.tw/typh/daily/nds.html";
 const CALENDAR_HEADER = "date,year,name,isholiday,holidaycategory,description";
@@ -154,25 +159,60 @@ async function getSource<T>(fetcher: typeof fetch, url: string, label: string, c
   }
 }
 
+function fetchHolidays(fetcher: typeof fetch, startDate: string, endDate: string) {
+  return getSource(fetcher, CALENDAR_URL, "政府辦公日曆", "text/csv", (body) => parseCalendar(body, startDate, endDate));
+}
+
+function fetchDisasterClosures(fetcher: typeof fetch, today: string, startDate: string, endDate: string) {
+  return getSource(fetcher, DISASTER_URL, "人事行政總處停班停課公告", "text/html", (body) => parseDisasterBulletin(body, today, startDate, endDate));
+}
+
+export async function fetchCalendarNotices(month: string, fetcher: typeof fetch = fetch): Promise<CalendarNotices | null> {
+  if (month.length !== 7 || !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month)) return null;
+  const startDate = month + "-01";
+  const lastDay = new Date(dateValue(startDate));
+  lastDay.setUTCMonth(lastDay.getUTCMonth() + 1, 0);
+  const endDate = lastDay.toISOString().slice(0, 10);
+  const today = TAIPEI_DATE.format(new Date());
+  const hasLiveCoverage = endDate >= today && startDate <= dateAfter(today);
+  const [holidays, closures] = await Promise.allSettled([
+    fetchHolidays(fetcher, startDate, endDate),
+    hasLiveCoverage ? fetchDisasterClosures(fetcher, today, startDate, endDate) : Promise.resolve([]),
+  ]);
+  const unavailable: CalendarNotices["unavailable"] = [];
+  if (holidays.status === "rejected") unavailable.push("holiday");
+  if (closures.status === "rejected") unavailable.push("closure");
+  const notices = [
+    ...(holidays.status === "fulfilled" ? holidays.value : []),
+    ...(closures.status === "fulfilled" ? closures.value : []),
+  ];
+  return { notices: mergeNotices(notices, ({ date, kind }) => `${date}-${kind}`), unavailable };
+}
+
 export async function fetchOfficialClosures(startDate: string, endDate: string, fetcher: typeof fetch = fetch): Promise<OfficialClosure[]> {
   if (!Number.isFinite(dateValue(startDate)) || !Number.isFinite(dateValue(endDate)) || startDate > endDate) {
     throw new Error("查詢起訖日期必須是有效日期，且起日不得晚於迄日。");
   }
   const today = TAIPEI_DATE.format(new Date());
   const [holidays, closures] = await Promise.all([
-    getSource(fetcher, CALENDAR_URL, "政府辦公日曆", "text/csv", (body) => parseCalendar(body, startDate, endDate)),
-    getSource(fetcher, DISASTER_URL, "人事行政總處停班停課公告", "text/html", (body) => parseDisasterBulletin(body, today, startDate, endDate)),
+    fetchHolidays(fetcher, startDate, endDate),
+    fetchDisasterClosures(fetcher, today, startDate, endDate),
   ]);
-  const byDate = new Map<string, { names: Set<string>; kind: OfficialClosure["kind"] }>();
-  for (const entry of [...holidays, ...closures]) {
-    const day = byDate.get(entry.date);
+  return mergeNotices([...holidays, ...closures], (entry) => entry.date);
+}
+
+function mergeNotices(notices: OfficialClosure[], keyFor: (entry: OfficialClosure) => string) {
+  const groups = new Map<string, { date: string; names: Set<string>; kind: OfficialClosure["kind"] }>();
+  for (const entry of notices) {
+    const key = keyFor(entry);
+    const day = groups.get(key);
     if (day) {
       day.names.add(entry.name);
       if (entry.kind === "closure") day.kind = entry.kind;
     } else {
-      byDate.set(entry.date, { names: new Set([entry.name]), kind: entry.kind });
+      groups.set(key, { date: entry.date, names: new Set([entry.name]), kind: entry.kind });
     }
   }
-  return Array.from(byDate, ([date, { names, kind }]) => ({ date, name: [...names].join("／"), kind }))
+  return Array.from(groups.values(), ({ date, names, kind }) => ({ date, name: [...names].join("／"), kind }))
     .sort((left, right) => left.date.localeCompare(right.date));
 }

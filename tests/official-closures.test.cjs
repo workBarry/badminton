@@ -9,7 +9,7 @@ const filename = path.resolve(__dirname, "../src/lib/official-closures.ts");
 const code = ts.transpileModule(fs.readFileSync(filename, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const loaded = { exports: {} };
 new Function("module", "exports", code)(loaded, loaded.exports);
-const { fetchOfficialClosures } = loaded.exports;
+const { fetchCalendarNotices, fetchOfficialClosures } = loaded.exports;
 
 const HEADER = "\uFEFFdate,year,name,isholiday,holidaycategory,description";
 const DAY = 86400000;
@@ -93,4 +93,96 @@ test("rejects stale or unrecognized bulletins and incomplete calendar coverage",
   await assert.rejects(fetchOfficialClosures(TODAY, TOMORROW, source(calendar(), "無停班停課訊息。")), /無法辨識公告格式/);
   await assert.rejects(fetchOfficialClosures(TODAY, TOMORROW, source(calendar(), bulletin(city("新北市", "無法辨識的內容")))), /無法辨識新北市公告內容/);
   await assert.rejects(fetchOfficialClosures(TODAY, TOMORROW, source(`${HEADER}\n20261123,2026,測試紀念日,是,放假之紀念日及節日,`, bulletin())), /行事曆尚未完整涵蓋所選年度/);
+});
+
+test("monthly calendar shows both notice types for the same Taipei date", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-23T03:00:00Z") });
+  const csv = calendar("20261123,2026,測試紀念日,是,放假之紀念日及節日,");
+  const html = bulletin(city("新北市",
+    "今天上午停止上班、停止上課。",
+    "今天下午停止上班、停止上課。",
+    "今天下午停止上班、停止上課。",
+  ));
+  assert.deepEqual(await fetchCalendarNotices("2026-11", source(csv, html)), {
+    notices: [
+      { date: TODAY, name: "測試紀念日", kind: "holiday" },
+      { date: TODAY, name: "新北市天然災害停班停課（上午）／新北市天然災害停班停課（下午）", kind: "closure" },
+    ],
+    unavailable: [],
+  });
+});
+
+test("one official source can fail while the other still fills the calendar", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-23T03:00:00Z") });
+  const csv = calendar("20261123,2026,測試紀念日,是,放假之紀念日及節日,");
+  const html = bulletin(city("新北市", "今天停止上班、停止上課。"));
+  assert.deepEqual(await fetchCalendarNotices("2026-11", source(csv, "invalid HTML")), {
+    notices: [{ date: TODAY, name: "測試紀念日", kind: "holiday" }],
+    unavailable: ["closure"],
+  });
+  assert.deepEqual(await fetchCalendarNotices("2026-11", source("invalid CSV", html)), {
+    notices: [{ date: TODAY, name: "新北市天然災害停班停課", kind: "closure" }],
+    unavailable: ["holiday"],
+  });
+});
+
+test("monthly calendar skips the live bulletin for months outside today and tomorrow", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-23T03:00:00Z") });
+  const requested = [];
+  const csv = calendar("20261225,2026,行憲紀念日,是,放假之紀念日及節日,");
+  const fetcher = async (url, options) => {
+    requested.push(new URL(url).hostname);
+    return source(csv, bulletin())(url, options);
+  };
+  assert.deepEqual(await fetchCalendarNotices("2026-10", fetcher), { notices: [], unavailable: [] });
+  assert.deepEqual(await fetchCalendarNotices("2026-12", fetcher), {
+    notices: [{ date: "2026-12-25", name: "行憲紀念日", kind: "holiday" }],
+    unavailable: [],
+  });
+  assert.deepEqual(requested, ["data.ntpc.gov.tw", "data.ntpc.gov.tw"]);
+});
+
+test("monthly calendar loads tomorrow closures across a Taipei month boundary", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-30T15:20:00Z") });
+  const html = bulletin(city("新北市", "明天停止上班、停止上課。"), "115年 11月 30日", "2026/11/30");
+  assert.deepEqual(await fetchCalendarNotices("2026-12", source(calendar(), html)), {
+    notices: [{ date: "2026-12-01", name: "新北市天然災害停班停課", kind: "closure" }],
+    unavailable: [],
+  });
+});
+
+test("calendar notices route rejects invalid months before fetching and only shares complete responses", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-23T03:00:00Z") });
+  const routePath = path.resolve(__dirname, "../src/app/api/club/calendar-notices/route.ts");
+  const routeCode = ts.transpileModule(fs.readFileSync(routePath, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+  const routeModule = { exports: {} };
+  let fetches = 0;
+  let csv = calendar();
+  const fixture = async (url, options) => {
+    fetches++;
+    return source(csv, bulletin())(url, options);
+  };
+  new Function("require", "module", "exports", routeCode)((id) => {
+    assert.equal(id, "@/lib/official-closures");
+    return { fetchCalendarNotices: (month) => fetchCalendarNotices(month, fixture) };
+  }, routeModule, routeModule.exports);
+
+  const call = (month) => routeModule.exports.GET(new Request("https://club.example/api/club/calendar-notices?month=" + encodeURIComponent(month)));
+  for (const invalid of ["", "2026-1", "2026-00", "2026-13", "2026-11-01", "2026-11\n"]) {
+    const response = await call(invalid);
+    assert.equal(response.status, 400);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+  }
+  assert.equal(fetches, 0);
+
+  const response = await call("2026-01");
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("cache-control"), /public, s-maxage=\d+/);
+  assert.deepEqual(await response.json(), { notices: [], unavailable: [] });
+
+  csv = "invalid CSV";
+  const partial = await call("2026-01");
+  assert.equal(partial.status, 200);
+  assert.equal(partial.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await partial.json(), { notices: [], unavailable: ["holiday"] });
 });

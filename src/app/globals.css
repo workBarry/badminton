@@ -1335,6 +1335,45 @@ dialog.event-dialog {
   font-size: 8px;
   font-style: normal;
 }
+.calendar-notice {
+  display: -webkit-box;
+  align-self: stretch;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  margin-top: 5px;
+  padding: 3px 5px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.calendar-notice-holiday {
+  background: #f9eadc;
+  color: #85421f;
+}
+.calendar-notice-closure {
+  background: #fbe6e7;
+  color: #952e3d;
+}
+.calendar-notice-status, .calendar-notice-details {
+  margin: 12px 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.calendar-notice-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+.calendar-notice-status button { font-size: inherit; }
+.calendar-notice-details summary { cursor: pointer; }
+.calendar-notice-details ul { margin: 6px 0 0; padding-inline-start: 20px; }
+.calendar-notice-details li + li { margin-top: 4px; }
+.calendar-notice-details time { font-variant-numeric: tabular-nums; }
 .calendar-day strong {
   margin-top: auto;
   font-size: 13px;
@@ -2896,10 +2935,14 @@ dialog.event-dialog {
     flex-basis: calc(14.2857% - 4px);
     min-height: 62px;
     margin: 2px;
-    padding: 6px;
+    padding: 6px 3px;
     border-radius: 8px;
   }
   .calendar-day-number {
+    font-size: 10px;
+  }
+  .calendar-notice {
+    padding: 2px 1px;
     font-size: 10px;
   }
   .calendar-day-number i,
