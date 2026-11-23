@@ -14,6 +14,29 @@
 * {
   box-sizing: border-box;
 }
+/* Reserve the viewport gutter on html, including when dialogs lock body scrolling. */
+html {
+  background: var(--bg);
+}
+/* Transparent tracks expose each container's own background, including the dark sidebar. */
+:where(html, .sidebar nav, .notification-list, .manager-modal, .event-dialog, .quarter-suggestions > fieldset, textarea) {
+  --scrollbar-thumb: #8ba39b;
+  scrollbar-gutter: stable;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+:where(html, .sidebar nav, .notification-list, .manager-modal, .event-dialog, .quarter-suggestions > fieldset, textarea)::-webkit-scrollbar {
+  background: transparent;
+}
+:where(html, .sidebar nav, .notification-list, .manager-modal, .event-dialog, .quarter-suggestions > fieldset, textarea)::-webkit-scrollbar-track,
+:where(html, .sidebar nav, .notification-list, .manager-modal, .event-dialog, .quarter-suggestions > fieldset, textarea)::-webkit-scrollbar-corner {
+  background: transparent;
+}
+:where(html, .sidebar nav, .notification-list, .manager-modal, .event-dialog, .quarter-suggestions > fieldset, textarea)::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
 body {
   margin: 0;
   background: var(--bg);
@@ -511,6 +534,8 @@ select {
   padding: 0 8px 34px;
 }
 .brand > b {
+  background: #eaf2e8;
+  color: var(--green);
   width: 38px;
   height: 38px;
   flex-shrink: 0;
@@ -538,6 +563,8 @@ select {
   letter-spacing: 0.13em;
 }
 .sidebar nav {
+  --scrollbar-thumb: #789c93;
+  scrollbar-width: thin;
   display: flex;
   overflow-y: auto;
   min-height: 0;
@@ -2261,6 +2288,7 @@ dialog.event-dialog {
   .sidebar nav {
     display: flex;
     overflow: visible;
+    scrollbar-gutter: auto;
     min-height: auto;
     flex: 1;
     flex-direction: row;

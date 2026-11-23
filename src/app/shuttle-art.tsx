@@ -13,8 +13,8 @@ export default function ShuttleArt({ monochrome = false }: { monochrome?: boolea
         <path d="M11 15q8 17 13 34M53 15q-8 17-13 34M32 12l-.5 38" />
         <path d="m19 37 5 2m-3 5 5 2m19-9-5 2m3 5-5 2M16 40q16 7 32-.5M21 53q11 4 22 0" />
       </g>
-      <path d="M23 61C29 62 34 60 41 61l-.5 5c1.5 3-1.5 8-5.5 9-1 1-2 1-3 1-5 0-9-3-9-6-1-2 0-6 0-9Z" fill={monochrome ? "none" : "white"} />
-      <path d="M22.5 58q8-1 19 1l-.5 4q-9-1-18 0Z" fill={monochrome ? "currentColor" : "#d5f168"} />
+      <path d="M20 61h24v5c0 6-5 10-12 10S20 72 20 66Z" fill={monochrome ? "none" : "white"} />
+      <path d="M20 58q12-1 24 1l-.5 4q-11.5-1-23.5 0Z" fill={monochrome ? "currentColor" : "#d5f168"} />
       <path d="m26.5 67.5 1 2.5m3-1.5.6 2M35 70l1-.5" fill="none" strokeWidth="1.2" opacity=".5" />
     </g>
   );

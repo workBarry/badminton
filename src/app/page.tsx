@@ -587,8 +587,8 @@ export default function Home() {
         <div className="brand">
           <b role="img" aria-label="羽球">
             <svg viewBox="-8 -4 84 88" fill="none" aria-hidden="true" focusable="false">
-              <g transform="rotate(22 32 40)">
-                <ShuttleArt monochrome />
+              <g transform="rotate(-18 32 40)">
+                <ShuttleArt />
               </g>
             </svg>
           </b>

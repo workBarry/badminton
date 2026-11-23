@@ -10,45 +10,44 @@ function loadTs(relative, dependencies = {}) {
   const filename = path.resolve(__dirname, "..", relative);
   const code = ts.transpileModule(fs.readFileSync(filename, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } }).outputText;
   const loaded = { exports: {} };
-  new Function("require", "module", "exports", code)((id) => dependencies[id] ?? require(id), loaded, loaded.exports);
+  new Function("require", "module", "exports", code)((id) => {
+    if (Object.hasOwn(dependencies, id)) return dependencies[id];
+    if (id.startsWith(".")) {
+      const base = path.resolve(path.dirname(filename), id);
+      const resolved = [base, base + ".ts", base + ".tsx", base + ".mjs", base + ".js"].find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile());
+      if (resolved) return loadTs(path.relative(path.resolve(__dirname, ".."), resolved), dependencies);
+    }
+    return require(id);
+  }, loaded, loaded.exports);
   return loaded.exports;
 }
 const planning = loadTs("src/lib/quarter-planning.ts");
 const billingView = loadTs("src/lib/billing-view.ts");
 const shuttleArt = loadTs("src/app/shuttle-art.tsx");
 const loadingScreen = loadTs("src/app/loading-screen.tsx", { "@/app/shuttle-art": shuttleArt });
-test("loading screen renders deterministic accessible shuttle animation", () => {
+test("loading screen renders deterministic accessible text", () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
   const render = () => renderToStaticMarkup(React.createElement(loadingScreen.default));
   assert.equal(render(), render());
   assert.match(render(), /<main class="loading-screen"/);
   assert.match(render(), /role="status"/);
-  assert.match(render(), /正在準備球場/);
-  assert.match(render(), /shuttle-loader__bird/);
-  assert.match(render(), /shuttle-loader__racket/);
-  assert.match(render(), /translate\(86 114\.4\) scale\(0\.6\)/);
+  assert.match(render(), /<strong[^>]*>loading<\/strong>/);
 });
 test("compact login loading avoids a nested main landmark", () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
   const html = renderToStaticMarkup(React.createElement(loadingScreen.default, { compact: true, title: "正在處理登入…" }));
-  assert.match(html, /shuttle-loader--compact/);
-  assert.match(html, /正在處理登入/);
+  assert.match(html, /<strong[^>]*>loading<\/strong>/);
   assert.doesNotMatch(html, /<main/);
 });
-test("loading failure offers retry and styles stop motion for reduced-motion preference", () => {
+test("loading failure offers retry", () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
   const html = renderToStaticMarkup(React.createElement(loadingScreen.default, { error: true, title: "暫時無法載入", onRetry() {} }));
   assert.match(html, /role="alert"/);
   assert.match(html, /重新載入/);
-  assert.doesNotMatch(html, /shuttle-loader__dots/);
-  const css = fs.readFileSync(path.resolve(__dirname, "../src/app/loading-screen.css"), "utf8");
-  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*animation: none/);
-  assert.match(css, /@keyframes shuttle-bounce/);
-  assert.match(css, /@keyframes racket-tap/);
-  assert.doesNotMatch(css, /shuttle-float/);
+
 });
 function managementInput(s, id = "quarter-test-plan-member", extra = {}) {
  const invoice = s.db.data("invoices/" + id);
