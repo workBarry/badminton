@@ -1762,11 +1762,6 @@ dialog.event-dialog {
   color: var(--muted);
   font-size: 11px;
 }
-.claim-button {
-  padding: 5px 0;
-  font-size: 12px;
-  white-space: nowrap;
-}
 .member-row-actions {
   display: flex;
   align-items: center;
@@ -1816,6 +1811,110 @@ dialog.event-dialog {
 }
 .member-manager-modal .manager-form {
   margin-top: 18px;
+}
+.member-manager-actions {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.member-manager-actions > .close {
+  position: static;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 10px;
+  line-height: 1;
+}
+.member-manager-actions > .close:hover {
+  background: #edf4f1;
+}
+.member-manager-modal > p:first-of-type,
+.member-manager-modal > h2 {
+  padding-right: 84px;
+}
+.member-account-menu {
+  position: relative;
+  max-width: 100%;
+}
+.member-account-menu summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 8px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--muted);
+  list-style: none;
+  cursor: pointer;
+}
+.member-account-menu summary:hover {
+  background: #edf4f1;
+  color: var(--green);
+}
+.member-account-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.member-account-menu summary:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+.member-account-menu summary[aria-disabled="true"] {
+  opacity: .6;
+  cursor: wait;
+}
+.member-account-menu-panel {
+  position: absolute;
+  z-index: 1;
+  top: calc(100% + 7px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: min(280px, calc(100vw - 104px));
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 28px #173f3720;
+}
+.member-account-menu-panel > button {
+  min-height: 44px;
+  padding: 8px;
+  border-radius: 7px;
+  text-align: left;
+}
+.member-account-menu-panel > button:hover {
+  background: #edf4f1;
+}
+.member-account-menu-panel > .member-account-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.member-account-entry > span {
+  font-size: 20px;
+}
+.member-account-menu-panel > .member-account-back {
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.member-account-menu-panel > small {
+  padding: 0 8px 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
 }
 .member-balance-summary {
   display: flex;
@@ -2045,18 +2144,49 @@ dialog.event-dialog {
 .account-session h3 {
   font-size: 20px;
 }
+.display-name-field {
+  margin-bottom: 16px;
+}
+.display-name-view,
 .display-name-form {
   display: flex;
   flex-direction: column;
   gap: 7px;
-  margin-bottom: 16px;
 }
+.display-name-view > span,
 .display-name-form > label {
   color: var(--muted);
   font-size: 14px;
 }
-.display-name-form > div {
+.display-name-view > div {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  gap: 16px;
+}
+.display-name-view strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 16px;
+}
+.display-name-edit {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 8px;
+  border-radius: 8px;
+}
+.display-name-edit:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+.display-name-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
 .display-name-form input {

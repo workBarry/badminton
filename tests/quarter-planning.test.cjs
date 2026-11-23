@@ -617,7 +617,7 @@ test("president management form fixes role and membership instead of offering a 
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
   const { MemberManagerForTest } = accountComponentsForTest();
-  const html = renderToStaticMarkup(React.createElement(MemberManagerForTest, { member: accountProfileProps(true).user, saving: false, save() {}, onClose() {} }));
+  const html = renderToStaticMarkup(React.createElement(MemberManagerForTest, { member: accountProfileProps(true).user, saving: false, issueClaimCode() {}, save() {}, onClose() {} }));
   assert.match(html, /<input type="hidden" name="role" value="ADMIN"/);
   assert.match(html, /<input type="hidden" name="membershipStatus" value="MEMBER"/);
   assert.equal((html.match(/<select[^>]*disabled/g) ?? []).length, 2);
@@ -638,5 +638,5 @@ test("president member row shows one president badge without an extra member bad
   assert.equal(badges.filter((badge) => />社員<\/span>/.test(badge)).length, 0);
   assert.doesNotMatch(html, /primary-admin-label/);
   assert.match(html, /編輯/);
-  assert.match(html, /認領碼/);
+  assert.doesNotMatch(html, /認領碼/);
 });

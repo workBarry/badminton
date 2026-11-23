@@ -130,13 +130,14 @@ export default function Home() {
   const [presidencySaving, setPresidencySaving] = useState(false);
   const [editingMember, setEditingMember] = useState<Person | null>(null);
   const [memberSaving, setMemberSaving] = useState(false);
+  const [claimCodeSaving, setClaimCodeSaving] = useState(false);
 
   useEffect(() => {
-    if (!managerOpen && !announcementOpen && !billingManagerOpen && !editingMember) return;
+    if (!managerOpen && !announcementOpen && !billingManagerOpen && !editingMember && !codeNotice) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !memberSaving && !claimCodeSaving && !codeNotice) {
         setManagerOpen(false);
         setAnnouncementOpen(false);
         setEditingAnnouncement(null);
@@ -149,7 +150,7 @@ export default function Home() {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", closeOnEscape);
     };
-  }, [managerOpen, announcementOpen, billingManagerOpen, editingMember]);
+  }, [managerOpen, announcementOpen, billingManagerOpen, editingMember, memberSaving, claimCodeSaving, codeNotice]);
 
   const applyState = useCallback((state: ApiState) => {
     setViewer(state.viewer);
@@ -318,26 +319,38 @@ export default function Home() {
   };
   const saveDisplayName = async (form: FormEvent<HTMLFormElement>) => {
     form.preventDefault();
-    if (!viewer || profileSaving) return;
+    if (!viewer || profileSaving) return false;
     const displayName = String(new FormData(form.currentTarget).get("displayName") ?? "").trim();
-    if (!displayName) return;
+    if (!displayName) {
+      window.alert("請輸入顯示名稱");
+      return false;
+    }
     setProfileSaving(true);
     try {
-      await execute("updateDisplayName", { displayName });
+      return Boolean(await execute("updateDisplayName", { displayName }));
     } catch {
       window.alert("無法儲存顯示名稱，請稍後再試。");
+      return false;
     } finally {
       setProfileSaving(false);
     }
   };
   const issueClaimCode = async (person: Person) => {
-    const payload = await execute("issueClaimCode", { memberId: person.id });
-    if (payload?.actionResult?.claimCode) {
-      setCodeNotice({
-        title: `請將認領碼交給${person.name}`,
-        body: `使用者可在登入頁選擇「取回既有帳號」，輸入帳號名稱「${person.accountName ?? person.name}」與此碼。代碼只會顯示一次，請透過可信任的方式交付。`,
-        code: payload.actionResult.claimCode,
-      });
+    if (claimCodeSaving || memberSaving) return;
+    setClaimCodeSaving(true);
+    try {
+      const payload = await execute("issueClaimCode", { memberId: person.id });
+      if (payload?.actionResult?.claimCode) {
+        setCodeNotice({
+          title: `請將認領碼交給${person.name}`,
+          body: `使用者可在登入頁選擇「取回既有帳號」，輸入帳號名稱「${person.accountName ?? person.name}」與此碼。代碼只會顯示一次，請透過可信任的方式交付。`,
+          code: payload.actionResult.claimCode,
+        });
+      }
+    } catch {
+      window.alert("無法產生認領碼，請稍後再試。");
+    } finally {
+      setClaimCodeSaving(false);
     }
   };
   const join = async (eventId: string) => { if (viewer) await execute("join", { eventId }); };
@@ -568,7 +581,7 @@ export default function Home() {
   };
   const updateMember = async (form: FormEvent<HTMLFormElement>) => {
     form.preventDefault();
-    if (!editingMember) return;
+    if (!editingMember || memberSaving || claimCodeSaving || codeNotice) return;
     const data = new FormData(form.currentTarget);
     setMemberSaving(true);
     try {
@@ -652,11 +665,10 @@ export default function Home() {
           <b>{user.name[0]}</b>
           <span>
             <strong title={user.name}>{user.name}</strong>
-            {user.accountName && <small className="profile-account-name" title={user.accountName}>帳號：{user.accountName}</small>}
             <small>{clubIdentityLabel(user)}</small>
           </span>
           <button onClick={() => void logout()} title="登出">
-            ↪
+            <small>登出</small>
           </button>
         </div>
       </aside>
@@ -729,7 +741,7 @@ export default function Home() {
           />
         )}
         {tab === "公告" && <News news={news} admin={isAdmin} saving={announcementSaving} edit={(announcement) => { setEditingAnnouncement(announcement); setAnnouncementOpen(true); }} remove={(announcement) => void deleteAnnouncement(announcement)} togglePinned={(announcement) => void toggleAnnouncementPinned(announcement)} />}
-        {tab === "社員名單" && <Members members={members} requests={membershipRequests} currentUser={user} admin={isAdmin} saving={membershipSaving || memberSaving} requestMembership={() => void requestMembershipChange("JOIN")} issueClaimCode={issueClaimCode} reviewRequest={reviewMembershipRequest} manageMember={setEditingMember} />}
+        {tab === "社員名單" && <Members members={members} requests={membershipRequests} currentUser={user} admin={isAdmin} saving={membershipSaving || memberSaving || claimCodeSaving} requestMembership={() => void requestMembershipChange("JOIN")} reviewRequest={reviewMembershipRequest} manageMember={setEditingMember} />}
         {tab === "費用管理" && (
           <Billing
             admin={isAdmin}
@@ -749,6 +761,7 @@ export default function Home() {
         )}
         {tab === "個人資訊" && (
           <AccountProfile
+            key={viewer.id}
             viewer={viewer}
             user={user}
             profileSaving={profileSaving}
@@ -845,9 +858,12 @@ export default function Home() {
         </div>
       )}
       {isAdmin && editingMember && (
-        <MemberManagerModal member={editingMember} saving={memberSaving} onClose={() => setEditingMember(null)} save={updateMember} />
+        <MemberManagerModal member={editingMember} saving={memberSaving} covered={Boolean(codeNotice)} claimCodeSaving={claimCodeSaving} issueClaimCode={issueClaimCode} onClose={() => setEditingMember(null)} save={updateMember} />
       )}
-      {codeNotice && <CodeNotice notice={codeNotice} onClose={() => setCodeNotice(null)} />}
+      {codeNotice && <CodeNotice notice={codeNotice} onClose={() => {
+        setCodeNotice(null);
+        if (editingMember) requestAnimationFrame(() => document.querySelector<HTMLElement>(".member-account-menu summary")?.focus());
+      }} />}
     </div>
   );
 }
@@ -991,22 +1007,71 @@ function AnnouncementModal({
 function MemberManagerModal({
   member,
   saving,
+  claimCodeSaving = false,
+  covered = false,
+  issueClaimCode,
   onClose,
   save,
 }: {
   member: Person;
   saving: boolean;
+  claimCodeSaving?: boolean;
+  covered?: boolean;
+  issueClaimCode: (person: Person) => void;
   onClose: () => void;
   save: (form: FormEvent<HTMLFormElement>) => void;
 }) {
+  const accountMenu = useRef<HTMLDetailsElement>(null);
+  const accountEntry = useRef<HTMLButtonElement>(null);
+  const claimAction = useRef<HTMLButtonElement>(null);
+  const [accountMenuPage, setAccountMenuPage] = useState<"settings" | "account">("settings");
+  const busy = saving || claimCodeSaving || covered;
   return (
-    <div className="modal-cover" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
-      <section className="modal manager-modal member-manager-modal" role="dialog" aria-modal="true" aria-labelledby="member-manager-title">
-        <button type="button" className="close" onClick={onClose} disabled={saving} aria-label="關閉社員管理視窗">×</button>
+    <div className="modal-cover" role="presentation" inert={covered} onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+      <section className="modal manager-modal member-manager-modal" role="dialog" aria-modal="true" aria-labelledby="member-manager-title" onKeyDown={(event) => {
+        if (event.key === "Escape" && accountMenu.current?.open) {
+          event.preventDefault();
+          event.stopPropagation();
+          accountMenu.current.open = false;
+          accountMenu.current.querySelector("summary")?.focus();
+        }
+      }}>
+        <div className="member-manager-actions">
+          <details className="member-account-menu" ref={accountMenu} onToggle={(event) => { if (!event.currentTarget.open) setAccountMenuPage("settings"); }}>
+            <summary aria-label="社員設定" title="社員設定" aria-disabled={busy} onClick={(event) => { if (busy) event.preventDefault(); }}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+            </summary>
+            <div className="member-account-menu-panel">
+              {accountMenuPage === "settings" ? (
+                <button ref={accountEntry} type="button" className="link member-account-entry" disabled={busy} onClick={() => {
+                  setAccountMenuPage("account");
+                  requestAnimationFrame(() => claimAction.current?.focus());
+                }}>帳號管理<span aria-hidden="true">›</span></button>
+              ) : (
+                <>
+                  <button type="button" className="link member-account-back" disabled={busy} onClick={() => {
+                    setAccountMenuPage("settings");
+                    requestAnimationFrame(() => accountEntry.current?.focus());
+                  }}><span aria-hidden="true">‹</span> 帳號管理</button>
+                  <button ref={claimAction} type="button" className="link" disabled={busy} onClick={() => {
+                    if (accountMenu.current) {
+                      accountMenu.current.open = false;
+                      accountMenu.current.querySelector("summary")?.focus();
+                    }
+                    void issueClaimCode(member);
+                  }}>{claimCodeSaving ? "產生中…" : "產生認領碼"}</button>
+                  <small>供使用者在其他裝置找回帳號。新碼會取代舊認領碼，只顯示一次。</small>
+                </>
+              )}
+            </div>
+          </details>
+          <button type="button" className="close" onClick={onClose} disabled={busy} aria-label="關閉社員管理視窗">×</button>
+        </div>
         <p>幹部工具</p>
         <h2 id="member-manager-title">管理 {member.name}</h2>
         {member.accountName && <p className="account-name">帳號：{member.accountName}</p>}
         <span>身分異動立即生效；餘額調整會另外留下帳務與稽核紀錄。</span>
+
         <form className="manager-form" onSubmit={save}>
           <label>
             部門（選填）
@@ -1051,7 +1116,7 @@ function MemberManagerModal({
             <input name="adjustmentNote" maxLength={200} placeholder="有調整餘額時必填，例如：特殊退款" />
           </label>
           <p className="form-note">直接改為非社員屬於幹部例外處理，不會自動退款；一般退出請優先使用申請審核流程。</p>
-          <button className="primary" disabled={saving}>{saving ? "儲存中…" : "儲存社員資料"}</button>
+          <button className="primary" disabled={busy}>{saving ? "儲存中…" : "儲存社員資料"}</button>
         </form>
       </section>
     </div>
@@ -1295,13 +1360,34 @@ function NotificationPanel({
 }
 
 function CodeNotice({ notice, onClose }: { notice: { title: string; body: string; code: string }; onClose: () => void }) {
+  const dialog = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    dialog.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    return () => {
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected && previousFocus !== document.body) previousFocus.focus();
+    };
+  }, []);
   const copyCode = async () => {
     await navigator.clipboard.writeText(notice.code);
     window.alert("已複製");
   };
   return (
     <div className="modal-cover" role="presentation">
-      <section className="modal code-modal" role="dialog" aria-modal="true" aria-labelledby="code-notice-title">
+      <section ref={dialog} className="modal code-modal" role="dialog" aria-modal="true" aria-labelledby="code-notice-title" onKeyDown={(event) => {
+        if (event.key !== "Tab") return;
+        const buttons = dialog.current?.querySelectorAll<HTMLButtonElement>("button:not([disabled])");
+        if (!buttons?.length) return;
+        const first = buttons[0];
+        const last = buttons[buttons.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }}>
         <p>帳號安全</p>
         <h2 id="code-notice-title">{notice.title}</h2>
         <span>{notice.body}</span>
@@ -1319,7 +1405,7 @@ function AccountProfile({
   viewer,
   user,
   profileSaving = false,
-  saveDisplayName = (form: FormEvent<HTMLFormElement>) => form.preventDefault(),
+  saveDisplayName = (form: FormEvent<HTMLFormElement>) => { form.preventDefault(); return false; },
   recoverySaving,
   passkeySaving,
   membershipSaving,
@@ -1335,7 +1421,7 @@ function AccountProfile({
   viewer: Viewer;
   user: Person;
   profileSaving?: boolean;
-  saveDisplayName?: (form: FormEvent<HTMLFormElement>) => void;
+  saveDisplayName?: (form: FormEvent<HTMLFormElement>) => boolean | Promise<boolean>;
   recoverySaving: boolean;
   passkeySaving: boolean;
   membershipSaving: boolean;
@@ -1356,6 +1442,12 @@ function AccountProfile({
   };
   const securityLabel = viewer.hasPasskey ? "Passkey 已啟用" : viewer.hasRecoveryCode ? "可使用復原碼" : "僅限此裝置";
   const shortId = viewer.id.length > 16 ? `${viewer.id.slice(0, 8)}…${viewer.id.slice(-4)}` : viewer.id;
+  const [editingName, setEditingName] = useState(false);
+  const editNameButton = useRef<HTMLButtonElement>(null);
+  const finishNameEdit = () => {
+    setEditingName(false);
+    requestAnimationFrame(() => editNameButton.current?.focus());
+  };
   const [transferOpen, setTransferOpen] = useState(false);
   const [successorId, setSuccessorId] = useState("");
   const ownRequests = membershipRequests.filter((request) => request.memberId === viewer.id);
@@ -1372,7 +1464,7 @@ function AccountProfile({
         <div className="account-hero-copy">
           <p>MY PROFILE</p>
           <h2>{user.name}</h2>
-          <span>{user.department || "尚未設定部門"} · {clubIdentityLabel(viewer)}</span>
+          <span>{user.department && <>{user.department} · </>}{clubIdentityLabel(viewer)}</span>
         </div>
         <Badge tone={viewer.hasPasskey || viewer.hasRecoveryCode ? "green" : "orange"}>{securityLabel}</Badge>
       </article>
@@ -1386,14 +1478,30 @@ function AccountProfile({
             </div>
             <Badge tone="gray">帳號固定</Badge>
           </div>
-          <form className="display-name-form" onSubmit={saveDisplayName}>
-            <label htmlFor="profile-display-name">顯示名稱</label>
-            <div>
-              <input key={`${viewer.id}:${viewer.name}`} id="profile-display-name" name="displayName" defaultValue={viewer.name} maxLength={40} required autoComplete="nickname" disabled={profileSaving} />
-              <button type="submit" className="secondary" disabled={profileSaving}>{profileSaving ? "儲存中…" : "儲存"}</button>
-            </div>
-            <small>可自行修改，最多 40 字；顯示名稱可與他人相同。</small>
-          </form>
+          <div className="display-name-field">
+            {editingName ? (
+              <form className="display-name-form" onSubmit={async (form) => { if (await saveDisplayName(form)) finishNameEdit(); }}>
+                <label htmlFor="profile-display-name">顯示名稱</label>
+                <input key={viewer.id + ":" + viewer.name} id="profile-display-name" name="displayName" defaultValue={viewer.name} maxLength={40} required autoComplete="nickname" autoFocus aria-describedby="profile-display-name-help" disabled={profileSaving} />
+                <div className="display-name-actions">
+                  <button type="button" className="secondary" disabled={profileSaving} onClick={finishNameEdit}>取消</button>
+                  <button type="submit" className="primary" disabled={profileSaving}>{profileSaving ? "儲存中…" : "儲存"}</button>
+                </div>
+                <small id="profile-display-name-help">最多 40 字；儲存後才會更新顯示名稱，帳號名稱不會變更。</small>
+              </form>
+            ) : (
+              <div className="display-name-view">
+                <span>顯示名稱</span>
+                <div>
+                  <strong>{viewer.name}</strong>
+                  <button ref={editNameButton} type="button" className="link display-name-edit" aria-label="修改顯示名稱" onClick={() => setEditingName(true)}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6L16 3Z" /><path d="m14 5 5 5" /></svg>
+                    修改
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
           <dl className="account-details">
             <div><dt>帳號名稱</dt><dd><code>{viewer.accountName ?? viewer.name}</code></dd></div>
             <div><dt>部門</dt><dd>{user.department || "未填寫"}</dd></div>
@@ -1986,7 +2094,6 @@ function Members({
   admin,
   saving,
   requestMembership,
-  issueClaimCode,
   reviewRequest,
   manageMember,
 }: {
@@ -1996,7 +2103,6 @@ function Members({
   admin: boolean;
   saving: boolean;
   requestMembership: () => void;
-  issueClaimCode: (person: Person) => void;
   reviewRequest: (request: MembershipRequest, decision: "APPROVE" | "REJECT") => void;
   manageMember: (person: Person) => void;
 }) {
@@ -2067,7 +2173,7 @@ function Members({
             <span>
               <Badge tone={person.role === "admin" ? "blue" : person.member ? "green" : "gray"}>{clubIdentityLabel(person)}</Badge>
             </span>
-            <span>{admin ? <span className="member-row-actions"><button type="button" className="link" disabled={saving} onClick={() => manageMember(person)}>編輯</button><button type="button" className="link claim-button" disabled={saving} onClick={() => issueClaimCode(person)}>認領碼</button></span> : person.member ? "有效" : "—"}</span>
+            <span>{admin ? <span className="member-row-actions"><button type="button" className="link" disabled={saving} onClick={() => manageMember(person)}>編輯</button></span> : person.member ? "有效" : "—"}</span>
           </div>
         ))}
       </section>
