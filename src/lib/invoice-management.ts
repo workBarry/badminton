@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { FieldValue, type DocumentData } from "firebase-admin/firestore";
 import { getAdminFirestore } from "@/lib/firebase-admin";
+import { recordBalanceMovement } from "@/lib/balance-ledger";
 import type { Viewer } from "@/lib/device-auth";
 import { effectiveInvoiceAmounts, reduceUnpaidInvoice, validCalendarDate } from "@/lib/quarter-planning";
 const TYPES = ["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "SINGLE_EVENT", "MEMBER_EXTRA"];
@@ -40,7 +41,10 @@ export async function manageInvoice(action: string, input: Record<string, string
       const { restoredCredit, ...amounts } = reduced;
       for (const credit of pendingCredits) transaction.update(credit.ref, { status: "VOID", voidReason: "轉帳未入帳，改由原單減收", updatedAt: now });
       transaction.update(ref, { ...amounts, status: reduced.adjustedAmount === 0 ? "CONFIRMED" : "PENDING", reportedAt: null, confirmedAt: reduced.adjustedAmount === 0 ? now : null, updatedAt: now, adjustments: FieldValue.arrayUnion({ ...audit, kind: "REPORT_REJECTED", amount: -reduction, beforeAmount: effective.amount, afterAmount: reduced.adjustedAmount }) });
-      if (restoredCredit > 0) transaction.update(memberRef, { creditBalance: FieldValue.increment(restoredCredit), updatedAt: now });
+      if (restoredCredit > 0) {
+        transaction.update(memberRef, { creditBalance: FieldValue.increment(restoredCredit), updatedAt: now });
+        recordBalanceMovement(transaction, db, { memberId: memberRef.id, amount: restoredCredit, reason: "駁回轉帳恢復餘額抵扣：" + reason, sourceKey: `invoice:${ref.id}:report-rejected:${now.toISOString()}`, invoiceId: ref.id, eventId: data.eventId ?? null, actorId: actor.id, actorName: actor.name, createdAt: now });
+      }
       notify("幹部核對未入帳，帳單已退回待繳；原因：" + reason);
       return { status: "REPORT_REJECTED", invoiceId: ref.id };
     }
@@ -57,14 +61,20 @@ export async function manageInvoice(action: string, input: Record<string, string
       const creditRef = db.collection("invoices").doc("refund-" + ref.id);
       transaction.create(creditRef, { id: creditRef.id, memberId: data.memberId, memberNameSnapshot: data.memberNameSnapshot, relatedInvoiceId: ref.id, type: "CREDIT", grossAmount: -remaining, creditApplied: 0, amount: -remaining, status: "CONFIRMED", periodId: data.periodId ?? data.relatedPeriodId ?? null, periodLabel: data.periodLabel ?? "帳單退款", eventIds: eventIds(data), refundMode: input.refundMode, cashRefund, balanceRefund, adjustments: [{ ...audit, kind: "REFUND", amount: -remaining }], confirmedAt: now, createdAt: now, updatedAt: now });
       transaction.update(ref, { status: "REFUNDED", refundMode: input.refundMode, refundedAt: now, updatedAt: now, adjustments: FieldValue.arrayUnion({ ...audit, kind: "REFUND", amount: -remaining, cashRefund, balanceRefund }) });
-      if (balanceRefund > 0) transaction.update(memberRef, { creditBalance: FieldValue.increment(balanceRefund), updatedAt: now });
+      if (balanceRefund > 0) {
+        transaction.update(memberRef, { creditBalance: FieldValue.increment(balanceRefund), updatedAt: now });
+        recordBalanceMovement(transaction, db, { memberId: memberRef.id, amount: balanceRefund, reason: "帳單退款退回餘額：" + reason, sourceKey: `invoice:${creditRef.id}:credit`, invoiceId: creditRef.id, relatedInvoiceId: ref.id, eventId: data.eventId ?? null, actorId: actor.id, actorName: actor.name, createdAt: now });
+      }
       notify("帳單退款 NT$" + remaining + "；退回餘額 NT$" + balanceRefund + "、人工退款 NT$" + cashRefund + "。原因：" + reason);
       return { status: "REFUNDED", invoiceId: ref.id, balanceRefund, cashRefund };
     }
     if (action === "voidInvoice") {
       if (data.status !== "PENDING") throw new Error("只有未繳帳單可以直接作廢；已回報或收款請先核對／退款");
       transaction.update(ref, { status: "VOID", voidReason: reason, cancellationReason: "ADMIN_VOID", voidedAt: now, voidedBy: actor.id, updatedAt: now, adjustments: FieldValue.arrayUnion({ ...audit, kind: "VOID", amount: -effective.amount, restoredCredit: effective.creditApplied }) });
-      if (effective.creditApplied > 0) transaction.update(memberRef, { creditBalance: FieldValue.increment(effective.creditApplied), updatedAt: now });
+      if (effective.creditApplied > 0) {
+        transaction.update(memberRef, { creditBalance: FieldValue.increment(effective.creditApplied), updatedAt: now });
+        recordBalanceMovement(transaction, db, { memberId: memberRef.id, amount: effective.creditApplied, reason: "作廢帳單恢復餘額抵扣：" + reason, sourceKey: `invoice:${ref.id}:void`, invoiceId: ref.id, eventId: data.eventId ?? null, actorId: actor.id, actorName: actor.name, createdAt: now });
+      }
       notify("帳單已作廢，活動與報名仍保留。原因：" + reason);
       return { status: "VOID", invoiceId: ref.id };
     }
@@ -86,6 +96,8 @@ export async function manageInvoice(action: string, input: Record<string, string
     transaction.create(replacementRef, { id: replacementRef.id, memberId: data.memberId, memberNameSnapshot: data.memberNameSnapshot ?? member.data()?.displayName, type: data.type, eventId: data.eventId ?? null, eventIds: ids, eventAmounts: ids.length ? amounts : [], eventSnapshots: data.eventSnapshots ?? [], periodId: data.periodId ?? null, relatedPeriodId: data.relatedPeriodId ?? null, periodLabel: data.periodLabel ?? "重開帳單", baselineEventCount: data.baselineEventCount ?? ids.length, baselineGrossAmount: data.baselineGrossAmount ?? data.grossAmount ?? effective.grossAmount, baselineEventAmounts: data.baselineEventAmounts ?? data.eventAmounts ?? [], grossAmount, creditApplied, amount, dueAt, status: amount === 0 ? "CONFIRMED" : "PENDING", confirmedAt: amount === 0 ? now : null, reportedAt: null, replacementOfId: ref.id, adjustments: [{ ...audit, kind: "REISSUE", amount: grossAmount - effective.grossAmount, previousGrossAmount: effective.grossAmount }], createdAt: now, updatedAt: now });
     transaction.update(ref, { status: "VOID", cancellationReason: "ADMIN_VOID", voidReason: reason, replacedById: replacementRef.id, voidedAt: now, updatedAt: now, adjustments: FieldValue.arrayUnion({ ...audit, kind: "REISSUED", amount: -effective.amount, replacementId: replacementRef.id }) });
     transaction.update(memberRef, { creditBalance: FieldValue.increment(restoredCredit - creditApplied), updatedAt: now });
+    recordBalanceMovement(transaction, db, { memberId: memberRef.id, amount: restoredCredit, reason: "重開帳單恢復原抵扣：" + reason, sourceKey: `invoice:${ref.id}:reissue-return`, invoiceId: ref.id, eventId: data.eventId ?? null, actorId: actor.id, actorName: actor.name, createdAt: now });
+    recordBalanceMovement(transaction, db, { memberId: memberRef.id, amount: -creditApplied, reason: "重開帳單抵扣：" + reason, sourceKey: `invoice:${replacementRef.id}:apply`, invoiceId: replacementRef.id, eventId: data.eventId ?? null, actorId: actor.id, actorName: actor.name, createdAt: now });
     notify("帳單已作廢重開，新單應付 NT$" + amount + "；原因：" + reason);
     return { status: "REISSUED", invoiceId: replacementRef.id };
   });

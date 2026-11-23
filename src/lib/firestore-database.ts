@@ -9,6 +9,7 @@ import {
   type Transaction,
 } from "firebase-admin/firestore";
 import { getAdminFirestore } from "@/lib/firebase-admin";
+import { recordBalanceMovement } from "@/lib/balance-ledger";
 import { memberAccountName, readMemberName, reserveMemberName, validatedAccountName, validatedDisplayName } from "@/lib/member-names.mjs";
 import { createClaimCodeRecord, type Viewer } from "@/lib/device-auth";
 import { manageInvoice, voidInvoiceBatch } from "@/lib/invoice-management";
@@ -288,6 +289,7 @@ async function cancelEventInTransaction(
   const adjustment = { eventId: eventRef.id, eventDate: taipeiDate(event.startsAt), reason: "活動取消", actorId: actor.id, actorName: actor.name, createdAt: now.toISOString() };
   for (const period of linkedPeriods.docs) transaction.update(period.ref, { eventChanges: FieldValue.arrayUnion({ ...adjustment, kind: "CANCELLED" }), updatedAt: now });
   const creditsByMember = new Map<string, number>();
+  const balanceCredits: { memberId: string; amount: number; reason: string; sourceKey: string; invoiceId: string; relatedInvoiceId?: string }[] = [];
   let voidedInvoices = 0;
   let creditedInvoices = 0;
 
@@ -325,13 +327,19 @@ async function cancelEventInTransaction(
         const before = effectiveInvoiceAmounts(invoiceData);
         const reduced = reduceUnpaidInvoice(invoiceData, eventCharge);
         const { restoredCredit, ...amounts } = reduced;
-        if (restoredCredit > 0) creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + restoredCredit);
+        if (restoredCredit > 0) {
+          creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + restoredCredit);
+          balanceCredits.push({ memberId, amount: restoredCredit, reason: "活動取消恢復帳單抵扣", sourceKey: `invoice:${invoice.id}:reduction:${eventRef.id}`, invoiceId: invoice.id });
+        }
         transaction.update(invoice.ref, { ...amounts, status: reduced.adjustedAmount === 0 ? "CONFIRMED" : "PENDING", confirmedAt: reduced.adjustedAmount === 0 ? now : null, adjustments: FieldValue.arrayUnion({ ...adjustment, kind: "REDUCTION", amount: -eventCharge, beforeAmount: before.amount, afterAmount: reduced.adjustedAmount, restoredCredit }), updatedAt: now });
       } else {
         // A reported transfer is not settled money: wait for administrator confirmation before making this credit spendable.
         const creditRef = db.collection("invoices").doc("credit-" + eventRef.id + "-" + invoice.id);
         const settled = invoiceData.status === "CONFIRMED";
-        if (settled) creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + eventCharge);
+        if (settled) {
+          creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + eventCharge);
+          balanceCredits.push({ memberId, amount: eventCharge, reason: "活動取消退回活動費", sourceKey: `invoice:${creditRef.id}:credit`, invoiceId: creditRef.id, relatedInvoiceId: invoice.id });
+        }
         creditedInvoices += 1;
         transaction.create(creditRef, { id: creditRef.id, memberId, memberNameSnapshot: invoiceData.memberNameSnapshot, eventId: eventRef.id, relatedInvoiceId: invoice.id, type: "CREDIT", grossAmount: -eventCharge, creditApplied: 0, amount: -eventCharge, status: settled ? "CONFIRMED" : "AWAITING_PAYMENT_CONFIRMATION", periodLabel: "活動取消退回餘額", confirmedAt: settled ? now : null, note: settled ? "活動取消，已退回帳戶餘額" : "待原帳單收款確認後退回餘額", createdAt: now, updatedAt: now });
         transaction.update(invoice.ref, { adjustments: FieldValue.arrayUnion({ ...adjustment, kind: settled ? "CREDIT" : "CREDIT_PENDING", amount: -eventCharge, creditInvoiceId: creditRef.id }), updatedAt: now });
@@ -341,17 +349,27 @@ async function cancelEventInTransaction(
     if (invoiceData.status === "PENDING") {
       voidedInvoices += 1;
       const restoredCredit = Number(invoiceData.creditApplied ?? 0);
-      if (restoredCredit > 0) creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + restoredCredit);
+      if (restoredCredit > 0) {
+        creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + restoredCredit);
+        balanceCredits.push({ memberId, amount: restoredCredit, reason: "活動取消恢復帳單抵扣", sourceKey: `invoice:${invoice.id}:event-cancel`, invoiceId: invoice.id });
+      }
       transaction.update(invoice.ref, { status: "VOID", cancellationReason: "EVENT_CANCELLED", updatedAt: now });
     } else if (invoiceData.status === "REPORTED" || invoiceData.status === "CONFIRMED") {
       creditedInvoices += 1;
-      creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + Number(invoiceData.grossAmount ?? invoiceData.amount ?? 0));
+      const refundedAmount = Number(invoiceData.grossAmount ?? invoiceData.amount ?? 0);
+      creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + refundedAmount);
+      balanceCredits.push({ memberId, amount: refundedAmount, reason: "活動取消退回活動費", sourceKey: `invoice:${invoice.id}:event-cancel`, invoiceId: invoice.id });
       transaction.update(invoice.ref, { status: "CREDITED", cancellationReason: "EVENT_CANCELLED", updatedAt: now });
     }
   }
 
   for (const [memberId, amount] of creditsByMember) {
-    if (memberId && amount > 0) transaction.update(db.collection("members").doc(memberId), { creditBalance: FieldValue.increment(amount), updatedAt: now });
+    if (memberId && amount > 0) {
+      transaction.update(db.collection("members").doc(memberId), { creditBalance: FieldValue.increment(amount), updatedAt: now });
+      for (const credit of balanceCredits.filter((entry) => entry.memberId === memberId)) {
+        recordBalanceMovement(transaction, db, { ...credit, eventId: eventRef.id, actorId: actor.id, actorName: actor.name, createdAt: now });
+      }
+    }
   }
 
   transaction.update(eventRef, {
@@ -668,7 +686,10 @@ async function join(input: Record<string, string>, actor: Viewer) {
         createdAt: now,
         updatedAt: now,
       }, { merge: true });
-      if (creditApplied > 0) transaction.update(memberSnapshot.ref, { creditBalance: FieldValue.increment(-creditApplied), updatedAt: now });
+      if (creditApplied > 0) {
+        transaction.update(memberSnapshot.ref, { creditBalance: FieldValue.increment(-creditApplied), updatedAt: now });
+        recordBalanceMovement(transaction, db, { memberId: memberSnapshot.id, amount: -creditApplied, reason: "單次活動帳單抵扣", sourceKey: `invoice:${invoiceRef.id}:apply`, invoiceId: invoiceRef.id, eventId: input.eventId, actorId: actor.id, actorName: actor.name, createdAt: now });
+      }
     }
   });
 }
@@ -713,10 +734,15 @@ async function cancel(input: Record<string, string>, actor: Viewer) {
       const creditApplied = Number(invoiceData.creditApplied ?? 0);
       if (invoiceData.status === "PENDING") {
         transaction.update(invoice.ref, { status: "VOID", updatedAt: now });
-        if (creditApplied > 0) transaction.update(memberRef, { creditBalance: FieldValue.increment(creditApplied), updatedAt: now });
+        if (creditApplied > 0) {
+          transaction.update(memberRef, { creditBalance: FieldValue.increment(creditApplied), updatedAt: now });
+          recordBalanceMovement(transaction, db, { memberId: memberSnapshot.id, amount: creditApplied, reason: "取消報名恢復餘額抵扣", sourceKey: `invoice:${invoice.id}:cancel`, invoiceId: invoice.id, eventId: input.eventId, actorId: actor.id, actorName: actor.name, createdAt: now });
+        }
       } else if (invoiceData.status === "REPORTED" || invoiceData.status === "CONFIRMED") {
         transaction.update(invoice.ref, { status: "CREDITED", updatedAt: now });
-        transaction.update(memberRef, { creditBalance: FieldValue.increment(Number(invoiceData.grossAmount ?? invoiceData.amount ?? 0)), updatedAt: now });
+        const refundedAmount = Number(invoiceData.grossAmount ?? invoiceData.amount ?? 0);
+        transaction.update(memberRef, { creditBalance: FieldValue.increment(refundedAmount), updatedAt: now });
+        recordBalanceMovement(transaction, db, { memberId: memberSnapshot.id, amount: refundedAmount, reason: "取消報名退回活動費", sourceKey: `invoice:${invoice.id}:cancel`, invoiceId: invoice.id, eventId: input.eventId, actorId: actor.id, actorName: actor.name, createdAt: now });
       }
     }
   });
@@ -1123,7 +1149,10 @@ async function createQuarterlyInvoices(input: Record<string, string>, actor: Vie
         return record;
       });
       transaction.create(invoiceRef, { id: invoiceRef.id, memberId, memberNameSnapshot: String(member.displayName), eventId: null, eventIds, eventAmounts, eventSnapshots: basis.eventSnapshots, baselineEventCount: eventIds.length, type: "QUARTERLY_MEMBER", grossAmount, creditApplied, amount, ...(adjustments.length ? { adjustedGrossAmount: effective.grossAmount, adjustedCreditApplied: effective.creditApplied, adjustedAmount: effective.amount } : {}), adjustments, unitAmount: eventAmounts.every((value) => value === eventAmounts[0]) ? eventAmounts[0] : null, periodId: periodRef.id, periodLabel: basis.label, dueAt: basis.dueAt, status: effective.amount === 0 ? "CONFIRMED" : "PENDING", reportedAt: null, confirmedAt: effective.amount === 0 ? now : null, createdAt: now, updatedAt: now });
-      if (creditApplied - restoredCredit > 0) transaction.update(memberRef, { creditBalance: FieldValue.increment(-(creditApplied - restoredCredit)), updatedAt: now });
+      if (creditApplied - restoredCredit > 0) {
+        transaction.update(memberRef, { creditBalance: FieldValue.increment(-(creditApplied - restoredCredit)), updatedAt: now });
+        recordBalanceMovement(transaction, db, { memberId, amount: -(creditApplied - restoredCredit), reason: "季度帳單抵扣", sourceKey: `invoice:${invoiceRef.id}:apply`, invoiceId: invoiceRef.id, actorId: actor.id, actorName: actor.name, createdAt: now });
+      }
       transaction.create(db.collection("notifications").doc(), notificationData({ title: "新的社員帳單", message: String(basis.label) + "，季度基準 " + eventIds.length + " 場；應付 NT$" + effective.amount, type: "PAYMENT", tab: "費用管理", recipientId: memberId }));
     });
   }
@@ -1188,7 +1217,10 @@ async function confirmPayment(invoiceId: string, actor: Viewer) {
     const now = new Date();
     transaction.update(invoiceRef, { status: "CONFIRMED", confirmedAt: now, confirmedBy: actor.id, updatedAt: now, ...(pending.length ? { adjustments: FieldValue.arrayUnion({ kind: "CREDIT_RELEASED", reason: "收款確認，取消活動費退回帳戶餘額", amount: -amount, actorId: actor.id, actorName: actor.name, createdAt: now.toISOString() }) } : {}) });
     for (const credit of pending) transaction.update(credit.ref, { status: "CONFIRMED", confirmedAt: now, updatedAt: now });
-    if (amount > 0) transaction.update(db.collection("members").doc(String(data.memberId)), { creditBalance: FieldValue.increment(amount), updatedAt: now });
+    if (amount > 0) {
+      transaction.update(db.collection("members").doc(String(data.memberId)), { creditBalance: FieldValue.increment(amount), updatedAt: now });
+      for (const credit of pending) recordBalanceMovement(transaction, db, { memberId: String(data.memberId), amount: -Number(credit.data().amount), reason: "收款確認釋放活動退款", sourceKey: `invoice:${credit.id}:credit`, invoiceId: credit.id, relatedInvoiceId: invoiceId, eventId: credit.data().eventId ? String(credit.data().eventId) : null, actorId: actor.id, actorName: actor.name, createdAt: now });
+    }
     transaction.create(db.collection("notifications").doc(), notificationData({ title: "款項已確認", message: "NT$" + effectiveInvoiceAmounts(data).amount + " 已確認收款" + (amount > 0 ? "；取消活動費 NT$" + amount + " 已退回帳戶餘額" : ""), type: "PAYMENT", tab: "費用管理", recipientId: String(data.memberId) }));
   });
 }
@@ -1366,6 +1398,7 @@ async function reviewMembershipRequest(requestId: string, decision: string, acto
         creditBalance: FieldValue.increment(-creditApplied),
         updatedAt: now,
       });
+      recordBalanceMovement(transaction, db, { memberId, amount: -creditApplied, reason: "加入社員帳單抵扣", sourceKey: invoiceRef && !existingInvoice?.exists ? `invoice:${invoiceRef.id}:apply` : `membership-request:${requestId}:apply`, invoiceId: invoiceRef?.id ?? null, actorId: actor.id, actorName: actor.name, createdAt: now });
       if (invoiceRef && proratedGross > 0 && !existingInvoice?.exists) {
         transaction.create(invoiceRef, {
           id: invoiceRef.id,
@@ -1516,6 +1549,7 @@ async function updateMember(input: Record<string, string>, actor: Viewer) {
       createdAt: now,
     });
     if (adjustmentRef) {
+      recordBalanceMovement(transaction, db, { memberId, amount: balanceAdjustment, reason: adjustmentNote, sourceKey: `invoice:${adjustmentRef.id}:adjustment`, invoiceId: adjustmentRef.id, actorId: actor.id, actorName: actor.name, createdAt: now });
       transaction.create(adjustmentRef, {
         id: adjustmentRef.id,
         memberId,

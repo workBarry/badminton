@@ -24,9 +24,11 @@ function loadTs(relative, dependencies = {}) {
 const planning = loadTs("src/lib/quarter-planning.ts");
 const clubRoles = loadTs("src/lib/club-roles.ts");
 const memberNames = loadTs("src/lib/member-names.mjs");
+const balanceLedger = loadTs("src/lib/balance-ledger.ts");
 const billingView = loadTs("src/lib/billing-view.ts");
 const shuttleArt = loadTs("src/app/shuttle-art.tsx");
 const loadingScreen = loadTs("src/app/loading-screen.tsx");
+const balanceHistoryDialog = loadTs("src/app/balance-history-dialog.tsx");
 test("loading screen renders deterministic accessible text", () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
@@ -182,6 +184,7 @@ test("billing renders self-payment for admin's own bill, reminders for others an
   const dashboard = loadTs("src/app/billing-dashboard.tsx", { "@/lib/billing-view": billingView });
   const dependencies = { "@simplewebauthn/browser": {}, "@/app/quarter-planner": { default: () => null }, "@/app/billing-dashboard": dashboard, "@/lib/billing-view": billingView, "@/lib/quarter-planning": planning };
   dependencies["@/app/loading-screen"] = loadingScreen;
+  dependencies["@/app/balance-history-dialog"] = balanceHistoryDialog;
   dependencies["@/app/shuttle-art"] = shuttleArt;
   dependencies["@/lib/club-roles"] = clubRoles;
   new Function("require", "module", "exports", code + "\nmodule.exports.BillingForTest = Billing;")((id) => dependencies[id] ?? require(id), loaded, loaded.exports);
@@ -253,7 +256,16 @@ function database() {
       for (const kind of ["create", "update", "set", "delete"]) transaction[kind] = (ref, data, options) => operations.push({ kind, ref, data, merge: options?.merge });
       const result = await callback(transaction);
       const before = structuredClone(records);
-      try { for (const operation of operations) apply(operation); } catch (error) { records = before; throw error; }
+      try {
+        for (const operation of operations) apply(operation);
+        const movements = [...records.entries()].filter(([key]) => key.startsWith("balanceMovements/") && !before.has(key)).map(([, value]) => value);
+        const memberKeys = new Set([...before.keys(), ...records.keys()].filter((key) => key.startsWith("members/") && key.split("/").length === 2));
+        for (const key of memberKeys) {
+          const delta = Number(records.get(key)?.creditBalance ?? 0) - Number(before.get(key)?.creditBalance ?? 0);
+          const recorded = movements.filter((entry) => entry.memberId === key.split("/")[1]).reduce((sum, entry) => sum + entry.amount, 0);
+          assert.equal(recorded, delta, "Atomic balance ledger must match the actual member balance change: " + key);
+        }
+      } catch (error) { records = before; throw error; }
       return result;
     },
     data: (key) => structuredClone(records.get(key)),
@@ -266,9 +278,10 @@ function setup(balance = 0) {
   const db = database();
   db.seed("members/member", { displayName: "社員", membershipStatus: "MEMBER", role: "MEMBER", creditBalance: balance });
   db.seed("members/admin", { displayName: "社長", membershipStatus: "GUEST", role: "ADMIN", creditBalance: 0 });
-  const invoiceManagement = loadTs("src/lib/invoice-management.ts", { "firebase-admin/firestore": { Timestamp: FakeTimestamp, FieldValue: transforms }, "@/lib/firebase-admin": { getAdminFirestore: () => db }, "@/lib/quarter-planning": planning });
+  const invoiceManagement = loadTs("src/lib/invoice-management.ts", { "@/lib/balance-ledger": balanceLedger, "firebase-admin/firestore": { Timestamp: FakeTimestamp, FieldValue: transforms }, "@/lib/firebase-admin": { getAdminFirestore: () => db }, "@/lib/quarter-planning": planning });
   const backend = loadTs("src/lib/firestore-database.ts", {
     "@/lib/invoice-management": invoiceManagement,
+    "@/lib/balance-ledger": balanceLedger,
     "@/lib/member-names.mjs": memberNames,
     "firebase-admin/firestore": { Timestamp: FakeTimestamp, FieldValue: transforms },
     "@/lib/firebase-admin": { getAdminFirestore: () => db },
@@ -570,6 +583,7 @@ function accountComponentsForTest() {
     "@/app/quarter-planner": { default: () => null },
     "@/app/billing-dashboard": loadTs("src/app/billing-dashboard.tsx", { "@/lib/billing-view": billingView }),
     "@/app/loading-screen": loadingScreen,
+    "@/app/balance-history-dialog": balanceHistoryDialog,
     "@/app/shuttle-art": shuttleArt,
     "@/lib/billing-view": billingView,
     "@/lib/quarter-planning": planning,

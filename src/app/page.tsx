@@ -6,6 +6,7 @@ import QuarterPlanner from "@/app/quarter-planner";
 import LoadingScreen from "@/app/loading-screen";
 import ShuttleArt from "@/app/shuttle-art";
 import BillingDashboard, { type BillingProps } from "@/app/billing-dashboard";
+import BalanceHistoryDialog from "@/app/balance-history-dialog";
 import { activityPayments, isPrincipal, type ManagedInvoice } from "@/lib/billing-view";
 import type { QuarterPlan } from "@/lib/quarter-planning";
 import { clubIdentityLabel } from "@/lib/club-roles";
@@ -1021,13 +1022,20 @@ function MemberManagerModal({
   onClose: () => void;
   save: (form: FormEvent<HTMLFormElement>) => void;
 }) {
+  const balanceTrigger = useRef<HTMLButtonElement>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const closeBalanceHistory = () => {
+    setHistoryOpen(false);
+    requestAnimationFrame(() => balanceTrigger.current?.focus());
+  };
   const accountMenu = useRef<HTMLDetailsElement>(null);
   const accountEntry = useRef<HTMLButtonElement>(null);
   const claimAction = useRef<HTMLButtonElement>(null);
   const [accountMenuPage, setAccountMenuPage] = useState<"settings" | "account">("settings");
   const busy = saving || claimCodeSaving || covered;
   return (
-    <div className="modal-cover" role="presentation" inert={covered} onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+    <>
+    <div className="modal-cover" role="presentation" inert={covered || historyOpen} onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
       <section className="modal manager-modal member-manager-modal" role="dialog" aria-modal="true" aria-labelledby="member-manager-title" onKeyDown={(event) => {
         if (event.key === "Escape" && accountMenu.current?.open) {
           event.preventDefault();
@@ -1102,10 +1110,10 @@ function MemberManagerModal({
               )}
             </label>
           </div>
-          <div className="member-balance-summary">
-            <span>目前帳戶餘額</span>
+          <button ref={balanceTrigger} type="button" className="member-balance-summary" disabled={busy} aria-haspopup="dialog" aria-expanded={historyOpen} aria-controls="member-balance-history" onClick={() => setHistoryOpen(true)}>
+            <span><span>目前帳戶餘額</span><small>查看紀錄 ›</small></span>
             <strong>NT$ {Number(member.creditBalance ?? 0).toLocaleString("zh-TW")}</strong>
-          </div>
+          </button>
           <label>
             餘額調整（選填）
             <input name="balanceAdjustment" type="number" step="1" min="-100000" max="100000" defaultValue="0" />
@@ -1120,6 +1128,8 @@ function MemberManagerModal({
         </form>
       </section>
     </div>
+    {historyOpen && <BalanceHistoryDialog key={member.id} member={member} onClose={closeBalanceHistory} />}
+    </>
   );
 }
 

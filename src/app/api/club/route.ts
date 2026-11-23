@@ -12,6 +12,7 @@ import {
   viewerForDeviceToken,
 } from "@/lib/device-auth";
 import { mutate, readState } from "@/lib/firestore-database";
+import { BalanceHistoryError, readMemberBalanceHistory } from "@/lib/member-balance-history";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +41,18 @@ async function stateForDevice(token: string | null | undefined, viewer: Viewer |
 
 export async function GET(request: NextRequest) {
   const token = request.cookies.get(DEVICE_COOKIE)?.value;
+  const historyMemberId = request.nextUrl.searchParams.get("balanceHistoryMemberId");
+  if (historyMemberId !== null) {
+    const headers = { "Cache-Control": "private, no-store" };
+    try {
+      const viewer = await viewerForDeviceToken(token);
+      return NextResponse.json(await readMemberBalanceHistory(historyMemberId, viewer), { headers });
+    } catch (error) {
+      const status = error instanceof BalanceHistoryError ? error.status : 500;
+      const message = error instanceof BalanceHistoryError ? error.message : "讀取餘額紀錄失敗，請稍後再試";
+      return NextResponse.json({ error: message }, { status, headers });
+    }
+  }
   const viewer = await viewerForDeviceToken(token);
   return NextResponse.json(await stateForDevice(token, viewer));
 }
