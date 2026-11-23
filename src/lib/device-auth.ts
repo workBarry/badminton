@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from
 import { FieldValue } from "firebase-admin/firestore";
 import { isClubPresident } from "@/lib/club-roles";
 import { getAdminFirestore } from "@/lib/firebase-admin";
+import { findMembersByName, memberAccountName, memberNameKey, NAME_IN_USE_MESSAGE, readMemberName, reserveMemberName, validatedAccountName, validatedDisplayName } from "@/lib/member-names.mjs";
 
 export const DEVICE_COOKIE = "badminton_device";
 export const DEVICE_SESSION_MAX_AGE = 60 * 60 * 24 * 365;
@@ -9,6 +10,7 @@ export const DEVICE_SESSION_MAX_AGE = 60 * 60 * 24 * 365;
 export type Viewer = {
   id: string;
   name: string;
+  accountName: string;
   department: string | null;
   role: "ADMIN" | "MEMBER";
   primaryAdmin: boolean;
@@ -19,7 +21,7 @@ export type Viewer = {
   hasPasskey: boolean;
 };
 
-export type DeviceAccount = Pick<Viewer, "id" | "name" | "role" | "membershipStatus">;
+export type DeviceAccount = Pick<Viewer, "id" | "name" | "role" | "membershipStatus" | "primaryAdmin" | "accountName">;
 
 function secretHash(secret: string) {
   return createHash("sha256").update(secret).digest("hex");
@@ -60,6 +62,7 @@ function viewerFromMember(id: string, member: FirebaseFirestore.DocumentData): V
   return {
     id,
     name: String(member.displayName ?? ""),
+    accountName: memberAccountName(member),
     department: member.department ? String(member.department) : null,
     role: member.role === "ADMIN" ? "ADMIN" : "MEMBER",
     primaryAdmin: isClubPresident(member),
@@ -162,7 +165,7 @@ export async function deviceAccountsForToken(token?: string | null): Promise<Dev
     .filter((member) => member.exists)
     .map((member) => {
       const viewer = viewerFromMember(member.id, member.data()!);
-      return { id: viewer.id, name: viewer.name, role: viewer.role, membershipStatus: viewer.membershipStatus };
+      return { id: viewer.id, name: viewer.name, role: viewer.role, membershipStatus: viewer.membershipStatus, primaryAdmin: viewer.primaryAdmin, accountName: viewer.accountName };
     });
 }
 
@@ -192,18 +195,18 @@ export async function deactivateDeviceToken(token?: string | null) {
   });
 }
 
-export async function createGuestDeviceAccount(displayName: string, existingToken?: string | null) {
-  const name = displayName.trim();
-  if (!name) throw new Error("請輸入使用者名稱");
-  if (name.length > 40) throw new Error("使用者名稱不能超過 40 個字元");
+export async function createGuestDeviceAccount(inputAccountName: string, existingToken?: string | null, inputDisplayName?: string) {
+  const accountName = validatedAccountName(inputAccountName);
+  const name = inputDisplayName === undefined ? accountName : validatedDisplayName(inputDisplayName);
   const db = getAdminFirestore();
   const userId = randomUUID();
   const memberRef = db.collection("members").doc(userId);
   const credential = await credentialForUser(userId, existingToken);
   const now = new Date();
-  const batch = db.batch();
-  batch.create(memberRef, {
+  const member = {
     id: userId,
+    accountName,
+    accountNameKey: memberNameKey(accountName),
     displayName: name,
     department: null,
     role: "MEMBER",
@@ -214,21 +217,26 @@ export async function createGuestDeviceAccount(displayName: string, existingToke
     creditBalance: 0,
     createdAt: now,
     updatedAt: now,
+  };
+  await db.runTransaction(async (transaction) => {
+    const claim = await readMemberName(transaction, db, accountName);
+    if (claim.member) throw new Error(NAME_IN_USE_MESSAGE);
+    reserveMemberName(transaction, claim, userId, now);
+    transaction.create(memberRef, member);
+    if (credential.create) transaction.create(credential.ref, credential.data);
+    else transaction.update(credential.ref, credential.data);
   });
-  if (credential.create) batch.create(credential.ref, credential.data);
-  else batch.update(credential.ref, credential.data);
-  await batch.commit();
-  return { token: credential.token, viewer: viewerFromMember(userId, { displayName: name, role: "MEMBER", membershipStatus: "GUEST", accountType: "guest", creditBalance: 0 }) };
+  return { token: credential.token, viewer: viewerFromMember(userId, member) };
 }
 
-export async function loginWithRecoveryOrClaimCode(displayName: string, code: string, existingToken?: string | null) {
-  const name = displayName.trim();
+export async function loginWithRecoveryOrClaimCode(accountName: string, code: string, existingToken?: string | null) {
+  const name = memberNameKey(accountName);
   const cleanCode = normalizedCode(code);
-  if (!name || cleanCode.length !== 16) throw new Error("姓名或認領／復原碼不正確");
+  if (!name || cleanCode.length !== 16) throw new Error("帳號名稱或認領／復原碼不正確");
   const db = getAdminFirestore();
-  const candidates = await db.collection("members").where("displayName", "==", name).get();
+  const candidates = findMembersByName(await db.collection("members").get(), name);
   let matched: FirebaseFirestore.QueryDocumentSnapshot | null = null;
-  for (const candidate of candidates.docs) {
+  for (const candidate of candidates) {
     const member = candidate.data();
     const pairs = [
       [member.claimCodeSalt, member.claimCodeHash],
@@ -239,26 +247,39 @@ export async function loginWithRecoveryOrClaimCode(displayName: string, code: st
       break;
     }
   }
-  if (!matched) throw new Error("姓名或認領／復原碼不正確");
+  if (!matched) throw new Error("帳號名稱或認領／復原碼不正確");
 
   const nextRecoveryCode = recoveryCode();
   const recoverySalt = randomBytes(16).toString("hex");
   const credential = await credentialForUser(matched.id, existingToken);
-  const batch = db.batch();
-  if (credential.create) batch.create(credential.ref, credential.data);
-  else batch.update(credential.ref, credential.data);
-  batch.update(matched.ref, {
-    accountType: "recoverable",
-    recoveryCodeSalt: recoverySalt,
-    recoveryCodeHash: recoveryHash(nextRecoveryCode, recoverySalt),
-    recoveryCodeCreatedAt: new Date(),
-    claimCodeSalt: FieldValue.delete(),
-    claimCodeHash: FieldValue.delete(),
-    claimedAt: new Date(),
-    updatedAt: new Date(),
+  const matchedRef = matched.ref;
+  const updated = await db.runTransaction(async (transaction) => {
+    const fresh = await transaction.get(matchedRef);
+    if (!fresh.exists) throw new Error("帳號名稱或認領／復原碼不正確");
+    const member = fresh.data()!;
+    const pairs = [
+      [member.claimCodeSalt, member.claimCodeHash],
+      [member.recoveryCodeSalt, member.recoveryCodeHash],
+    ];
+    // Recheck inside the commit boundary: a conflicting recovery rotates the
+    // hashes, so a transaction retry cannot reuse the already-consumed code.
+    if (memberNameKey(memberAccountName(member)) !== name || !pairs.some(([salt, hash]) =>
+      salt && hash && secureHexEqual(recoveryHash(cleanCode, String(salt)), String(hash))
+    )) throw new Error("帳號名稱或認領／復原碼不正確");
+    if (credential.create) transaction.create(credential.ref, credential.data);
+    else transaction.update(credential.ref, credential.data);
+    transaction.update(matchedRef, {
+      accountType: "recoverable",
+      recoveryCodeSalt: recoverySalt,
+      recoveryCodeHash: recoveryHash(nextRecoveryCode, recoverySalt),
+      recoveryCodeCreatedAt: new Date(),
+      claimCodeSalt: FieldValue.delete(),
+      claimCodeHash: FieldValue.delete(),
+      claimedAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return { ...member, accountType: "recoverable", recoveryCodeHash: true };
   });
-  await batch.commit();
-  const updated = { ...matched.data(), accountType: "recoverable", recoveryCodeHash: true };
   return { token: credential.token, viewer: viewerFromMember(matched.id, updated), recoveryCode: nextRecoveryCode };
 }
 

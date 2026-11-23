@@ -607,7 +607,17 @@ select {
   padding: 15px 8px 0;
   border-top: 1px solid #38635e;
 }
+.profile > span {
+  min-width: 0;
+}
+.profile strong,
+.profile .profile-account-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .profile > b {
+  flex: 0 0 31px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1615,7 +1625,26 @@ dialog.event-dialog {
   gap: 9px;
   align-items: center;
 }
+.member-name-cell {
+  min-width: 0;
+}
+.member-name-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
+.account-name {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
 .row > strong i {
+  flex: 0 0 28px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1742,12 +1771,6 @@ dialog.event-dialog {
   display: flex;
   align-items: center;
   gap: 12px;
-}
-.primary-admin-label {
-  display: block;
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: 10px;
 }
 .modal-cover {
   position: fixed;
@@ -2022,6 +2045,33 @@ dialog.event-dialog {
 .account-session h3 {
   font-size: 20px;
 }
+.display-name-form {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 16px;
+}
+.display-name-form > label {
+  color: var(--muted);
+  font-size: 14px;
+}
+.display-name-form > div {
+  display: flex;
+  gap: 8px;
+}
+.display-name-form input {
+  min-width: 0;
+  width: 100%;
+  flex: 1;
+}
+.display-name-form button {
+  flex: 0 0 auto;
+}
+.display-name-form > small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
 .account-details {
   display: flex;
   flex-direction: column;
@@ -2040,6 +2090,8 @@ dialog.event-dialog {
   font-size: 12px;
 }
 .account-details dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
   margin: 0;
   font-size: 13px;
   font-weight: 700;

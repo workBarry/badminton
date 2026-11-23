@@ -1,7 +1,7 @@
 export type InvoiceSchedule = { id: string; starts_at: string | null; ends_at: string | null; courts: string; status?: string };
 export type InvoiceAdjustment = { kind: string; reason: string; eventId?: string; eventDate?: string; amount: number; actorName: string; createdAt: string };
 export type ManagedInvoice = {
-  id: string; member_id: string; memberName: string; type: string; status: string;
+  id: string; member_id: string; memberName: string; memberAccountName?: string; type: string; status: string;
   gross_amount: number; credit_applied: number; amount: number;
   event_id?: string | null; event_ids?: string[]; event_amounts?: number[]; event_schedules?: InvoiceSchedule[];
   original_gross_amount?: number; original_amount?: number; baseline_event_count?: number;
@@ -12,7 +12,7 @@ export type ManagedInvoice = {
 };
 export type BillingActivity = {
   id: string; startsAt?: string; endsAt?: string; courts: string; memberBilling?: string;
-  bookings: { memberId: string; name: string; kind: string; transferred?: boolean }[];
+  bookings: { memberId: string; name: string; accountName?: string; kind: string; transferred?: boolean }[];
 };
 export const PRINCIPAL_TYPES = ["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "SINGLE_EVENT", "MEMBER_EXTRA"];
 export const isPrincipal = (invoice: Pick<ManagedInvoice, "type">) => PRINCIPAL_TYPES.includes(invoice.type);
@@ -39,9 +39,9 @@ export function billingSummary(invoices: ManagedInvoice[], now = new Date()) {
     overdueAmount: pending.filter((invoice) => invoice.due_at && new Date(invoice.due_at) < now).reduce((sum, invoice) => sum + invoice.amount, 0) };
 }
 export function groupByPerson(invoices: ManagedInvoice[]) {
-  const groups = new Map<string, { id: string; name: string; invoices: ManagedInvoice[] }>();
+  const groups = new Map<string, { id: string; name: string; accountName?: string; invoices: ManagedInvoice[] }>();
   for (const invoice of invoices.filter(isPrincipal).filter((entry) => !["VOID", "REFUNDED", "CREDITED"].includes(entry.status))) {
-    const group = groups.get(invoice.member_id) ?? { id: invoice.member_id, name: invoice.memberName, invoices: [] };
+    const group = groups.get(invoice.member_id) ?? { id: invoice.member_id, name: invoice.memberName, accountName: invoice.memberAccountName, invoices: [] };
     group.invoices.push(invoice); groups.set(group.id, group);
   }
   return [...groups.values()].map((group) => ({ ...group, ...billingSummary(group.invoices) }))
@@ -51,7 +51,7 @@ export function activityPayments(event: BillingActivity, invoices: ManagedInvoic
   const participants = new Map(event.bookings.map((booking) => [booking.memberId, booking]));
   // Include bill payers whose place was transferred: their quarterly debt must remain visible.
   for (const invoice of invoices.filter((entry) => isPrincipal(entry) && includesEvent(entry, event.id) && ["PENDING", "REPORTED", "CONFIRMED"].includes(entry.status))) {
-    if (!participants.has(invoice.member_id)) participants.set(invoice.member_id, { memberId: invoice.member_id, name: invoice.memberName, kind: "帳單付款人" });
+    if (!participants.has(invoice.member_id)) participants.set(invoice.member_id, { memberId: invoice.member_id, name: invoice.memberName, accountName: invoice.memberAccountName, kind: "帳單付款人" });
   }
   const rows = [...participants.values()].map((person) => {
     const bills = invoices.filter((invoice) => invoice.member_id === person.memberId && isPrincipal(invoice) && includesEvent(invoice, event.id) && !["VOID", "REFUNDED", "CREDITED"].includes(invoice.status));

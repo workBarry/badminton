@@ -4,6 +4,7 @@ import { createClient } from "@libsql/client";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import nextEnv from "@next/env";
+import { memberNameId, memberNameKey, validatedAccountName, validatedDisplayName } from "../src/lib/member-names.mjs";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
@@ -50,7 +51,7 @@ const privateKey = required("FIREBASE_PRIVATE_KEY").replace(/^['"]|['"]$/g, "").
 const databaseId = process.env.FIREBASE_DATABASE_ID?.trim() || "(default)";
 const app = getApps()[0] ?? initializeApp({ credential: cert({ projectId, clientEmail, privateKey }), projectId });
 const firestore = databaseId === "(default)" ? getFirestore(app) : getFirestore(app, databaseId);
-const migrationCollections = ["members", "events", "invoices", "transfers", "announcements", "restDays", "feeRates", "eventDates"];
+const migrationCollections = ["members", "memberNames", "events", "invoices", "transfers", "announcements", "restDays", "feeRates", "eventDates"];
 const collectionChecks = await Promise.all(migrationCollections.map(async (name) => ({
   name,
   hasData: !(await firestore.collection(name).limit(1).get()).empty,
@@ -88,30 +89,78 @@ const [members, events, bookings, invoices, transfers, announcements, restDays, 
   select("SELECT * FROM fee_rates"),
 ]);
 
-const memberNames = new Map(members.map((member) => [String(member.id), String(member.display_name)]));
-const memberClaimCodes = new Map(members.map((member) => [String(member.id), createClaimCode()]));
-const operations = [];
-const put = (ref, data) => operations.push({ ref, data });
-
+// The original SQLite name becomes the fixed account name and initial display
+// name. Only fixed account names must be unique; display names may later repeat.
+const memberNames = new Map();
+const memberAccountNames = new Map();
+const namesByKey = new Map();
 for (const member of members) {
   const memberId = String(member.id);
+  let accountName;
+  let displayName;
+  try {
+    accountName = validatedAccountName(member.display_name);
+    displayName = validatedDisplayName(member.display_name);
+  } catch (error) {
+    await sqlite.close();
+    throw new Error(`Invalid source account/display name for member ${memberId}: ${error.message}`);
+  }
+  const nameKey = memberNameKey(accountName);
+  memberAccountNames.set(memberId, accountName);
+  memberNames.set(memberId, displayName);
+  const group = namesByKey.get(nameKey) ?? [];
+  group.push({ id: memberId, accountName, displayName });
+  namesByKey.set(nameKey, group);
+}
+const duplicateNames = [...namesByKey.entries()]
+  .filter(([, group]) => group.length > 1)
+  .map(([nameKey, group]) => ({ nameKey, members: group }));
+if (duplicateNames.length > 0) {
+  await sqlite.close();
+  throw new Error(`Source members contain duplicate normalized account names; resolve them before migration: ${JSON.stringify(duplicateNames)}`);
+}
+
+const memberClaimCodes = new Map(members.map((member) => [String(member.id), createClaimCode()]));
+const operations = [];
+const destinationPaths = new Set();
+const put = (ref, data) => {
+  if (destinationPaths.has(ref.path)) throw new Error(`Duplicate migration destination: ${ref.path}`);
+  destinationPaths.add(ref.path);
+  operations.push({ ref, data });
+};
+
+// Keep each member/reservation pair adjacent at the beginning of operations.
+// The even batch size below keeps both creates in the same atomic commit.
+for (const member of members) {
+  const memberId = String(member.id);
+  const accountName = memberAccountNames.get(memberId);
+  const displayName = memberNames.get(memberId);
+  const nameKey = memberNameKey(accountName);
   const claim = memberClaimCodes.get(memberId);
   put(firestore.collection("members").doc(memberId), {
-  id: memberId,
-  displayName: String(member.display_name),
-  department: member.department ? String(member.department) : null,
-  role: String(member.role ?? "MEMBER"),
-  membershipStatus: String(member.membership_status ?? "GUEST"),
-  joinedAt: optionalDate(member.joined_at),
-  endingAt: optionalDate(member.ending_at),
-  creditBalance: Number(member.credit_balance ?? 0),
-  accountType: "unclaimed",
-  claimCodeSalt: claim.salt,
-  claimCodeHash: claim.hash,
-  claimCodeCreatedAt: now,
-  createdAt: optionalDate(member.created_at) ?? now,
-  updatedAt: now,
-});
+    id: memberId,
+    accountName,
+    accountNameKey: nameKey,
+    displayName,
+    department: member.department ? String(member.department) : null,
+    role: String(member.role ?? "MEMBER"),
+    membershipStatus: String(member.membership_status ?? "GUEST"),
+    joinedAt: optionalDate(member.joined_at),
+    endingAt: optionalDate(member.ending_at),
+    creditBalance: Number(member.credit_balance ?? 0),
+    accountType: "unclaimed",
+    claimCodeSalt: claim.salt,
+    claimCodeHash: claim.hash,
+    claimCodeCreatedAt: now,
+    createdAt: optionalDate(member.created_at) ?? now,
+    updatedAt: now,
+  });
+  put(firestore.collection("memberNames").doc(memberNameId(accountName)), {
+    memberId,
+    nameKey,
+    accountName,
+    createdAt: now,
+  });
 }
 
 for (const event of events) {
@@ -216,7 +265,7 @@ put(firestore.collection("system").doc("migration-sqlite-v1"), {
 
 for (let offset = 0; offset < operations.length; offset += 400) {
   const batch = firestore.batch();
-  for (const operation of operations.slice(offset, offset + 400)) batch.set(operation.ref, operation.data);
+  for (const operation of operations.slice(offset, offset + 400)) batch.create(operation.ref, operation.data);
   await batch.commit();
 }
 
@@ -224,5 +273,5 @@ await sqlite.close();
 console.log(JSON.stringify({ databaseId, writtenDocuments: operations.length, members: members.length, events: events.length, bookings: bookings.length, invoices: invoices.length, transfers: transfers.length, announcements: announcements.length, restDays: restDays.length, feeRates: feeRates.length }, null, 2));
 console.log("\nOne-time account claim codes (store securely; Firestore contains hashes only):");
 for (const member of members) {
-  console.log(`${String(member.display_name)}\t${memberClaimCodes.get(String(member.id)).code}`);
+  console.log(`${memberAccountNames.get(String(member.id))}\t${memberClaimCodes.get(String(member.id)).code}`);
 }

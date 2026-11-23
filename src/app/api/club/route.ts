@@ -53,14 +53,14 @@ export async function POST(request: NextRequest) {
     const viewer = await viewerForDeviceToken(currentToken);
 
     if (body.action === "createGuest") {
-      const account = await createGuestDeviceAccount(body.name ?? "", currentToken);
+      const account = await createGuestDeviceAccount(body.accountName ?? body.name ?? "", currentToken, body.displayName);
       const response = NextResponse.json(await stateForDevice(account.token, account.viewer));
       response.cookies.set(sessionCookie(account.token));
       return response;
     }
 
     if (body.action === "recover") {
-      const account = await loginWithRecoveryOrClaimCode(body.name ?? "", body.code ?? "", currentToken);
+      const account = await loginWithRecoveryOrClaimCode(body.accountName ?? body.name ?? "", body.code ?? "", currentToken);
       const response = NextResponse.json({ ...(await stateForDevice(account.token, account.viewer)), actionResult: { recoveryCode: account.recoveryCode } });
       response.cookies.set(sessionCookie(account.token));
       return response;

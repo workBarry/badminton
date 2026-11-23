@@ -9,6 +9,7 @@ import {
   type Transaction,
 } from "firebase-admin/firestore";
 import { getAdminFirestore } from "@/lib/firebase-admin";
+import { memberAccountName, readMemberName, reserveMemberName, validatedAccountName, validatedDisplayName } from "@/lib/member-names.mjs";
 import { createClaimCodeRecord, type Viewer } from "@/lib/device-auth";
 import { manageInvoice, voidInvoiceBatch } from "@/lib/invoice-management";
 import { validateQuarterDraft, effectiveInvoiceAmounts, reduceUnpaidInvoice, type QuarterRules, type SuggestedActivity } from "@/lib/quarter-planning";
@@ -40,10 +41,6 @@ function taipeiDate(value: StoredDate) {
 }
 
 
-async function membersForName(db: Firestore, name: string) {
-  const snapshot = await db.collection("members").where("displayName", "==", name).get();
-  return snapshot.docs;
-}
 
 async function activeFee(db: Firestore, kind: "MEMBER_VISIT" | "GUEST_VISIT", at: Date) {
   const snapshot = await db.collection("feeRates").where("kind", "==", kind).get();
@@ -77,6 +74,7 @@ function defaultMemberBooking(eventId: string, memberId: string, member: Documen
     eventId,
     memberId,
     displayNameSnapshot: String(member.displayName ?? "未知使用者"),
+    accountNameSnapshot: memberAccountName(member),
     kindSnapshot: "MEMBER",
     status: "REGULAR",
     confirmedAt: now,
@@ -413,6 +411,7 @@ export async function readState(viewer: Viewer | null = null) {
       return {
         id: document.id,
         name,
+        accountName: memberAccountName(member),
         department: member.department ? String(member.department) : null,
         role: String(member.role ?? "MEMBER"),
         membershipStatus,
@@ -434,7 +433,8 @@ export async function readState(viewer: Viewer | null = null) {
     const item = {
       id: String(booking.id ?? document.id),
       memberId: String(booking.memberId ?? document.id),
-      name: String(booking.displayNameSnapshot ?? member?.displayName ?? "未知使用者"),
+      name: String(member?.displayName ?? booking.displayNameSnapshot ?? "未知使用者"),
+      accountName: member ? memberAccountName(member) : String(booking.accountNameSnapshot ?? ""),
       kind: String(booking.kindSnapshot ?? "GUEST"),
       status: String(booking.status),
       confirmedAt: iso(booking.confirmedAt),
@@ -510,7 +510,8 @@ export async function readState(viewer: Viewer | null = null) {
           const schedule = eventSchedulesById.get(eventId);
           return schedule ? [schedule] : [];
         }),
-        memberName: String(invoice.memberNameSnapshot ?? member?.displayName ?? "未知使用者"),
+        memberName: String(member?.displayName ?? invoice.memberNameSnapshot ?? "未知使用者"),
+        memberAccountName: member ? memberAccountName(member) : String(invoice.accountNameSnapshot ?? ""),
         type: String(invoice.type ?? ""),
 
         gross_amount: effectiveInvoiceAmounts(invoice).grossAmount,
@@ -556,7 +557,8 @@ export async function readState(viewer: Viewer | null = null) {
       return {
         id: document.id,
         memberId: String(request.memberId ?? ""),
-        memberName: String(request.memberNameSnapshot ?? member?.displayName ?? "未知使用者"),
+        memberName: String(member?.displayName ?? request.memberNameSnapshot ?? "未知使用者"),
+        accountName: member ? memberAccountName(member) : "",
         kind: String(request.kind ?? "JOIN"),
         status: String(request.status ?? "PENDING"),
         requestedAt: iso(request.requestedAt),
@@ -630,6 +632,7 @@ async function join(input: Record<string, string>, actor: Viewer) {
       eventId: input.eventId,
       memberId: memberSnapshot.id,
       displayNameSnapshot: member.displayName,
+      accountNameSnapshot: memberAccountName(member),
       kindSnapshot: kind,
       status,
       confirmedAt: now,
@@ -721,26 +724,25 @@ async function cancel(input: Record<string, string>, actor: Viewer) {
 
 async function transfer(input: Record<string, string>, actor: Viewer) {
   const db = getAdminFirestore();
-  const recipientName = input.recipient?.trim();
-  if (!recipientName) throw new Error("請填寫接手者名稱");
-  const sourceSnapshot = await db.collection("members").doc(actor.id).get();
-  if (!sourceSnapshot.exists) throw new Error("找不到轉讓者");
-  const matchingRecipients = (await membersForName(db, recipientName)).filter((document) => document.id !== actor.id);
-  if (matchingRecipients.length > 1) throw new Error("有多位同名使用者，請由幹部協助確認接手帳號");
-
-  const recipientRef = matchingRecipients[0]?.ref ?? db.collection("members").doc(randomUUID());
-  const recipientData = matchingRecipients[0]?.data() ?? null;
-  const claim = recipientData ? null : createClaimCodeRecord();
-
+  const recipientName = validatedAccountName(input.recipient);
+  const sourceRef = db.collection("members").doc(actor.id);
+  const newRecipientRef = db.collection("members").doc(randomUUID());
+  const claimCode = createClaimCodeRecord();
   const eventRef = db.collection("events").doc(input.eventId);
-  const sourceBookingRef = eventRef.collection("bookings").doc(sourceSnapshot.id);
-  const recipientBookingRef = eventRef.collection("bookings").doc(recipientRef.id);
-  const transferRef = db.collection("transfers").doc(`transfer-${input.eventId}-${sourceSnapshot.id}`);
+  const sourceBookingRef = eventRef.collection("bookings").doc(actor.id);
+  const transferRef = db.collection("transfers").doc(`transfer-${input.eventId}-${actor.id}`);
   const notificationRef = db.collection("notifications").doc();
   const now = new Date();
 
-  await db.runTransaction(async (transaction) => {
-    const [eventSnapshot, sourceBookingSnapshot, recipientBookingSnapshot] = await transaction.getAll(eventRef, sourceBookingRef, recipientBookingRef);
+  return db.runTransaction(async (transaction) => {
+    // Resolve by the unique name inside the transaction, including legacy names.
+    const nameClaim = await readMemberName(transaction, db, recipientName);
+    if (nameClaim.member?.id === actor.id) throw new Error("不能將名額轉讓給自己");
+    const recipientRef = nameClaim.member?.ref ?? newRecipientRef;
+    const actualName = String(nameClaim.member?.data().displayName ?? nameClaim.displayName);
+    const recipientBookingRef = eventRef.collection("bookings").doc(recipientRef.id);
+    const [sourceSnapshot, eventSnapshot, sourceBookingSnapshot, recipientBookingSnapshot] = await transaction.getAll(sourceRef, eventRef, sourceBookingRef, recipientBookingRef);
+    if (!sourceSnapshot.exists) throw new Error("找不到轉讓者");
     if (!eventSnapshot.exists) throw new Error("找不到活動");
     const event = eventSnapshot.data()!;
     const startsAt = dateValue(event.startsAt);
@@ -749,10 +751,14 @@ async function transfer(input: Record<string, string>, actor: Viewer) {
     if (recipientBookingSnapshot.exists && recipientBookingSnapshot.data()?.status !== "CANCELLED") throw new Error("接手者已在本次活動名單中");
     const sourceBooking = sourceBookingSnapshot.data()!;
 
-    if (!recipientData && claim) {
+    // All reads have completed; reserve the name and create the account atomically.
+    reserveMemberName(transaction, nameClaim, recipientRef.id, now);
+    if (!nameClaim.member) {
       transaction.create(recipientRef, {
         id: recipientRef.id,
-        displayName: recipientName,
+        accountName: nameClaim.accountName,
+        accountNameKey: nameClaim.nameKey,
+        displayName: actualName,
         department: null,
         role: "MEMBER",
         membershipStatus: "GUEST",
@@ -760,8 +766,8 @@ async function transfer(input: Record<string, string>, actor: Viewer) {
         joinedAt: null,
         endingAt: null,
         creditBalance: 0,
-        claimCodeSalt: claim.salt,
-        claimCodeHash: claim.hash,
+        claimCodeSalt: claimCode.salt,
+        claimCodeHash: claimCode.hash,
         claimCodeCreatedAt: now,
         createdAt: now,
         updatedAt: now,
@@ -772,12 +778,13 @@ async function transfer(input: Record<string, string>, actor: Viewer) {
       id: recipientBookingSnapshot.data()?.id ?? `${input.eventId}-${recipientRef.id}`,
       eventId: input.eventId,
       memberId: recipientRef.id,
-      displayNameSnapshot: recipientName,
+      displayNameSnapshot: actualName,
+      accountNameSnapshot: nameClaim.member ? memberAccountName(nameClaim.member.data()) : nameClaim.accountName,
       kindSnapshot: "GUEST",
       status: sourceBooking.status,
       confirmedAt: now,
       cancelledAt: null,
-      transferredFromMemberId: sourceSnapshot.id,
+      transferredFromMemberId: actor.id,
       updatedAt: now,
     }, { merge: true });
     transaction.update(sourceBookingRef, { status: "TRANSFERRED", transferredAt: now, updatedAt: now });
@@ -785,15 +792,15 @@ async function transfer(input: Record<string, string>, actor: Viewer) {
       id: transferRef.id,
       eventId: input.eventId,
       sourceBookingId: String(sourceBooking.id ?? sourceBookingRef.id),
-      sourceMemberId: sourceSnapshot.id,
+      sourceMemberId: actor.id,
       recipientId: recipientRef.id,
       settlement: "CONFIRMED",
       createdAt: now,
       updatedAt: now,
     }, { merge: true });
     transaction.create(notificationRef, notificationData({ title: "收到活動名額", message: `${actor.name} 已將 ${taipeiDate(event.startsAt)} 的活動名額轉讓給你，費用請私下結清`, type: "TRANSFER", tab: "活動", recipientId: recipientRef.id }));
+    return nameClaim.member ? undefined : { claimCode: claimCode.code, recipientName: actualName };
   });
-  return claim ? { claimCode: claim.code, recipientName } : undefined;
 }
 
 function validatedAnnouncementInput(input: Record<string, string>) {
@@ -1404,7 +1411,48 @@ async function reviewMembershipRequest(requestId: string, decision: string, acto
   return result;
 }
 
+function assertImmutableAccountName(input: Record<string, string>) {
+  if (["accountName", "accountNameKey", "username", "userName"].some(field => Object.hasOwn(input, field))) throw new Error("帳號名稱建立後不可修改");
+}
+
+async function updateDisplayName(input: Record<string, string>, actor: Viewer) {
+  assertImmutableAccountName(input);
+  if (input.memberId && input.memberId !== actor.id) throw new Error("只能修改自己的顯示名稱");
+  if (Object.keys(input).some(field => !["action", "displayName", "memberId"].includes(field))) throw new Error("此操作只能修改顯示名稱");
+  const displayName = validatedDisplayName(input.displayName);
+  const db = getAdminFirestore();
+  const memberRef = db.collection("members").doc(actor.id);
+  const auditRef = db.collection("auditLogs").doc(randomUUID());
+  const now = new Date();
+  await db.runTransaction(async transaction => {
+    const memberSnapshot = await transaction.get(memberRef);
+    if (!memberSnapshot.exists) throw new Error("找不到使用者");
+    const member = memberSnapshot.data()!;
+    const accountName = memberAccountName(member);
+    validatedAccountName(accountName);
+    const claim = await readMemberName(transaction, db, accountName);
+    if (claim.member?.id !== actor.id) throw new Error("帳號名稱資料不一致，請聯絡幹部確認");
+    if (member.accountNameKey !== undefined && member.accountNameKey !== claim.nameKey) throw new Error("帳號名稱索引不一致，請聯絡幹部確認");
+    reserveMemberName(transaction, claim, actor.id, now);
+    transaction.update(memberRef, {
+      // Freeze the old name before editing a legacy display name, in one commit.
+      accountName,
+      accountNameKey: claim.nameKey,
+      displayName,
+      ...(!Object.hasOwn(member, "primaryAdmin") ? { primaryAdmin: isClubPresident(member) } : {}),
+      updatedAt: now,
+    });
+    transaction.create(auditRef, {
+      id: auditRef.id, action: "UPDATE_DISPLAY_NAME", actorId: actor.id,
+      actorNameSnapshot: String(member.displayName ?? ""), targetMemberId: actor.id, accountName,
+      before: { displayName: String(member.displayName ?? "") }, after: { displayName }, createdAt: now,
+    });
+  });
+}
+
+
 async function updateMember(input: Record<string, string>, actor: Viewer) {
+  assertImmutableAccountName(input);
   const memberId = input.memberId;
   const role = input.role;
   const membershipStatus = input.membershipStatus;
@@ -1547,6 +1595,7 @@ async function issueClaimCode(memberId: string, actor: Viewer) {
 }
 
 export async function mutate(action: string, input: Record<string, string>, actor: Viewer) {
+  if (action === "updateDisplayName") return updateDisplayName(input, actor);
   if (action === "join") return join(input, actor);
   if (action === "cancel") return cancel(input, actor);
   if (action === "transfer") return transfer(input, actor);

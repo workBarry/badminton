@@ -23,6 +23,7 @@ function loadTs(relative, dependencies = {}) {
 }
 const planning = loadTs("src/lib/quarter-planning.ts");
 const clubRoles = loadTs("src/lib/club-roles.ts");
+const memberNames = loadTs("src/lib/member-names.mjs");
 const billingView = loadTs("src/lib/billing-view.ts");
 const shuttleArt = loadTs("src/app/shuttle-art.tsx");
 const loadingScreen = loadTs("src/app/loading-screen.tsx");
@@ -268,6 +269,7 @@ function setup(balance = 0) {
   const invoiceManagement = loadTs("src/lib/invoice-management.ts", { "firebase-admin/firestore": { Timestamp: FakeTimestamp, FieldValue: transforms }, "@/lib/firebase-admin": { getAdminFirestore: () => db }, "@/lib/quarter-planning": planning });
   const backend = loadTs("src/lib/firestore-database.ts", {
     "@/lib/invoice-management": invoiceManagement,
+    "@/lib/member-names.mjs": memberNames,
     "firebase-admin/firestore": { Timestamp: FakeTimestamp, FieldValue: transforms },
     "@/lib/firebase-admin": { getAdminFirestore: () => db },
     "@/lib/device-auth": { viewerFromMember: (id, data) => ({ id, name: data.displayName, role: data.role, membershipStatus: data.membershipStatus, primaryAdmin: clubRoles.isClubPresident(data), creditBalance: data.creditBalance ?? 0, accountType: data.accountType }) },
@@ -573,7 +575,7 @@ function accountComponentsForTest() {
     "@/lib/quarter-planning": planning,
     "@/lib/club-roles": clubRoles,
   };
-  new Function("require", "module", "exports", code + "\nmodule.exports.AccountProfileForTest = AccountProfile; module.exports.MemberManagerForTest = MemberManagerModal;")((id) => dependencies[id] ?? require(id), loaded, loaded.exports);
+  new Function("require", "module", "exports", code + "\nmodule.exports.AccountProfileForTest = AccountProfile; module.exports.MemberManagerForTest = MemberManagerModal; module.exports.MembersForTest = Members;")((id) => dependencies[id] ?? require(id), loaded, loaded.exports);
   return loaded.exports;
 }
 function accountProfileProps(primaryAdmin = false) {
@@ -620,4 +622,21 @@ test("president management form fixes role and membership instead of offering a 
   assert.match(html, /<input type="hidden" name="membershipStatus" value="MEMBER"/);
   assert.equal((html.match(/<select[^>]*disabled/g) ?? []).length, 2);
   assert.doesNotMatch(html, /<option value="GUEST"/);
+});
+
+test("president member row shows one president badge without an extra member badge", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { MembersForTest } = accountComponentsForTest();
+  const president = { ...accountProfileProps(true).user, name: "BarryAdmin" };
+  const html = renderToStaticMarkup(React.createElement(MembersForTest, {
+    members: [president], requests: [], currentUser: president, admin: true, saving: false,
+    requestMembership() {}, issueClaimCode() {}, reviewRequest() {}, manageMember() {},
+  }));
+  const badges = html.match(/<span class="badge [^"]*">[^<]*<\/span>/g) ?? [];
+  assert.equal(badges.filter((badge) => />社長<\/span>/.test(badge)).length, 1);
+  assert.equal(badges.filter((badge) => />社員<\/span>/.test(badge)).length, 0);
+  assert.doesNotMatch(html, /primary-admin-label/);
+  assert.match(html, /編輯/);
+  assert.match(html, /認領碼/);
 });

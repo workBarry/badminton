@@ -8,6 +8,7 @@ import ShuttleArt from "@/app/shuttle-art";
 import BillingDashboard, { type BillingProps } from "@/app/billing-dashboard";
 import { activityPayments, isPrincipal, type ManagedInvoice } from "@/lib/billing-view";
 import type { QuarterPlan } from "@/lib/quarter-planning";
+import { clubIdentityLabel } from "@/lib/club-roles";
 import type {
   AuthenticationResponseJSON,
   PublicKeyCredentialCreationOptionsJSON,
@@ -19,16 +20,17 @@ type Role = "admin" | "member";
 type Tab = "總覽" | "活動" | "公告" | "社員名單" | "費用管理" | "個人資訊";
 type ActivityManagerTab = "single" | "quarter";
 type BillingManagerTab = "quarterly" | "rates";
-type Person = { id: string; name: string; department?: string; role: Role; member: boolean; membershipStatus?: string; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean };
-type Booking = { memberId: string; name: string; kind: "社員" | "非社員"; rank: "正取" | "候補"; transferred?: boolean };
+type Person = { id: string; name: string; accountName?: string; department?: string; role: Role; member: boolean; membershipStatus?: string; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean };
+type Booking = { memberId: string; name: string; accountName?: string; kind: "社員" | "非社員"; rank: "正取" | "候補"; transferred?: boolean };
 type NewsItem = { id: string; title: string; content: string; date: string; linkUrl?: string; pinned: boolean };
 type Invoice = ManagedInvoice;
 type FeeRate = { id: string; kind: string; amount: number; effective_from: string | null; effective_to: string | null };
-type MembershipRequest = { id: string; memberId: string; memberName: string; kind: "JOIN" | "EXIT"; status: "PENDING" | "APPROVED" | "REJECTED"; requestedAt: string | null; reviewedAt: string | null };
+type MembershipRequest = { id: string; memberId: string; memberName: string; accountName?: string; kind: "JOIN" | "EXIT"; status: "PENDING" | "APPROVED" | "REJECTED"; requestedAt: string | null; reviewedAt: string | null };
 type ClubNotification = { id: string; title: string; message: string; type: string; tab: string; createdAt: string | null; read: boolean };
 type Viewer = {
   id: string;
   name: string;
+  accountName: string;
   department: string | null;
   role: "ADMIN" | "MEMBER";
   primaryAdmin: boolean;
@@ -39,7 +41,7 @@ type Viewer = {
   hasPasskey: boolean;
 };
 type ActionResult = { results?: { id: string; success: boolean; error?: string }[]; invoiceId?: string; planId?: string; revision?: number; recoveryCode?: string; claimCode?: string; recipientName?: string; invoiceCount?: number; eventCount?: number; totalAmount?: number; periodLabel?: string; createdDate?: string | null; targetDate?: string; status?: string };
-type DeviceAccount = { id: string; name: string; role: "ADMIN" | "MEMBER"; membershipStatus: string };
+type DeviceAccount = { id: string; name: string; accountName: string; role: "ADMIN" | "MEMBER"; membershipStatus: string; primaryAdmin: boolean };
 type ClubEvent = {
   id: string;
   memberBilling?: string;
@@ -60,8 +62,8 @@ type ClubEvent = {
 
 type ApiState = {
   viewer: Viewer | null;
-  members: { id: string; name: string; department?: string; role: string; membershipStatus: string; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean }[];
-  events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; regular_count: number; standby_count: number; member_fee: number; guest_fee: number; member_billing?: string; bookings: { memberId: string; name: string; kind: string; status: string; transferred?: boolean }[] }[];
+  members: { id: string; name: string; accountName: string; department?: string; role: string; membershipStatus: string; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean }[];
+  events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; regular_count: number; standby_count: number; member_fee: number; guest_fee: number; member_billing?: string; bookings: { memberId: string; name: string; accountName?: string; kind: string; status: string; transferred?: boolean }[] }[];
   announcements: { id: string; title: string; content: string; publishedAt: string; linkUrl?: string; pinned: boolean }[];
   invoices: Invoice[];
   quarterPlans: QuarterPlan[];
@@ -95,6 +97,7 @@ export default function Home() {
   const [authSaving, setAuthSaving] = useState(false);
   const [passkeySaving, setPasskeySaving] = useState(false);
   const [recoverySaving, setRecoverySaving] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
   const [quickAccounts, setQuickAccounts] = useState<DeviceAccount[]>([]);
   const [codeNotice, setCodeNotice] = useState<{ title: string; body: string; code: string } | null>(null);
   const [tab, setTab] = useState<Tab>("總覽");
@@ -151,13 +154,13 @@ export default function Home() {
   const applyState = useCallback((state: ApiState) => {
     setViewer(state.viewer);
     setQuickAccounts(state.quickAccounts ?? []);
-    setMembers(state.members.map((member) => ({ id: member.id, name: member.name, department: member.department, role: member.role === "ADMIN" ? "admin" : "member", member: member.membershipStatus === "MEMBER" || member.membershipStatus === "EXITING", membershipStatus: member.membershipStatus, creditBalance: Number(member.creditBalance ?? 0), primaryAdmin: Boolean(member.primaryAdmin), canReceivePresidency: Boolean(member.canReceivePresidency) })));
+    setMembers(state.members.map((member) => ({ id: member.id, name: member.name, accountName: member.accountName, department: member.department, role: member.role === "ADMIN" ? "admin" : "member", member: member.membershipStatus === "MEMBER" || member.membershipStatus === "EXITING", membershipStatus: member.membershipStatus, creditBalance: Number(member.creditBalance ?? 0), primaryAdmin: Boolean(member.primaryAdmin), canReceivePresidency: Boolean(member.canReceivePresidency) })));
     setEvents(state.events.map((item) => {
       const startsAt = new Date(item.starts_at);
       const endsAt = new Date(item.ends_at);
       const date = `${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "numeric" })} ${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", day: "numeric" })}`;
       const time = `${startsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })} – ${endsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })}`;
-      return { id: item.id, memberBilling: item.member_billing, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, regularBooked: item.regular_count, waitBooked: item.standby_count, memberFee: item.member_fee, guestFee: item.guest_fee, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, transferred: booking.transferred, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
+      return { id: item.id, memberBilling: item.member_billing, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, regularBooked: item.regular_count, waitBooked: item.standby_count, memberFee: item.member_fee, guestFee: item.guest_fee, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, accountName: booking.accountName, transferred: booking.transferred, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
     }));
     setNews(state.announcements.map((item) => ({
       id: item.id,
@@ -221,7 +224,7 @@ export default function Home() {
 
   const user = useMemo<Person>(
     () => viewer
-      ? { id: viewer.id, name: viewer.name, department: viewer.department ?? undefined, role: viewer.role === "ADMIN" ? "admin" : "member", member: viewer.membershipStatus === "MEMBER" || viewer.membershipStatus === "EXITING", membershipStatus: viewer.membershipStatus, creditBalance: viewer.creditBalance, primaryAdmin: viewer.primaryAdmin }
+      ? { id: viewer.id, name: viewer.name, accountName: viewer.accountName, department: viewer.department ?? undefined, role: viewer.role === "ADMIN" ? "admin" : "member", member: viewer.membershipStatus === "MEMBER" || viewer.membershipStatus === "EXITING", membershipStatus: viewer.membershipStatus, creditBalance: viewer.creditBalance, primaryAdmin: viewer.primaryAdmin }
       : { id: "", name: "", role: "member", member: false },
     [viewer],
   );
@@ -234,8 +237,8 @@ export default function Home() {
     if (!clean) return;
     setAuthSaving(true);
     try {
-      await execute("createGuest", { name: clean });
-      setInput("");
+      const created = await execute("createGuest", { accountName: clean });
+      if (created) setInput("");
     } finally {
       setAuthSaving(false);
     }
@@ -243,7 +246,7 @@ export default function Home() {
   const recover = async (candidate: string, code: string) => {
     setAuthSaving(true);
     try {
-      const payload = await execute("recover", { name: candidate.trim(), code: code.trim() });
+      const payload = await execute("recover", { accountName: candidate.trim(), code: code.trim() });
       if (payload?.actionResult?.recoveryCode) {
         setCodeNotice({ title: "請保存新的復原碼", body: "舊的認領碼或復原碼已失效。這組新碼只會顯示一次，請放在安全的地方。", code: payload.actionResult.recoveryCode });
       }
@@ -305,7 +308,7 @@ export default function Home() {
           title: replaceExisting ? "請保存新的復原碼" : "請保存你的復原碼",
           body: replaceExisting
             ? "原本的復原碼已失效。這組新碼只會顯示一次，請立即複製並放在安全的地方。"
-            : "這組碼只會顯示一次。清除瀏覽器資料或更換裝置時，可用姓名與此碼取回帳號。",
+            : "這組碼只會顯示一次。清除瀏覽器資料或更換裝置時，可用固定的帳號名稱與此碼取回帳號。",
           code: payload.actionResult.recoveryCode,
         });
       }
@@ -313,12 +316,26 @@ export default function Home() {
       setRecoverySaving(false);
     }
   };
+  const saveDisplayName = async (form: FormEvent<HTMLFormElement>) => {
+    form.preventDefault();
+    if (!viewer || profileSaving) return;
+    const displayName = String(new FormData(form.currentTarget).get("displayName") ?? "").trim();
+    if (!displayName) return;
+    setProfileSaving(true);
+    try {
+      await execute("updateDisplayName", { displayName });
+    } catch {
+      window.alert("無法儲存顯示名稱，請稍後再試。");
+    } finally {
+      setProfileSaving(false);
+    }
+  };
   const issueClaimCode = async (person: Person) => {
     const payload = await execute("issueClaimCode", { memberId: person.id });
     if (payload?.actionResult?.claimCode) {
       setCodeNotice({
         title: `請將認領碼交給${person.name}`,
-        body: "使用者可在登入頁選擇「取回既有帳號」，輸入姓名與此碼。代碼只會顯示一次，請透過可信任的方式交付。",
+        body: `使用者可在登入頁選擇「取回既有帳號」，輸入帳號名稱「${person.accountName ?? person.name}」與此碼。代碼只會顯示一次，請透過可信任的方式交付。`,
         code: payload.actionResult.claimCode,
       });
     }
@@ -333,7 +350,7 @@ export default function Home() {
       setRecipient("");
       setTransferEventId(null);
       if (payload.actionResult?.claimCode) {
-        setCodeNotice({ title: "請將認領碼交給接手者", body: `${payload.actionResult.recipientName ?? clean} 可在登入頁用姓名與這組認領碼開啟帳號。此碼只會顯示一次。`, code: payload.actionResult.claimCode });
+        setCodeNotice({ title: "請將認領碼交給接手者", body: `請在登入頁輸入帳號名稱「${clean}」與這組認領碼開啟帳號。此碼只會顯示一次。`, code: payload.actionResult.claimCode });
       }
     }
   };
@@ -511,7 +528,7 @@ export default function Home() {
   const transferPresidency = async (memberId: string) => {
     const target = members.find((member) => member.id === memberId && member.canReceivePresidency);
     if (!viewer?.primaryAdmin || !target || presidencySaving) return;
-    if (!window.confirm("確定要將社長權限轉交給「" + target.name + "」（" + target.id.slice(0, 8) + "）嗎？\n轉交後你將成為一般社員，無法再使用幹部功能。")) return;
+    if (!window.confirm("確定要將社長權限轉交給「" + target.name + "」（" + (target.accountName ? "帳號：" + target.accountName : target.id.slice(0, 8)) + "）嗎？\n轉交後你將成為一般社員，無法再使用幹部功能。")) return;
     setPresidencySaving(true);
     try {
       if (await execute("transferPresident", { memberId, confirmed: "true" })) {
@@ -634,8 +651,9 @@ export default function Home() {
         <div className="profile">
           <b>{user.name[0]}</b>
           <span>
-            <strong>{user.name}</strong>
-            <small>{isAdmin ? "幹部管理者" : user.member ? "社員" : "非社員"}</small>
+            <strong title={user.name}>{user.name}</strong>
+            {user.accountName && <small className="profile-account-name" title={user.accountName}>帳號：{user.accountName}</small>}
+            <small>{clubIdentityLabel(user)}</small>
           </span>
           <button onClick={() => void logout()} title="登出">
             ↪
@@ -733,6 +751,8 @@ export default function Home() {
           <AccountProfile
             viewer={viewer}
             user={user}
+            profileSaving={profileSaving}
+            saveDisplayName={saveDisplayName}
             recoverySaving={recoverySaving}
             passkeySaving={passkeySaving}
             membershipSaving={membershipSaving}
@@ -755,11 +775,12 @@ export default function Home() {
             </button>
             <p>名額轉讓</p>
             <h2>指定本次接手者</h2>
-            <span>接手者會列為非社員，並記錄為「私下結清」。</span>
+            <span>請輸入接手者固定的帳號名稱；顯示名稱可重複，無法用來查找帳號。接手者會列為非社員，並記錄為「私下結清」。</span>
             <input
               value={recipient}
               onChange={(e) => setRecipient(e.target.value)}
-              placeholder="輸入接手者姓名"
+              placeholder="輸入接手者帳號名稱"
+              aria-label="接手者帳號名稱"
             />
             <button className="primary" onClick={submitTransfer}>
               確認轉讓
@@ -984,6 +1005,7 @@ function MemberManagerModal({
         <button type="button" className="close" onClick={onClose} disabled={saving} aria-label="關閉社員管理視窗">×</button>
         <p>幹部工具</p>
         <h2 id="member-manager-title">管理 {member.name}</h2>
+        {member.accountName && <p className="account-name">帳號：{member.accountName}</p>}
         <span>身分異動立即生效；餘額調整會另外留下帳務與稽核紀錄。</span>
         <form className="manager-form" onSubmit={save}>
           <label>
@@ -1131,8 +1153,8 @@ function Login({
 }: {
   input: string;
   setInput: (value: string) => void;
-  createGuest: (name: string) => void;
-  recover: (name: string, code: string) => void;
+  createGuest: (accountName: string) => void;
+  recover: (accountName: string, code: string) => void;
   passkeyLogin: () => void;
   quickAccounts: DeviceAccount[];
   quickLogin: (userId: string) => void;
@@ -1172,7 +1194,7 @@ function Login({
         <div className="login-logo">羽</div>
         <p>COMPANY BADMINTON CLUB</p>
         <h1>下班，一起上場。</h1>
-        <span>{mode === "new" ? "第一次使用只需輸入顯示名稱，系統會為這台裝置建立一個新的訪客帳號。" : "輸入原帳號姓名與認領碼或復原碼，即可在這台裝置取回帳號。"}</span>
+        <span>{mode === "new" ? "第一次使用只需設定一個不重複的帳號名稱，建立後固定不變。顯示名稱初始相同，登入後可自行修改。" : "輸入原本固定的帳號名稱與認領碼或復原碼，即可在這台裝置取回帳號。"}</span>
         {quickAccounts.length > 0 && (
           <aside className="quick-accounts">
             <strong>這台裝置的快速登入</strong>
@@ -1182,7 +1204,8 @@ function Login({
                   <i>{account.name.slice(0, 1)}</i>
                   <span>
                     <b>{account.name}</b>
-                    <small>{account.role === "ADMIN" ? "幹部" : account.membershipStatus === "MEMBER" ? "社員" : "非社員"} · {account.id.slice(0, 6)}</small>
+                    <small>帳號：{account.accountName ?? account.name}</small>
+                    <small>{clubIdentityLabel(account)}</small>
                   </span>
                   <em>登入</em>
                 </button>
@@ -1203,8 +1226,8 @@ function Login({
             else recover(input, code);
           }}
         >
-          <label>使用者名稱</label>
-          <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="例如：林子晴" maxLength={40} required autoComplete="nickname" />
+          <label htmlFor="login-account-name">帳號名稱</label>
+          <input id="login-account-name" value={input} onChange={(e) => setInput(e.target.value)} placeholder="輸入固定的帳號名稱" maxLength={40} required autoComplete="username" />
           {mode === "recover" && (
             <>
               <label>認領碼或復原碼</label>
@@ -1221,7 +1244,7 @@ function Login({
         {saving && <LoadingScreen compact title="正在處理登入…" description="若出現裝置驗證視窗，請依提示完成。" />}
         <aside className="notice">
           <strong>測試版帳號提醒</strong>
-          <span>相同姓名也會建立成不同帳號。未建立復原碼前，清除瀏覽器資料或更換裝置可能導致帳號無法取回。</span>
+          <span>帳號名稱固定且不得重複（英文大小寫、全半形與多餘空白視為相同）；顯示名稱可自行修改，也可與他人相同。已有帳號請使用快速登入或取回既有帳號；未建立復原碼前，清除瀏覽器資料或更換裝置可能導致帳號無法取回。</span>
         </aside>
         </section>
       </div>
@@ -1295,6 +1318,8 @@ function CodeNotice({ notice, onClose }: { notice: { title: string; body: string
 function AccountProfile({
   viewer,
   user,
+  profileSaving = false,
+  saveDisplayName = (form: FormEvent<HTMLFormElement>) => form.preventDefault(),
   recoverySaving,
   passkeySaving,
   membershipSaving,
@@ -1309,6 +1334,8 @@ function AccountProfile({
 }: {
   viewer: Viewer;
   user: Person;
+  profileSaving?: boolean;
+  saveDisplayName?: (form: FormEvent<HTMLFormElement>) => void;
   recoverySaving: boolean;
   passkeySaving: boolean;
   membershipSaving: boolean;
@@ -1345,7 +1372,7 @@ function AccountProfile({
         <div className="account-hero-copy">
           <p>MY PROFILE</p>
           <h2>{user.name}</h2>
-          <span>{user.department || "尚未設定部門"} · {viewer.primaryAdmin ? "社長" : user.role === "admin" ? "幹部管理者" : user.member ? "社員" : "非社員"}</span>
+          <span>{user.department || "尚未設定部門"} · {clubIdentityLabel(viewer)}</span>
         </div>
         <Badge tone={viewer.hasPasskey || viewer.hasRecoveryCode ? "green" : "orange"}>{securityLabel}</Badge>
       </article>
@@ -1357,18 +1384,25 @@ function AccountProfile({
               <p>基本資料</p>
               <h3>帳號資訊</h3>
             </div>
-            <Badge tone="gray">唯讀</Badge>
+            <Badge tone="gray">帳號固定</Badge>
           </div>
+          <form className="display-name-form" onSubmit={saveDisplayName}>
+            <label htmlFor="profile-display-name">顯示名稱</label>
+            <div>
+              <input key={`${viewer.id}:${viewer.name}`} id="profile-display-name" name="displayName" defaultValue={viewer.name} maxLength={40} required autoComplete="nickname" disabled={profileSaving} />
+              <button type="submit" className="secondary" disabled={profileSaving}>{profileSaving ? "儲存中…" : "儲存"}</button>
+            </div>
+            <small>可自行修改，最多 40 字；顯示名稱可與他人相同。</small>
+          </form>
           <dl className="account-details">
-            <div><dt>顯示名稱</dt><dd>{user.name}</dd></div>
+            <div><dt>帳號名稱</dt><dd><code>{viewer.accountName ?? viewer.name}</code></dd></div>
             <div><dt>部門</dt><dd>{user.department || "未填寫"}</dd></div>
-            <div><dt>社員身分</dt><dd>{membershipStatusLabel}</dd></div>
-            <div><dt>系統角色</dt><dd>{viewer.primaryAdmin ? "社長" : user.role === "admin" ? "幹部管理者" : "一般使用者"}</dd></div>
+            <div><dt>社團身分</dt><dd>{clubIdentityLabel(viewer)}</dd></div>
             <div><dt>帳號類型</dt><dd>{accountTypeLabels[viewer.accountType]}</dd></div>
             <div><dt>帳戶餘額</dt><dd>NT$ {viewer.creditBalance.toLocaleString("zh-TW")}</dd></div>
             <div><dt>帳號識別碼</dt><dd><code title={viewer.id}>{shortId}</code></dd></div>
           </dl>
-          <p className="account-note">姓名與部門目前由幹部管理；社員身分可在下方提出申請，經幹部審核後生效。</p>
+          <p className="account-note">帳號名稱固定不變，用於取回帳號與名額轉讓；修改顯示名稱不會改變帳號。部門由幹部管理，社員身分可在下方提出申請。</p>
         </section>
 
         <section className="account-card security-card">
@@ -1383,7 +1417,7 @@ function AccountProfile({
             <div className="security-icon" aria-hidden="true">#</div>
             <div className="security-copy">
               <div><strong>復原碼</strong><Badge tone={viewer.hasRecoveryCode ? "green" : "orange"}>{viewer.hasRecoveryCode ? "已設定" : "尚未設定"}</Badge></div>
-              <span>{viewer.hasRecoveryCode ? "系統只保存不可逆的驗證資料，因此無法再次顯示原本的復原碼。" : "換裝置或清除網站資料時，可用姓名與復原碼取回帳號。"}</span>
+              <span>{viewer.hasRecoveryCode ? "系統只保存不可逆的驗證資料，因此無法再次顯示原本的復原碼。" : "換裝置或清除網站資料時，可用固定的帳號名稱與復原碼取回帳號。"}</span>
             </div>
             <button className="secondary" disabled={recoverySaving} onClick={createRecoveryCode}>
               {recoverySaving ? "產生中…" : viewer.hasRecoveryCode ? "重新產生復原碼" : "建立復原碼"}
@@ -1422,7 +1456,7 @@ function AccountProfile({
             <p>社員身分</p>
             <h3>加入或退出申請</h3>
           </div>
-          <Badge tone={user.member ? "green" : "gray"}>{membershipStatusLabel}</Badge>
+          <Badge tone={viewer.primaryAdmin ? "blue" : user.member ? "green" : "gray"}>{viewer.primaryAdmin ? clubIdentityLabel(viewer) : membershipStatusLabel}</Badge>
         </div>
         <div className="membership-action">
           <div>
@@ -1448,7 +1482,7 @@ function AccountProfile({
                 <label>接任社員
                   <select value={successorId} onChange={(event) => setSuccessorId(event.target.value)} required disabled={presidencySaving}>
                     <option value="">請選擇接任社員</option>
-                    {successors.map((member) => <option key={member.id} value={member.id}>{member.name}{member.department ? " · " + member.department : ""} · {member.id.slice(0, 8)}</option>)}
+                    {successors.map((member) => <option key={member.id} value={member.id}>{member.name}{member.department ? " · " + member.department : ""} · {member.accountName ? "帳號：" + member.accountName : member.id.slice(0, 8)}</option>)}
                   </select>
                 </label>
                 <p className="form-note">確認後立即生效；接任者成為社長，你將失去幹部權限。系統會保留轉交紀錄，並通知雙方。</p>
@@ -1877,7 +1911,7 @@ function EventDetailsDialog({ event, viewerId, user, isAdmin, close, join, cance
         {event.bookings.length === 0 ? <p>目前尚無人報名。</p> : (
           <ul>{[...event.bookings].sort((a, b) => Number(a.rank === "候補") - Number(b.rank === "候補")).map((booking) => (
             <li key={booking.memberId}>
-              <span>{booking.name}{booking.memberId === viewerId ? "（我）" : ""}<small>{booking.kind}</small></span>
+              <span>{booking.name}{booking.memberId === viewerId ? "（我）" : ""}<small>{booking.accountName ? `帳號：${booking.accountName} · ` : ""}{booking.kind}</small></span>
               <Badge tone={booking.rank === "正取" ? "green" : "orange"}>{booking.rank}</Badge>
             </li>
           ))}</ul>
@@ -1968,10 +2002,9 @@ function Members({
 }) {
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLocaleLowerCase("zh-Hant");
-  const visibleMembers = members.filter((person) => !normalizedQuery || person.name.toLocaleLowerCase("zh-Hant").includes(normalizedQuery) || person.department?.toLocaleLowerCase("zh-Hant").includes(normalizedQuery));
+  const visibleMembers = members.filter((person) => !normalizedQuery || person.name.toLocaleLowerCase("zh-Hant").includes(normalizedQuery) || person.accountName?.toLocaleLowerCase("zh-Hant").includes(normalizedQuery) || person.department?.toLocaleLowerCase("zh-Hant").includes(normalizedQuery));
   const pendingRequests = requests.filter((request) => request.status === "PENDING");
   const myPendingRequest = pendingRequests.find((request) => request.memberId === currentUser.id);
-  const membershipLabel = (person: Person) => person.membershipStatus === "EXITING" ? "本期後退出" : person.member ? "社員" : "非社員";
   return (
     <div className="member-page">
       {!currentUser.member && (
@@ -1999,6 +2032,7 @@ function Members({
             <article key={request.id}>
               <div>
                 <strong>{request.memberName}</strong>
+                {request.accountName && <small className="account-name">帳號：{request.accountName}</small>}
                 <span>{request.kind === "JOIN" ? "申請加入社員" : "申請退出社員"} · {request.requestedAt ? new Date(request.requestedAt).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}</span>
               </div>
               <div className="request-actions">
@@ -2015,24 +2049,23 @@ function Members({
             <p>社員名單</p>
             <h3>一起上場的夥伴</h3>
           </div>
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋姓名或部門" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋顯示名稱、帳號或部門" aria-label="搜尋顯示名稱、帳號或部門" />
         </header>
         <div className="row head">
-          <span>姓名</span>
+          <span>顯示名稱／帳號</span>
           <span>部門</span>
           <span>身分</span>
           <span>{admin ? "管理" : "狀態"}</span>
         </div>
         {visibleMembers.length === 0 ? <div className="membership-request-empty">找不到符合的使用者</div> : visibleMembers.map((person) => (
           <div className="row" key={person.id}>
-            <strong>
+            <strong className="member-name-cell">
               <i>{person.name[0]}</i>
-              {person.name}
+              <span className="member-name-copy"><span>{person.name}</span>{person.accountName && <small className="account-name">帳號：{person.accountName}</small>}</span>
             </strong>
             <span>{person.department ?? "—"}</span>
             <span>
-              <Badge tone={person.member ? "green" : "gray"}>{membershipLabel(person)}</Badge>
-              {person.primaryAdmin && <small className="primary-admin-label">社長</small>}
+              <Badge tone={person.role === "admin" ? "blue" : person.member ? "green" : "gray"}>{clubIdentityLabel(person)}</Badge>
             </span>
             <span>{admin ? <span className="member-row-actions"><button type="button" className="link" disabled={saving} onClick={() => manageMember(person)}>編輯</button><button type="button" className="link claim-button" disabled={saving} onClick={() => issueClaimCode(person)}>認領碼</button></span> : person.member ? "有效" : "—"}</span>
           </div>

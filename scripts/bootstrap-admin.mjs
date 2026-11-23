@@ -2,6 +2,7 @@ import { randomBytes, randomUUID, scryptSync } from "node:crypto";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 import nextEnv from "@next/env";
+import { findMembersByName, memberAccountName, readMemberName, reserveMemberName, validatedAccountName } from "../src/lib/member-names.mjs";
 
 const { loadEnvConfig } = nextEnv;
 loadEnvConfig(process.cwd());
@@ -21,7 +22,7 @@ function argument(name) {
 // An explicit false records a completed handover and must never fall back to a name.
 function isClubPresident(member) {
   return member.role === "ADMIN" && (member.primaryAdmin === true || (
-    member.primaryAdmin === undefined && String(member.displayName ?? "").toLocaleLowerCase("en-US") === "barryadmin"
+    member.primaryAdmin === undefined && memberAccountName(member).toLocaleLowerCase("en-US") === "barryadmin"
   ));
 }
 
@@ -40,9 +41,9 @@ function createClaimCode() {
   };
 }
 
-const displayName = argument("name");
-if (!displayName) throw new Error("請提供 --name=使用者名稱");
-if (displayName.length > 40) throw new Error("使用者名稱不能超過 40 個字元");
+const nameArgument = argument("name");
+if (!nameArgument) throw new Error("請提供 --name=固定帳號名稱");
+const accountName = validatedAccountName(nameArgument);
 
 const projectId = required("FIREBASE_PROJECT_ID");
 const clientEmail = required("FIREBASE_CLIENT_EMAIL");
@@ -51,21 +52,25 @@ const databaseId = process.env.FIREBASE_DATABASE_ID?.trim() || "(default)";
 const app = getApps()[0] ?? initializeApp({ credential: cert({ projectId, clientEmail, privateKey }), projectId });
 const firestore = databaseId === "(default)" ? getFirestore(app) : getFirestore(app, databaseId);
 
-const [adminSnapshot, matchingSnapshot] = await Promise.all([
-  firestore.collection("members").where("role", "==", "ADMIN").get(),
-  firestore.collection("members").where("displayName", "==", displayName).get(),
-]);
+// Compare fixed account names, including legacy display-name fallback, from the
+// complete collection rather than relying on an exact-name query.
+const memberSnapshot = await firestore.collection("members").get();
+const administrators = memberSnapshot.docs.filter((document) => document.data().role === "ADMIN");
+const matchingAccounts = findMembersByName(memberSnapshot, accountName);
 
 const summary = {
   databaseId,
-  administrators: adminSnapshot.docs.map((document) => ({
+  administrators: administrators.map((document) => ({
     id: document.id,
+    accountName: memberAccountName(document.data()),
     displayName: String(document.data().displayName ?? ""),
     membershipStatus: String(document.data().membershipStatus ?? "GUEST"),
     primaryAdmin: isClubPresident(document.data()),
   })),
-  matchingAccounts: matchingSnapshot.docs.map((document) => ({
+  matchingAccounts: matchingAccounts.map((document) => ({
     id: document.id,
+    accountName: memberAccountName(document.data()),
+    displayName: String(document.data().displayName ?? ""),
     role: String(document.data().role ?? "MEMBER"),
     membershipStatus: String(document.data().membershipStatus ?? "GUEST"),
     accountType: String(document.data().accountType ?? "unclaimed"),
@@ -81,35 +86,46 @@ if (!process.argv.includes("--write")) {
 const newId = randomUUID();
 const claim = createClaimCode();
 const result = await firestore.runTransaction(async (transaction) => {
-  // Recheck both queries in the write transaction: a handover may have happened
-  // after the read-only summary, or another bootstrap may run concurrently.
-  const [administrators, matchingAccounts] = await Promise.all([
+  // Recheck the president state and normalized name claim in the transaction:
+  // a handover or another bootstrap may run after the read-only summary.
+  const [administratorSnapshot, nameClaim] = await Promise.all([
     transaction.get(firestore.collection("members").where("role", "==", "ADMIN")),
-    transaction.get(firestore.collection("members").where("displayName", "==", displayName)),
+    readMemberName(transaction, firestore, accountName),
   ]);
-  if (matchingAccounts.size > 1) return { mode: "refused", reason: "同名帳號超過一筆，拒絕自動提升權限" };
-  const presidents = administrators.docs.filter((document) => isClubPresident(document.data()));
+  const presidents = administratorSnapshot.docs.filter((document) => isClubPresident(document.data()));
   if (presidents.length > 1) return { mode: "refused", reason: "偵測到多位社長，請先人工確認資料，不自動覆寫權限" };
-  const account = matchingAccounts.docs[0];
+  const account = nameClaim.member;
   const member = account?.data();
-  // Preserve a stored decision, including false after handover. BarryAdmin is
-  // only the initial-president default when there is no existing president.
+  // Freeze a legacy account's original name before any future display-name edit.
+  // An input alias or editable display name must not confer president privileges.
+  // Keep explicit false after handover.
+  const storedAccountName = account ? memberAccountName(member) : nameClaim.accountName;
+  const accountDisplayName = account ? String(member.displayName ?? "") : nameClaim.accountName;
   const primaryAdmin = member?.primaryAdmin === false ? false
     : member?.primaryAdmin === true || (member ? isClubPresident(member) : false)
-      || (presidents.length === 0 && displayName.toLocaleLowerCase("en-US") === "barryadmin");
+      || (presidents.length === 0 && storedAccountName.toLocaleLowerCase("en-US") === "barryadmin");
   if (primaryAdmin && presidents.some((document) => document.id !== account?.id)) {
     return { mode: "refused", reason: "已有其他社長，請由現任社長在網站轉交權限" };
   }
   const now = new Date();
   const id = account?.id ?? newId;
-  const values = { role: "ADMIN", membershipStatus: "MEMBER", primaryAdmin, endingAt: null, updatedAt: now };
+  const values = {
+    role: "ADMIN",
+    membershipStatus: "MEMBER",
+    primaryAdmin,
+    endingAt: null,
+    accountName: storedAccountName,
+    accountNameKey: nameClaim.nameKey,
+    updatedAt: now,
+  };
   if (account) {
     transaction.update(account.ref, values);
-    return { mode: "updated", id, displayName, ...values, note: "既有登入與復原方式維持不變；初始化指令不取代社長轉交流程" };
+    reserveMemberName(transaction, nameClaim, id, now);
+    return { mode: "updated", id, displayName: accountDisplayName, ...values, note: "既有登入與復原方式維持不變；初始化指令不取代社長轉交流程" };
   }
   transaction.create(firestore.collection("members").doc(id), {
     id,
-    displayName,
+    displayName: accountDisplayName,
     department: null,
     ...values,
     accountType: "unclaimed",
@@ -120,7 +136,8 @@ const result = await firestore.runTransaction(async (transaction) => {
     claimCodeCreatedAt: now,
     createdAt: now,
   });
-  return { mode: "created", id, displayName, ...values, claimCode: claim.code, note: "請在登入頁選擇「取回既有帳號」，輸入名稱與一次性認領碼" };
+  reserveMemberName(transaction, nameClaim, id, now);
+  return { mode: "created", id, displayName: accountDisplayName, ...values, claimCode: claim.code, note: "請在登入頁選擇「取回既有帳號」，輸入固定帳號與一次性認領碼" };
 });
 console.log(JSON.stringify(result, null, 2));
 if (result.mode === "refused") process.exitCode = 1;
