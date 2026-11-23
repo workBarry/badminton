@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, ReactNode, type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import QuarterPlanner from "@/app/quarter-planner";
 import LoadingScreen from "@/app/loading-screen";
@@ -113,6 +113,8 @@ export default function Home() {
   const [notifications, setNotifications] = useState<ClubNotification[]>([]);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [notificationSaving, setNotificationSaving] = useState(false);
+  const notificationBellRef = useRef<HTMLButtonElement>(null);
+  const notificationPanelRef = useRef<HTMLElement>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [currentFees, setCurrentFees] = useState({ member: 150, guest: 180 });
   const [transferEventId, setTransferEventId] = useState<string | null>(null);
@@ -133,6 +135,18 @@ export default function Home() {
   const [editingMember, setEditingMember] = useState<Person | null>(null);
   const [memberSaving, setMemberSaving] = useState(false);
   const [claimCodeSaving, setClaimCodeSaving] = useState(false);
+
+  useEffect(() => {
+    if (!notificationOpen) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (notificationBellRef.current?.contains(target) || notificationPanelRef.current?.contains(target)) return;
+      setNotificationOpen(false);
+    };
+    document.addEventListener("click", closeOnOutsideClick, true);
+    return () => document.removeEventListener("click", closeOnOutsideClick, true);
+  }, [notificationOpen]);
 
   useEffect(() => {
     if (!managerOpen && !announcementOpen && !billingManagerOpen && !editingMember && !codeNotice) return;
@@ -628,7 +642,6 @@ export default function Home() {
   const openNotification = async (notification: ClubNotification) => {
     if (!notification.read) await markNotificationsRead([notification.id]);
     if ((["總覽", "活動", "公告", "社員名單", "費用管理", "個人資訊"] as string[]).includes(notification.tab)) setTab(notification.tab as Tab);
-    setNotificationOpen(false);
   };
   const unreadNotifications = notifications.filter((notification) => !notification.read);
 
@@ -696,11 +709,12 @@ export default function Home() {
             <h1>{tab}</h1>
           </div>
           <div className="header-actions">
-            <button className="bell" aria-label={`通知，${unreadNotifications.length} 筆未讀`} aria-expanded={notificationOpen} onClick={() => setNotificationOpen((open) => !open)}>
+            <button ref={notificationBellRef} className="bell" aria-label={`通知，${unreadNotifications.length} 筆未讀`} aria-expanded={notificationOpen} onClick={() => setNotificationOpen((open) => !open)}>
               🔔{unreadNotifications.length > 0 && <em>{unreadNotifications.length > 99 ? "99+" : unreadNotifications.length}</em>}
             </button>
             {notificationOpen && (
               <NotificationPanel
+                panelRef={notificationPanelRef}
                 notifications={notifications}
                 saving={notificationSaving}
                 close={() => setNotificationOpen(false)}
@@ -1337,12 +1351,14 @@ function Login({
 }
 
 function NotificationPanel({
+  panelRef,
   notifications,
   saving,
   close,
   openNotification,
   markAll,
 }: {
+  panelRef: Ref<HTMLElement>;
   notifications: ClubNotification[];
   saving: boolean;
   close: () => void;
@@ -1355,7 +1371,7 @@ function NotificationPanel({
     ? new Date(value).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
     : "";
   return (
-    <section className="notification-panel" role="dialog" aria-label="網站通知">
+    <section ref={panelRef} className="notification-panel" role="dialog" aria-label="網站通知">
       <header>
         <div><strong>通知中心</strong><span>{unreadCount > 0 ? `${unreadCount} 筆未讀` : "全部已讀"}</span></div>
         <button type="button" className="close-notifications" onClick={close} aria-label="關閉通知">×</button>
