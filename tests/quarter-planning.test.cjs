@@ -22,9 +22,10 @@ function loadTs(relative, dependencies = {}) {
   return loaded.exports;
 }
 const planning = loadTs("src/lib/quarter-planning.ts");
+const clubRoles = loadTs("src/lib/club-roles.ts");
 const billingView = loadTs("src/lib/billing-view.ts");
 const shuttleArt = loadTs("src/app/shuttle-art.tsx");
-const loadingScreen = loadTs("src/app/loading-screen.tsx", { "@/app/shuttle-art": shuttleArt });
+const loadingScreen = loadTs("src/app/loading-screen.tsx");
 test("loading screen renders deterministic accessible text", () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
@@ -181,6 +182,7 @@ test("billing renders self-payment for admin's own bill, reminders for others an
   const dependencies = { "@simplewebauthn/browser": {}, "@/app/quarter-planner": { default: () => null }, "@/app/billing-dashboard": dashboard, "@/lib/billing-view": billingView, "@/lib/quarter-planning": planning };
   dependencies["@/app/loading-screen"] = loadingScreen;
   dependencies["@/app/shuttle-art"] = shuttleArt;
+  dependencies["@/lib/club-roles"] = clubRoles;
   new Function("require", "module", "exports", code + "\nmodule.exports.BillingForTest = Billing;")((id) => dependencies[id] ?? require(id), loaded, loaded.exports);
   const props = { admin: true, viewer: { ...admin, creditBalance: 0 }, saving: false, reportPayment() {}, confirmPayment() {}, remindPayment() {}, openRates() {} };
   const invoice = { id: "invoice", member_id: admin.id, memberName: admin.name, type: "QUARTERLY_MEMBER", gross_amount: 1500, credit_applied: 0, amount: 1500, status: "PENDING" };
@@ -239,6 +241,11 @@ function database() {
     collection: query,
     getAll: async (...refs) => refs.map(snapshot),
     runTransaction: async (callback) => {
+      if (db.beforeNextTransaction) {
+        const hook = db.beforeNextTransaction;
+        db.beforeNextTransaction = null;
+        await hook();
+      }
       const operations = [];
       const read = async (ref) => { if (operations.length) throw new Error("Firestore read after write"); return ref.get(); };
       const transaction = { get: read, getAll: async (...refs) => Promise.all(refs.map(read)) };
@@ -263,7 +270,8 @@ function setup(balance = 0) {
     "@/lib/invoice-management": invoiceManagement,
     "firebase-admin/firestore": { Timestamp: FakeTimestamp, FieldValue: transforms },
     "@/lib/firebase-admin": { getAdminFirestore: () => db },
-    "@/lib/device-auth": {},
+    "@/lib/device-auth": { viewerFromMember: (id, data) => ({ id, name: data.displayName, role: data.role, membershipStatus: data.membershipStatus, primaryAdmin: clubRoles.isClubPresident(data), creditBalance: data.creditBalance ?? 0, accountType: data.accountType }) },
+    "@/lib/club-roles": clubRoles,
     "@/lib/quarter-planning": planning,
   });
   const year = new Date().getUTCFullYear() + 1;
@@ -374,4 +382,242 @@ test("extra activity creates separate invoice and never increases quarterly base
   assert.equal(extras[0][1].amount, 150);
   assert.equal(extras[0][1].adjustments[0].reason, "加租場地");
   assert.equal(s.db.data("billingPeriods/quarter-test-plan").eventCount, 10);
+});
+
+function presidentSetup() {
+  const s = setup(80);
+  s.db.seed("members/admin", { displayName: "Current President", role: "ADMIN", primaryAdmin: true, membershipStatus: "MEMBER", accountType: "recoverable", creditBalance: 210, department: "A", recoveryCodeHash: "preserved-president-hash", memberSince: new Date("2025-01-01") });
+  s.db.seed("members/member", { ...s.db.data("members/member"), accountType: "recoverable", department: "B", recoveryCodeHash: "preserved-member-hash", memberSince: new Date("2025-02-01") });
+  return s;
+}
+function pendingExit(s, memberId = "admin") {
+  const requestId = "exit-" + memberId;
+  s.db.seed("membershipRequests/" + requestId, { memberId, memberNameSnapshot: "Test Member", kind: "EXIT", status: "PENDING", requestedAt: new Date() });
+  s.db.seed("membershipRequestLocks/" + memberId, { memberId, kind: "EXIT", requestId });
+  return requestId;
+}
+test("president identification requires an admin role and respects explicit transfer demotion", () => {
+  const check = clubRoles.isClubPresident;
+  assert.equal(check({ role: "ADMIN", primaryAdmin: true, displayName: "Someone" }), true);
+  assert.equal(check({ role: "ADMIN", displayName: "BaRrYaDmIn" }), true);
+  assert.equal(check({ role: "ADMIN", primaryAdmin: false, displayName: "BarryAdmin" }), false);
+  assert.equal(check({ role: "MEMBER", primaryAdmin: true, displayName: "BarryAdmin" }), false);
+  assert.equal(check({ role: "MEMBER", displayName: "BarryAdmin" }), false);
+  assert.equal(check({ role: "ADMIN", displayName: "Another Admin" }), false);
+});
+test("president cannot request exit even when other administrators exist", async () => {
+  const s = presidentSetup();
+  s.db.seed("members/helper", { role: "ADMIN", membershipStatus: "MEMBER", displayName: "Helper", primaryAdmin: false });
+  const before = s.db.entries("");
+  await assert.rejects(s.mutate("requestMembershipChange", { kind: "EXIT" }), /社長|轉交|轉移/);
+  assert.deepEqual(s.db.entries(""), before);
+});
+test("legacy president cannot exit but same-name ordinary member can request exit", async () => {
+  const s = presidentSetup();
+  const legacy = s.db.data("members/admin");
+  delete legacy.primaryAdmin;
+  legacy.displayName = "BaRrYaDmIn";
+  s.db.seed("members/admin", legacy);
+  await assert.rejects(s.mutate("requestMembershipChange", { kind: "EXIT" }), /社長|轉交|轉移/);
+  s.db.seed("members/member", { ...s.db.data("members/member"), displayName: "BarryAdmin" });
+  await s.mutate("requestMembershipChange", { kind: "EXIT" }, member);
+  assert.equal(s.db.data("membershipRequestLocks/member").kind, "EXIT");
+});
+test("presidency transfer changes both roles atomically and preserves account, billing and activity data", async () => {
+  const s = presidentSetup();
+  await s.draft(); await s.confirm(); await s.bill();
+  const eventsBefore = s.db.entries("events/");
+  const invoicesBefore = s.db.entries("invoices/");
+  const adminBefore = s.db.data("members/admin");
+  const memberBefore = s.db.data("members/member");
+  const notificationsBefore = s.db.entries("notifications/").length;
+  await s.mutate("transferPresident", { memberId: "member", confirmed: "true" });
+  const former = s.db.data("members/admin");
+  const successor = s.db.data("members/member");
+  assert.equal(former.role, "MEMBER");
+  assert.equal(former.primaryAdmin, false);
+  assert.equal(former.membershipStatus, "MEMBER");
+  assert.equal(former.endingAt, null);
+  assert.equal(successor.role, "ADMIN");
+  assert.equal(successor.primaryAdmin, true);
+  assert.equal(successor.membershipStatus, "MEMBER");
+  for (const key of ["creditBalance", "department", "recoveryCodeHash", "memberSince", "accountType"]) {
+    assert.deepEqual(former[key], adminBefore[key]);
+    assert.deepEqual(successor[key], memberBefore[key]);
+  }
+  assert.deepEqual(s.db.entries("events/"), eventsBefore);
+  assert.deepEqual(s.db.entries("invoices/"), invoicesBefore);
+  assert.equal(s.db.entries("members/").filter(([, value]) => clubRoles.isClubPresident(value)).length, 1);
+  const audits = s.db.entries("auditLogs/").filter(([, value]) => value.action === "TRANSFER_PRESIDENT");
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0][1].actorId, "admin");
+  const notifications = s.db.entries("notifications/").slice(notificationsBefore);
+  assert.equal(notifications.length, 2);
+  assert.deepEqual(new Set(notifications.map(([, value]) => value.recipientId)), new Set(["admin", "member"]));
+  await s.mutate("requestMembershipChange", { kind: "EXIT" });
+  assert.equal(s.db.data("membershipRequestLocks/admin").kind, "EXIT");
+  await assert.rejects(s.mutate("requestMembershipChange", { kind: "EXIT" }, { ...member, role: "ADMIN" }), /社長|轉交|轉移/);
+});
+test("former president cannot reuse a stale admin session or repeat a transfer", async () => {
+  const s = presidentSetup();
+  await s.mutate("transferPresident", { memberId: "member", confirmed: "true" });
+  const after = s.db.entries("");
+  for (const action of ["transferPresident", "updateMember", "reviewMembershipRequest", "setFeeRates", "saveQuarterDraft", "confirmPayment"]) {
+    await assert.rejects(s.mutate(action, { memberId: "member", confirmed: "true" }), /幹部|權限|社長/);
+  }
+  assert.deepEqual(s.db.entries(""), after);
+});
+test("ordinary admin and name-only impostor cannot transfer the presidency", async () => {
+  const s = presidentSetup();
+  s.db.seed("members/helper", { displayName: "Helper", role: "ADMIN", primaryAdmin: false, membershipStatus: "MEMBER", accountType: "recoverable" });
+  await assert.rejects(s.mutate("transferPresident", { memberId: "member", confirmed: "true" }, { id: "helper", name: "Helper", role: "ADMIN" }));
+  s.db.seed("members/member", { ...s.db.data("members/member"), displayName: "BarryAdmin" });
+  await assert.rejects(s.mutate("transferPresident", { memberId: "helper", confirmed: "true" }, { ...member, name: "BarryAdmin", role: "ADMIN" }));
+  assert.equal(s.db.data("members/admin").primaryAdmin, true);
+});
+test("presidency transfer requires explicit confirmation and a different existing member", async () => {
+  for (const input of [{ memberId: "member" }, { memberId: "member", confirmed: "false" }, { memberId: "admin", confirmed: "true" }, { memberId: "missing", confirmed: "true" }, { memberId: "", confirmed: "true" }]) {
+    const s = presidentSetup();
+    const before = s.db.entries("");
+    await assert.rejects(s.mutate("transferPresident", input));
+    assert.deepEqual(s.db.entries(""), before);
+  }
+});
+test("presidency transfer rejects guests, exiting, unclaimed and pending-exit successors without writes", async () => {
+  const candidates = [
+    { membershipStatus: "GUEST" },
+    { membershipStatus: "EXITING", endingAt: new Date("2099-12-31") },
+    { endingAt: new Date("2099-12-31") },
+    { accountType: "unclaimed" },
+    { accountType: undefined },
+    { pendingExit: "lock" },
+    { pendingExit: "request-only" },
+  ];
+  for (const candidate of candidates) {
+    const s = presidentSetup();
+    const { pendingExit: exit, ...overrides } = candidate;
+    s.db.seed("members/member", { ...s.db.data("members/member"), ...overrides });
+    if (exit === "lock") s.db.seed("membershipRequestLocks/member", { memberId: "member", kind: "EXIT", requestId: "pending" });
+    if (exit === "request-only") s.db.seed("membershipRequests/pending", { memberId: "member", kind: "EXIT", status: "PENDING" });
+    const before = s.db.entries("");
+    await assert.rejects(s.mutate("transferPresident", { memberId: "member", confirmed: "true" }), JSON.stringify(candidate));
+    assert.deepEqual(s.db.entries(""), before);
+  }
+});
+test("claimed member accounts may receive presidency regardless of recovery method", async () => {
+  for (const accountType of ["guest", "recoverable", "verified"]) {
+    const s = presidentSetup();
+    s.db.seed("members/member", { ...s.db.data("members/member"), accountType });
+    await s.mutate("transferPresident", { memberId: "member", confirmed: "true" });
+    assert.equal(s.db.data("members/member").primaryAdmin, true);
+  }
+});
+test("pending president exit cannot be approved but can be rejected to clear old requests", async () => {
+  const s = presidentSetup();
+  const requestId = pendingExit(s);
+  const before = s.db.entries("");
+  await assert.rejects(s.mutate("reviewMembershipRequest", { requestId, decision: "APPROVE" }), /社長|轉交|轉移/);
+  assert.deepEqual(s.db.entries(""), before);
+  await s.mutate("reviewMembershipRequest", { requestId, decision: "REJECT" });
+  assert.equal(s.db.data("membershipRequests/" + requestId).status, "REJECTED");
+  assert.equal(s.db.data("membershipRequestLocks/admin"), undefined);
+  assert.equal(s.db.data("members/admin").primaryAdmin, true);
+  assert.equal(s.db.data("members/admin").membershipStatus, "MEMBER");
+});
+test("member-edit endpoint cannot remove presidency or membership, even with another admin present", async () => {
+  for (const input of [{ role: "MEMBER", membershipStatus: "MEMBER" }, { role: "ADMIN", membershipStatus: "GUEST" }, { role: "ADMIN", membershipStatus: "EXITING" }]) {
+    const s = presidentSetup();
+    s.db.seed("members/helper", { role: "ADMIN", displayName: "Helper", membershipStatus: "MEMBER", primaryAdmin: false });
+    const before = s.db.entries("");
+    await assert.rejects(s.mutate("updateMember", { memberId: "admin", ...input }, { id: "helper", role: "ADMIN", name: "Helper" }), /社長|轉交|轉移/);
+    assert.deepEqual(s.db.entries(""), before);
+  }
+});
+test("explicitly demoted BarryAdmin does not regain presidency after later ordinary-admin promotion", async () => {
+  const s = presidentSetup();
+  s.db.seed("members/admin", { ...s.db.data("members/admin"), displayName: "BarryAdmin" });
+  await s.mutate("transferPresident", { memberId: "member", confirmed: "true" });
+  await s.mutate("updateMember", { memberId: "admin", role: "ADMIN", membershipStatus: "MEMBER" }, { ...member, role: "ADMIN" });
+  assert.equal(s.db.data("members/admin").primaryAdmin, false);
+  assert.equal(clubRoles.isClubPresident(s.db.data("members/admin")), false);
+  await s.mutate("requestMembershipChange", { kind: "EXIT" });
+  assert.equal(s.db.data("membershipRequestLocks/admin").kind, "EXIT");
+});
+test("sensitive mutations recheck the actor inside the transaction after an intervening demotion", async () => {
+  for (const [action, input] of [
+    ["transferPresident", { memberId: "member", confirmed: "true" }],
+    ["updateMember", { memberId: "member", role: "ADMIN", membershipStatus: "MEMBER" }],
+    ["reviewMembershipRequest", { requestId: "exit-member", decision: "APPROVE" }],
+  ]) {
+    const s = presidentSetup();
+    pendingExit(s, "member");
+    s.db.beforeNextTransaction = () => s.db.seed("members/admin", { ...s.db.data("members/admin"), role: "MEMBER", primaryAdmin: false });
+    await assert.rejects(s.mutate(action, input), /幹部|權限|社長/);
+    assert.equal(s.db.data("members/member").role, "MEMBER");
+    assert.equal(s.db.data("members/member").membershipStatus, "MEMBER");
+    assert.equal(s.db.data("membershipRequests/exit-member").status, "PENDING");
+    assert.equal(s.db.entries("auditLogs/").length, 0);
+  }
+});
+function accountComponentsForTest() {
+  const source = fs.readFileSync(path.resolve(__dirname, "../src/app/page.tsx"), "utf8");
+  const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } }).outputText;
+  const loaded = { exports: {} };
+  const dependencies = {
+    "@simplewebauthn/browser": {},
+    "@/app/quarter-planner": { default: () => null },
+    "@/app/billing-dashboard": loadTs("src/app/billing-dashboard.tsx", { "@/lib/billing-view": billingView }),
+    "@/app/loading-screen": loadingScreen,
+    "@/app/shuttle-art": shuttleArt,
+    "@/lib/billing-view": billingView,
+    "@/lib/quarter-planning": planning,
+    "@/lib/club-roles": clubRoles,
+  };
+  new Function("require", "module", "exports", code + "\nmodule.exports.AccountProfileForTest = AccountProfile; module.exports.MemberManagerForTest = MemberManagerModal;")((id) => dependencies[id] ?? require(id), loaded, loaded.exports);
+  return loaded.exports;
+}
+function accountProfileProps(primaryAdmin = false) {
+  return {
+    viewer: { id: "admin", name: "Account Owner", role: "ADMIN", primaryAdmin, membershipStatus: "MEMBER", creditBalance: 0, accountType: "recoverable", hasRecoveryCode: true, hasPasskey: false },
+    user: { id: "admin", name: "Account Owner", role: "admin", member: true, primaryAdmin, membershipStatus: "MEMBER" },
+    recoverySaving: false, passkeySaving: false, membershipSaving: false, presidencySaving: false,
+    membershipRequests: [], members: [],
+    createRecoveryCode() {}, registerPasskey() {}, requestMembershipChange() {}, transferPresidency() {}, logout() {},
+  };
+}
+test("president profile replaces exit action with an explained presidency transfer entry", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { AccountProfileForTest } = accountComponentsForTest();
+  const html = renderToStaticMarkup(React.createElement(AccountProfileForTest, accountProfileProps(true)));
+  assert.match(html, /轉交社長權限/);
+  assert.match(html, /社長須先轉交權限才能退社/);
+  assert.doesNotMatch(html, /申請退出社員/);
+  assert.match(html, /aria-expanded="false"/);
+});
+test("ordinary administrator profile shows own exit action and ignores another user's pending request", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { AccountProfileForTest } = accountComponentsForTest();
+  const props = accountProfileProps(false);
+  props.membershipRequests = [{ id: "other-request", memberId: "other", memberName: "Other Person", kind: "EXIT", status: "PENDING", requestedAt: "2026-01-01T00:00:00Z", reviewedAt: null }];
+  const html = renderToStaticMarkup(React.createElement(AccountProfileForTest, props));
+  const exitButton = html.match(/<button[^>]*>申請退出社員<\/button>/)?.[0];
+  assert.ok(exitButton);
+  assert.doesNotMatch(exitButton, /disabled/);
+  assert.doesNotMatch(html, /轉交社長權限|退出申請審核中|等待審核/);
+  props.membershipRequests.push({ ...props.membershipRequests[0], id: "own-request", memberId: "admin" });
+  const ownPending = renderToStaticMarkup(React.createElement(AccountProfileForTest, props));
+  assert.match(ownPending, /退出申請審核中/);
+  assert.match(ownPending, /<button[^>]*disabled[^>]*>等待審核<\/button>/);
+});
+test("president management form fixes role and membership instead of offering a bypass", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { MemberManagerForTest } = accountComponentsForTest();
+  const html = renderToStaticMarkup(React.createElement(MemberManagerForTest, { member: accountProfileProps(true).user, saving: false, save() {}, onClose() {} }));
+  assert.match(html, /<input type="hidden" name="role" value="ADMIN"/);
+  assert.match(html, /<input type="hidden" name="membershipStatus" value="MEMBER"/);
+  assert.equal((html.match(/<select[^>]*disabled/g) ?? []).length, 2);
+  assert.doesNotMatch(html, /<option value="GUEST"/);
 });

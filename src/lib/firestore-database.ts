@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { isClubPresident, PRESIDENT_EXIT_MESSAGE } from "@/lib/club-roles";
 import {
   FieldValue,
   Timestamp,
@@ -62,6 +63,7 @@ function bookingPriority(booking: DocumentData) {
 }
 
 function memberAt(member: DocumentData, at: Date) {
+  if (isClubPresident(member)) return true;
   if (member.membershipStatus === "MEMBER") return true;
   const endingAt = dateValue(member.endingAt);
   return member.membershipStatus === "EXITING" && Boolean(endingAt && endingAt >= at);
@@ -406,7 +408,7 @@ export async function readState(viewer: Viewer | null = null) {
     .map((document) => {
       const member = document.data();
       const storedMembershipStatus = String(member.membershipStatus ?? "GUEST");
-      const membershipStatus = storedMembershipStatus === "EXITING" && !memberAt(member, new Date()) ? "GUEST" : storedMembershipStatus;
+      const membershipStatus = isClubPresident(member) ? "MEMBER" : storedMembershipStatus === "EXITING" && !memberAt(member, new Date()) ? "GUEST" : storedMembershipStatus;
       const name = String(member.displayName ?? "");
       return {
         id: document.id,
@@ -415,7 +417,10 @@ export async function readState(viewer: Viewer | null = null) {
         role: String(member.role ?? "MEMBER"),
         membershipStatus,
         creditBalance: Number(member.creditBalance ?? 0),
-        primaryAdmin: Boolean(member.primaryAdmin) || name.toLocaleLowerCase("en-US") === "barryadmin",
+        primaryAdmin: isClubPresident(member),
+        canReceivePresidency: !isClubPresident(member) && member.membershipStatus === "MEMBER" && !member.endingAt
+          && ["guest", "recoverable", "verified"].includes(String(member.accountType))
+          && !(membershipRequestSnapshot?.docs ?? []).some((request) => request.data().memberId === document.id && request.data().kind === "EXIT" && request.data().status === "PENDING"),
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name, "zh-Hant"));
@@ -1249,6 +1254,7 @@ async function requestMembershipChange(kind: string, actor: Viewer) {
     if (!memberSnapshot.exists) throw new Error("找不到使用者");
     if (lockSnapshot.exists) throw new Error("你已有一筆待審核的社員申請");
     const member = memberSnapshot.data()!;
+    if (kind === "EXIT" && isClubPresident(member)) throw new Error(PRESIDENT_EXIT_MESSAGE);
     const currentlyMember = memberAt(member, now);
     if (kind === "JOIN" && currentlyMember) throw new Error("你目前已是社員或會籍仍在有效期間");
     if (kind === "EXIT" && !currentlyMember) throw new Error("你目前不是社員");
@@ -1327,7 +1333,8 @@ async function reviewMembershipRequest(requestId: string, decision: string, acto
   const notificationRef = db.collection("notifications").doc();
   const result = await db.runTransaction(async (transaction) => {
     const references = invoiceRef ? [requestRef, memberRef, lockRef, invoiceRef] : [requestRef, memberRef, lockRef];
-    const snapshots = await transaction.getAll(...references);
+    const [snapshots, reviewer] = await Promise.all([transaction.getAll(...references), transaction.get(db.collection("members").doc(actor.id))]);
+    if (reviewer.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
     const freshRequest = snapshots[0];
     const freshMember = snapshots[1];
     const lock = snapshots[2];
@@ -1381,6 +1388,7 @@ async function reviewMembershipRequest(requestId: string, decision: string, acto
       return { amount, joined: true };
     }
 
+    if (isClubPresident(member)) throw new Error(PRESIDENT_EXIT_MESSAGE);
     const endingAt = periodDocument ? billingBoundary(String(period?.endDate), true) : now;
     transaction.update(memberRef, {
       membershipStatus: periodDocument ? "EXITING" : "GUEST",
@@ -1419,12 +1427,13 @@ async function updateMember(input: Record<string, string>, actor: Viewer) {
   const now = new Date();
 
   await db.runTransaction(async (transaction) => {
-    const [memberSnapshot, adminSnapshot] = await Promise.all([transaction.get(memberRef), transaction.get(adminQuery)]);
+    const [memberSnapshot, adminSnapshot, manager] = await Promise.all([transaction.get(memberRef), transaction.get(adminQuery), transaction.get(db.collection("members").doc(actor.id))]);
+    if (manager.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
     if (!memberSnapshot.exists) throw new Error("找不到使用者");
     const member = memberSnapshot.data()!;
-    const isPrimaryAdmin = Boolean(member.primaryAdmin) || String(member.displayName ?? "").toLocaleLowerCase("en-US") === "barryadmin";
+    const isPrimaryAdmin = isClubPresident(member);
     const isDemotion = member.role === "ADMIN" && role !== "ADMIN";
-    if (isPrimaryAdmin && isDemotion) throw new Error("BarryAdmin 是主要幹部，不能降為一般使用者");
+    if (isPrimaryAdmin && (role !== "ADMIN" || membershipStatus !== "MEMBER")) throw new Error(PRESIDENT_EXIT_MESSAGE);
     if (actor.id === memberId && isDemotion) throw new Error("不能取消自己的幹部權限");
     if (isDemotion && adminSnapshot.size <= 1) throw new Error("系統至少需要保留一位幹部");
     const currentBalance = Number(member.creditBalance ?? 0);
@@ -1435,6 +1444,8 @@ async function updateMember(input: Record<string, string>, actor: Viewer) {
     transaction.update(memberRef, {
       department,
       role,
+      // Do not turn a same-name guest into a second legacy president on promotion.
+      primaryAdmin: isPrimaryAdmin,
       membershipStatus,
       endingAt: membershipStatus === "EXITING" ? member.endingAt : null,
       creditBalance: nextBalance,
@@ -1479,20 +1490,60 @@ async function updateMember(input: Record<string, string>, actor: Viewer) {
   if (membershipStatus === "MEMBER") await ensureMemberFutureBookings(memberId);
 }
 
-async function issueClaimCode(memberId: string) {
+async function transferPresident(input: Record<string, string>, actor: Viewer) {
+  const memberId = input.memberId?.trim();
+  if (!memberId || memberId === actor.id) throw new Error("請選擇另一位社員接任社長");
+  if (input.confirmed !== "true") throw new Error("請先確認轉交社長權限");
+  const db = getAdminFirestore();
+  const currentRef = db.collection("members").doc(actor.id);
+  const targetRef = db.collection("members").doc(memberId);
+  const lockRef = db.collection("membershipRequestLocks").doc(memberId);
+  const auditRef = db.collection("auditLogs").doc(randomUUID());
+  const now = new Date();
+  return db.runTransaction(async (transaction) => {
+    const [[currentSnapshot, targetSnapshot, lock], administrators, requests] = await Promise.all([
+      transaction.getAll(currentRef, targetRef, lockRef),
+      transaction.get(db.collection("members").where("role", "==", "ADMIN")),
+      transaction.get(db.collection("membershipRequests").where("memberId", "==", memberId)),
+    ]);
+    const current = currentSnapshot.data();
+    const target = targetSnapshot.data();
+    if (!current || !isClubPresident(current)) throw new Error("只有現任社長可以轉交社長權限");
+    const presidents = administrators.docs.filter((entry) => isClubPresident(entry.data()));
+    if (presidents.length !== 1 || presidents[0].id !== actor.id) throw new Error("社長資料不一致，請先聯絡系統管理者確認");
+    if (!target) throw new Error("找不到接任社員");
+    if (target.membershipStatus !== "MEMBER" || target.endingAt) throw new Error("接任者必須是未排定退出的有效社員");
+    if (!["guest", "recoverable", "verified"].includes(String(target.accountType))) throw new Error("請先讓接任社員完成帳號認領或建立帳號");
+    if (lock.data()?.kind === "EXIT" || requests.docs.some((entry) => entry.data().kind === "EXIT" && entry.data().status === "PENDING")) throw new Error("接任社員有待審核的退出申請，請先處理申請");
+
+    transaction.update(currentRef, { role: "MEMBER", primaryAdmin: false, membershipStatus: "MEMBER", endingAt: null, updatedAt: now });
+    transaction.update(targetRef, { role: "ADMIN", primaryAdmin: true, updatedAt: now });
+    transaction.create(auditRef, {
+      id: auditRef.id, action: "TRANSFER_PRESIDENT", actorId: actor.id,
+      actorNameSnapshot: String(current.displayName ?? actor.name), targetMemberId: memberId,
+      targetNameSnapshot: String(target.displayName ?? "社員"),
+      before: { presidentId: actor.id, targetRole: String(target.role ?? "MEMBER") },
+      after: { presidentId: memberId, formerPresidentRole: "MEMBER" }, createdAt: now,
+    });
+    transaction.create(db.collection("notifications").doc(), notificationData({ title: "社長權限已轉交", message: "你已轉交社長權限給「" + String(target.displayName ?? "社員") + "」，目前為一般社員；如需退社，可再提出申請。", type: "MEMBERSHIP", tab: "個人資訊", recipientId: actor.id }));
+    transaction.create(db.collection("notifications").doc(), notificationData({ title: "你已接任社長", message: String(current.displayName ?? actor.name) + " 已將社長權限轉交給你。", type: "MEMBERSHIP", tab: "個人資訊", recipientId: memberId }));
+    return { presidentId: memberId };
+  });
+}
+
+async function issueClaimCode(memberId: string, actor: Viewer) {
   if (!memberId) throw new Error("缺少使用者識別碼");
   const db = getAdminFirestore();
   const memberRef = db.collection("members").doc(memberId);
-  const member = await memberRef.get();
-  if (!member.exists) throw new Error("找不到使用者");
   const claim = createClaimCodeRecord();
-  await memberRef.update({
-    claimCodeSalt: claim.salt,
-    claimCodeHash: claim.hash,
-    claimCodeCreatedAt: new Date(),
-    updatedAt: new Date(),
+  return db.runTransaction(async (transaction) => {
+    const [member, manager] = await transaction.getAll(memberRef, db.collection("members").doc(actor.id));
+    if (manager.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
+    if (!member.exists) throw new Error("找不到使用者");
+    if (isClubPresident(member.data()!) && memberId !== actor.id) throw new Error("只有社長本人可以為自己的帳號產生認領碼");
+    transaction.update(memberRef, { claimCodeSalt: claim.salt, claimCodeHash: claim.hash, claimCodeCreatedAt: new Date(), updatedAt: new Date() });
+    return { claimCode: claim.code, recipientName: String(member.data()?.displayName ?? "使用者") };
   });
-  return { claimCode: claim.code, recipientName: String(member.data()?.displayName ?? "使用者") };
 }
 
 export async function mutate(action: string, input: Record<string, string>, actor: Viewer) {
@@ -1504,6 +1555,9 @@ export async function mutate(action: string, input: Record<string, string>, acto
   if (action === "markNotificationsRead") return markNotificationsRead(input, actor);
 
   if (actor.role !== "ADMIN") throw new Error("只有幹部可以執行這項操作");
+  const currentActor = await getAdminFirestore().collection("members").doc(actor.id).get();
+  if (currentActor.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
+  if (action === "transferPresident") return transferPresident(input, actor);
   if (["voidInvoice", "reissueInvoice", "refundInvoice", "rejectPaymentReport"].includes(action)) return manageInvoice(action, input, actor);
   if (action === "voidInvoiceBatch") return voidInvoiceBatch(input, actor);
   if (action === "reviewMembershipRequest") return reviewMembershipRequest(input.requestId, input.decision, actor);
@@ -1512,7 +1566,7 @@ export async function mutate(action: string, input: Record<string, string>, acto
   if (action === "createQuarterlyInvoices") return createQuarterlyInvoices(input, actor);
   if (action === "setFeeRates") return setFeeRates(input);
   if (action === "updateMember") return updateMember(input, actor);
-  if (action === "issueClaimCode") return issueClaimCode(input.memberId);
+  if (action === "issueClaimCode") return issueClaimCode(input.memberId, actor);
   if (action === "publish") return publish(input);
   if (action === "updateAnnouncement") return updateAnnouncement(input);
   if (action === "deleteAnnouncement") return deleteAnnouncement(input.announcementId);

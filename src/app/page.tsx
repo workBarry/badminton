@@ -19,7 +19,7 @@ type Role = "admin" | "member";
 type Tab = "總覽" | "活動" | "公告" | "社員名單" | "費用管理" | "個人資訊";
 type ActivityManagerTab = "single" | "quarter";
 type BillingManagerTab = "quarterly" | "rates";
-type Person = { id: string; name: string; department?: string; role: Role; member: boolean; membershipStatus?: string; creditBalance?: number; primaryAdmin?: boolean };
+type Person = { id: string; name: string; department?: string; role: Role; member: boolean; membershipStatus?: string; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean };
 type Booking = { memberId: string; name: string; kind: "社員" | "非社員"; rank: "正取" | "候補"; transferred?: boolean };
 type NewsItem = { id: string; title: string; content: string; date: string; linkUrl?: string; pinned: boolean };
 type Invoice = ManagedInvoice;
@@ -31,6 +31,7 @@ type Viewer = {
   name: string;
   department: string | null;
   role: "ADMIN" | "MEMBER";
+  primaryAdmin: boolean;
   membershipStatus: string;
   creditBalance: number;
   accountType: "guest" | "recoverable" | "verified" | "unclaimed";
@@ -59,7 +60,7 @@ type ClubEvent = {
 
 type ApiState = {
   viewer: Viewer | null;
-  members: { id: string; name: string; department?: string; role: string; membershipStatus: string; creditBalance?: number; primaryAdmin?: boolean }[];
+  members: { id: string; name: string; department?: string; role: string; membershipStatus: string; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean }[];
   events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; regular_count: number; standby_count: number; member_fee: number; guest_fee: number; member_billing?: string; bookings: { memberId: string; name: string; kind: string; status: string; transferred?: boolean }[] }[];
   announcements: { id: string; title: string; content: string; publishedAt: string; linkUrl?: string; pinned: boolean }[];
   invoices: Invoice[];
@@ -123,6 +124,7 @@ export default function Home() {
   const [billingManagerTab, setBillingManagerTab] = useState<BillingManagerTab>("quarterly");
   const [billingSaving, setBillingSaving] = useState(false);
   const [membershipSaving, setMembershipSaving] = useState(false);
+  const [presidencySaving, setPresidencySaving] = useState(false);
   const [editingMember, setEditingMember] = useState<Person | null>(null);
   const [memberSaving, setMemberSaving] = useState(false);
 
@@ -149,7 +151,7 @@ export default function Home() {
   const applyState = useCallback((state: ApiState) => {
     setViewer(state.viewer);
     setQuickAccounts(state.quickAccounts ?? []);
-    setMembers(state.members.map((member) => ({ id: member.id, name: member.name, department: member.department, role: member.role === "ADMIN" ? "admin" : "member", member: member.membershipStatus === "MEMBER" || member.membershipStatus === "EXITING", membershipStatus: member.membershipStatus, creditBalance: Number(member.creditBalance ?? 0), primaryAdmin: Boolean(member.primaryAdmin) })));
+    setMembers(state.members.map((member) => ({ id: member.id, name: member.name, department: member.department, role: member.role === "ADMIN" ? "admin" : "member", member: member.membershipStatus === "MEMBER" || member.membershipStatus === "EXITING", membershipStatus: member.membershipStatus, creditBalance: Number(member.creditBalance ?? 0), primaryAdmin: Boolean(member.primaryAdmin), canReceivePresidency: Boolean(member.canReceivePresidency) })));
     setEvents(state.events.map((item) => {
       const startsAt = new Date(item.starts_at);
       const endsAt = new Date(item.ends_at);
@@ -219,7 +221,7 @@ export default function Home() {
 
   const user = useMemo<Person>(
     () => viewer
-      ? { id: viewer.id, name: viewer.name, department: viewer.department ?? undefined, role: viewer.role === "ADMIN" ? "admin" : "member", member: viewer.membershipStatus === "MEMBER" || viewer.membershipStatus === "EXITING", membershipStatus: viewer.membershipStatus, creditBalance: viewer.creditBalance }
+      ? { id: viewer.id, name: viewer.name, department: viewer.department ?? undefined, role: viewer.role === "ADMIN" ? "admin" : "member", member: viewer.membershipStatus === "MEMBER" || viewer.membershipStatus === "EXITING", membershipStatus: viewer.membershipStatus, creditBalance: viewer.creditBalance, primaryAdmin: viewer.primaryAdmin }
       : { id: "", name: "", role: "member", member: false },
     [viewer],
   );
@@ -506,7 +508,26 @@ export default function Home() {
       setBillingSaving(false);
     }
   };
+  const transferPresidency = async (memberId: string) => {
+    const target = members.find((member) => member.id === memberId && member.canReceivePresidency);
+    if (!viewer?.primaryAdmin || !target || presidencySaving) return;
+    if (!window.confirm("確定要將社長權限轉交給「" + target.name + "」（" + target.id.slice(0, 8) + "）嗎？\n轉交後你將成為一般社員，無法再使用幹部功能。")) return;
+    setPresidencySaving(true);
+    try {
+      if (await execute("transferPresident", { memberId, confirmed: "true" })) {
+        window.alert("社長權限已轉交，你目前為一般社員。如需退出，可在個人資訊提出退社申請。");
+      }
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "轉交失敗，請重新整理確認目前社長後再試。");
+    } finally {
+      setPresidencySaving(false);
+    }
+  };
   const requestMembershipChange = async (kind: "JOIN" | "EXIT") => {
+    if (kind === "EXIT" && viewer?.primaryAdmin) {
+      window.alert("您目前是社長，請先在個人資訊轉交社長權限，再提出退社申請。");
+      return;
+    }
     const message = kind === "JOIN"
       ? "送出加入社員申請後，需由幹部核准才會生效。確定送出嗎？"
       : "退社核准後，會籍原則上維持到目前三個月週期結束且不退款。確定送出嗎？";
@@ -715,6 +736,9 @@ export default function Home() {
             recoverySaving={recoverySaving}
             passkeySaving={passkeySaving}
             membershipSaving={membershipSaving}
+            presidencySaving={presidencySaving}
+            members={members}
+            transferPresidency={(memberId) => void transferPresidency(memberId)}
             membershipRequests={membershipRequests}
             createRecoveryCode={() => void makeRecoveryCode(viewer.hasRecoveryCode)}
             registerPasskey={() => void registerPasskey()}
@@ -970,7 +994,7 @@ function MemberManagerModal({
             <label>
               系統角色
               {member.primaryAdmin ? (
-                <><input type="hidden" name="role" value="ADMIN" /><select value="ADMIN" disabled><option value="ADMIN">主要幹部</option></select></>
+                <><input type="hidden" name="role" value="ADMIN" /><select value="ADMIN" disabled><option value="ADMIN">社長（須先轉交權限）</option></select></>
               ) : (
                 <select name="role" defaultValue={member.role === "admin" ? "ADMIN" : "MEMBER"}>
                   <option value="MEMBER">一般使用者</option>
@@ -980,11 +1004,15 @@ function MemberManagerModal({
             </label>
             <label>
               社員身分
-              <select name="membershipStatus" defaultValue={member.membershipStatus ?? (member.member ? "MEMBER" : "GUEST")}>
-                <option value="GUEST">非社員</option>
-                <option value="MEMBER">社員</option>
-                {member.membershipStatus === "EXITING" && <option value="EXITING">本期後退出</option>}
-              </select>
+              {member.primaryAdmin ? (
+                <><input type="hidden" name="membershipStatus" value="MEMBER" /><select value="MEMBER" disabled><option value="MEMBER">社員（社長不可直接退社）</option></select></>
+              ) : (
+                <select name="membershipStatus" defaultValue={member.membershipStatus ?? (member.member ? "MEMBER" : "GUEST")}>
+                  <option value="GUEST">非社員</option>
+                  <option value="MEMBER">社員</option>
+                  {member.membershipStatus === "EXITING" && <option value="EXITING">本期後退出</option>}
+                </select>
+              )}
             </label>
           </div>
           <div className="member-balance-summary">
@@ -1270,6 +1298,9 @@ function AccountProfile({
   recoverySaving,
   passkeySaving,
   membershipSaving,
+  presidencySaving,
+  members,
+  transferPresidency,
   membershipRequests,
   createRecoveryCode,
   registerPasskey,
@@ -1281,6 +1312,9 @@ function AccountProfile({
   recoverySaving: boolean;
   passkeySaving: boolean;
   membershipSaving: boolean;
+  presidencySaving: boolean;
+  members: Person[];
+  transferPresidency: (memberId: string) => void;
   membershipRequests: MembershipRequest[];
   createRecoveryCode: () => void;
   registerPasskey: () => void;
@@ -1295,7 +1329,11 @@ function AccountProfile({
   };
   const securityLabel = viewer.hasPasskey ? "Passkey 已啟用" : viewer.hasRecoveryCode ? "可使用復原碼" : "僅限此裝置";
   const shortId = viewer.id.length > 16 ? `${viewer.id.slice(0, 8)}…${viewer.id.slice(-4)}` : viewer.id;
-  const pendingRequest = membershipRequests.find((request) => request.status === "PENDING");
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [successorId, setSuccessorId] = useState("");
+  const ownRequests = membershipRequests.filter((request) => request.memberId === viewer.id);
+  const pendingRequest = ownRequests.find((request) => request.status === "PENDING");
+  const successors = members.filter((member) => member.id !== viewer.id && member.canReceivePresidency);
   const membershipStatusLabel = viewer.membershipStatus === "MEMBER" ? "社員" : viewer.membershipStatus === "EXITING" ? "社員（本期結束後退出）" : "非社員";
   const requestStatus: Record<MembershipRequest["status"], string> = { PENDING: "待審核", APPROVED: "已核准", REJECTED: "未核准" };
   const requestDate = (value: string | null) => value ? new Date(value).toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei" }) : "—";
@@ -1307,7 +1345,7 @@ function AccountProfile({
         <div className="account-hero-copy">
           <p>MY PROFILE</p>
           <h2>{user.name}</h2>
-          <span>{user.department || "尚未設定部門"} · {user.role === "admin" ? "幹部管理者" : user.member ? "社員" : "非社員"}</span>
+          <span>{user.department || "尚未設定部門"} · {viewer.primaryAdmin ? "社長" : user.role === "admin" ? "幹部管理者" : user.member ? "社員" : "非社員"}</span>
         </div>
         <Badge tone={viewer.hasPasskey || viewer.hasRecoveryCode ? "green" : "orange"}>{securityLabel}</Badge>
       </article>
@@ -1325,7 +1363,7 @@ function AccountProfile({
             <div><dt>顯示名稱</dt><dd>{user.name}</dd></div>
             <div><dt>部門</dt><dd>{user.department || "未填寫"}</dd></div>
             <div><dt>社員身分</dt><dd>{membershipStatusLabel}</dd></div>
-            <div><dt>系統角色</dt><dd>{user.role === "admin" ? "幹部管理者" : "一般使用者"}</dd></div>
+            <div><dt>系統角色</dt><dd>{viewer.primaryAdmin ? "社長" : user.role === "admin" ? "幹部管理者" : "一般使用者"}</dd></div>
             <div><dt>帳號類型</dt><dd>{accountTypeLabels[viewer.accountType]}</dd></div>
             <div><dt>帳戶餘額</dt><dd>NT$ {viewer.creditBalance.toLocaleString("zh-TW")}</dd></div>
             <div><dt>帳號識別碼</dt><dd><code title={viewer.id}>{shortId}</code></dd></div>
@@ -1388,10 +1426,12 @@ function AccountProfile({
         </div>
         <div className="membership-action">
           <div>
-            <strong>{pendingRequest ? `${pendingRequest.kind === "JOIN" ? "加入" : "退出"}申請審核中` : viewer.membershipStatus === "EXITING" ? "會籍將於本期結束" : user.member ? "目前為有效社員" : "目前為非社員"}</strong>
-            <span>{pendingRequest ? "幹部完成審核前，身分與計費方式都不會變更。" : user.member ? "退出原則上不退當期費用，核准後仍可使用至本期結束。" : "加入核准後立即生效；若當期已開始，依剩餘活動場次建立費用。"}</span>
+            <strong>{viewer.primaryAdmin ? "社長須先轉交權限才能退社" : pendingRequest ? `${pendingRequest.kind === "JOIN" ? "加入" : "退出"}申請審核中` : viewer.membershipStatus === "EXITING" ? "會籍將於本期結束" : user.member ? "目前為有效社員" : "目前為非社員"}</strong>
+            <span>{viewer.primaryAdmin ? "社團必須保留一位社長。轉交後你將成為一般社員，原有活動與帳單不變，再依一般流程申請退出。" : pendingRequest ? "幹部完成審核前，身分與計費方式都不會變更。" : user.member ? "退出原則上不退當期費用，核准後仍可使用至本期結束。" : "加入核准後立即生效；若當期已開始，依剩餘活動場次建立費用。"}</span>
           </div>
-          {viewer.membershipStatus === "EXITING" ? (
+          {viewer.primaryAdmin ? (
+            <button type="button" className="secondary" disabled={presidencySaving} aria-expanded={transferOpen} aria-controls="presidency-transfer-form" onClick={() => setTransferOpen((open) => !open)}>轉交社長權限</button>
+          ) : viewer.membershipStatus === "EXITING" ? (
             <button className="secondary" disabled>已排定退出</button>
           ) : (
             <button className={user.member ? "secondary" : "primary small"} disabled={membershipSaving || Boolean(pendingRequest)} onClick={() => requestMembershipChange(user.member ? "EXIT" : "JOIN")}>
@@ -1399,9 +1439,27 @@ function AccountProfile({
             </button>
           )}
         </div>
-        {membershipRequests.length > 0 && (
+        {viewer.primaryAdmin && transferOpen && (
+          <form className="manager-form" id="presidency-transfer-form" onSubmit={(event) => { event.preventDefault(); transferPresidency(successorId); }}>
+            {successors.length === 0 ? (
+              <p className="form-note">目前沒有可接任的社員，暫時不能退社。請先新增或核准其他社員加入、完成帳號認領，並處理其待審核退出申請。</p>
+            ) : (
+              <>
+                <label>接任社員
+                  <select value={successorId} onChange={(event) => setSuccessorId(event.target.value)} required disabled={presidencySaving}>
+                    <option value="">請選擇接任社員</option>
+                    {successors.map((member) => <option key={member.id} value={member.id}>{member.name}{member.department ? " · " + member.department : ""} · {member.id.slice(0, 8)}</option>)}
+                  </select>
+                </label>
+                <p className="form-note">確認後立即生效；接任者成為社長，你將失去幹部權限。系統會保留轉交紀錄，並通知雙方。</p>
+                <button className="primary" disabled={presidencySaving || !successors.some((member) => member.id === successorId)}>{presidencySaving ? "轉交中…" : "確認轉交社長權限"}</button>
+              </>
+            )}
+          </form>
+        )}
+        {ownRequests.length > 0 && (
           <div className="membership-history">
-            {membershipRequests.slice(0, 4).map((request) => (
+            {ownRequests.slice(0, 4).map((request) => (
               <div key={request.id}>
                 <span>{requestDate(request.requestedAt)} · {request.kind === "JOIN" ? "加入社員" : "退出社員"}</span>
                 <Badge tone={request.status === "APPROVED" ? "green" : request.status === "PENDING" ? "orange" : "gray"}>{requestStatus[request.status]}</Badge>
@@ -1974,7 +2032,7 @@ function Members({
             <span>{person.department ?? "—"}</span>
             <span>
               <Badge tone={person.member ? "green" : "gray"}>{membershipLabel(person)}</Badge>
-              {person.primaryAdmin && <small className="primary-admin-label">主要幹部</small>}
+              {person.primaryAdmin && <small className="primary-admin-label">社長</small>}
             </span>
             <span>{admin ? <span className="member-row-actions"><button type="button" className="link" disabled={saving} onClick={() => manageMember(person)}>編輯</button><button type="button" className="link claim-button" disabled={saving} onClick={() => issueClaimCode(person)}>認領碼</button></span> : person.member ? "有效" : "—"}</span>
           </div>

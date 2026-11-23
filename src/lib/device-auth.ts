@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "crypto";
 import { FieldValue } from "firebase-admin/firestore";
+import { isClubPresident } from "@/lib/club-roles";
 import { getAdminFirestore } from "@/lib/firebase-admin";
 
 export const DEVICE_COOKIE = "badminton_device";
@@ -10,6 +11,7 @@ export type Viewer = {
   name: string;
   department: string | null;
   role: "ADMIN" | "MEMBER";
+  primaryAdmin: boolean;
   membershipStatus: string;
   creditBalance: number;
   accountType: "guest" | "recoverable" | "verified" | "unclaimed";
@@ -54,12 +56,13 @@ export function createClaimCodeRecord() {
 function viewerFromMember(id: string, member: FirebaseFirestore.DocumentData): Viewer {
   const storedMembershipStatus = String(member.membershipStatus ?? "GUEST");
   const endingAt = typeof member.endingAt?.toDate === "function" ? member.endingAt.toDate() : member.endingAt ? new Date(member.endingAt) : null;
-  const membershipStatus = storedMembershipStatus === "EXITING" && endingAt && endingAt <= new Date() ? "GUEST" : storedMembershipStatus;
+  const membershipStatus = isClubPresident(member) ? "MEMBER" : storedMembershipStatus === "EXITING" && endingAt && endingAt <= new Date() ? "GUEST" : storedMembershipStatus;
   return {
     id,
     name: String(member.displayName ?? ""),
     department: member.department ? String(member.department) : null,
     role: member.role === "ADMIN" ? "ADMIN" : "MEMBER",
+    primaryAdmin: isClubPresident(member),
     membershipStatus,
     creditBalance: Number(member.creditBalance ?? 0),
     accountType: ["guest", "recoverable", "verified", "unclaimed"].includes(String(member.accountType))
