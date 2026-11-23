@@ -5,6 +5,7 @@ import {
   Timestamp,
   type DocumentData,
   type DocumentReference,
+  type DocumentSnapshot,
   type Firestore,
   type Transaction,
 } from "firebase-admin/firestore";
@@ -13,6 +14,7 @@ import { recordBalanceMovement } from "@/lib/balance-ledger";
 import { memberAccountName, readMemberName, reserveMemberName, validatedAccountName, validatedDisplayName } from "@/lib/member-names.mjs";
 import { createClaimCodeRecord, type Viewer } from "@/lib/device-auth";
 import { manageInvoice, voidInvoiceBatch } from "@/lib/invoice-management";
+import { fetchOfficialClosures } from "@/lib/official-closures";
 import { validateQuarterDraft, effectiveInvoiceAmounts, reduceUnpaidInvoice, type QuarterRules, type SuggestedActivity } from "@/lib/quarter-planning";
 
 type StoredDate = Timestamp | Date | string | null | undefined;
@@ -1020,7 +1022,7 @@ function parseQuarterDraft(input: Record<string, string>) {
     label: parsed.rules.label.trim(), startDate: parsed.rules.startDate, endDate: parsed.rules.endDate,
     weekday: parsed.rules.weekday, startTime: parsed.rules.startTime, endTime: parsed.rules.endTime,
     courts: parsed.rules.courts.trim(), regularCapacity: parsed.rules.regularCapacity, standbyCapacity: parsed.rules.standbyCapacity,
-    excludedDates: [...new Set(parsed.rules.excludedDates)].sort(), excludeWeekends: parsed.rules.excludeWeekends === true,
+    excludedDates: [...new Set(parsed.rules.excludedDates)].sort(),
   };
   const activities = parsed.activities.map((entry) => ({
     date: entry.date, startTime: entry.startTime, endTime: entry.endTime, courts: entry.courts.trim(),
@@ -1045,21 +1047,40 @@ async function saveQuarterDraft(input: Record<string, string>, actor: Viewer) {
   });
 }
 
+function quarterConfirmation(snapshot: DocumentSnapshot, revision: string) {
+  const plan = snapshot.data();
+  if (!plan) throw new Error("找不到季度草稿");
+  if (plan.status === "CONFIRMED") {
+    return { confirmed: { eventCount: Number(plan.eventCount), totalAmount: Number(plan.grossAmount), planId: snapshot.id } };
+  }
+  if (Number(revision) !== Number(plan.revision)) throw new Error("草稿版本已變更，請重新檢查場次");
+  validateQuarterDraft(plan as QuarterRules, plan.activities);
+  const activities = plan.activities as SuggestedActivity[];
+  if (!activities.length) throw new Error("至少保留一場活動才能確認季度");
+  const now = new Date();
+  if (activities.some((entry) => new Date(entry.date + "T" + entry.startTime + ":00+08:00") <= now)) throw new Error("建議場次包含已開始的日期，請先調整");
+  return { plan, activities, now };
+}
+
 async function confirmQuarterPlan(input: Record<string, string>, actor: Viewer) {
   const db = getAdminFirestore();
   if (!/^[a-zA-Z0-9-]{1,100}$/.test(input.planId ?? "")) throw new Error("請先儲存季度草稿");
   const planRef = db.collection("quarterPlans").doc(input.planId);
+  const preview = quarterConfirmation(await planRef.get(), input.revision);
+  if (preview.confirmed) return preview.confirmed;
+  const calendar = await fetchOfficialClosures(preview.plan.startDate, preview.plan.endDate).then(
+    (closures) => ({ closedDates: new Set(closures.map((entry) => entry.date)) }),
+    (error: unknown) => ({ error }),
+  );
   return db.runTransaction(async (transaction) => {
-    const planSnapshot = await transaction.get(planRef);
-    if (!planSnapshot.exists) throw new Error("找不到季度草稿");
-    const plan = planSnapshot.data()!;
-    if (plan.status === "CONFIRMED") return { eventCount: Number(plan.eventCount), totalAmount: Number(plan.grossAmount), planId: planRef.id };
-    if (Number(input.revision) !== Number(plan.revision)) throw new Error("草稿版本已變更，請重新檢查場次");
-    validateQuarterDraft(plan as QuarterRules, plan.activities);
-    const activities = plan.activities as SuggestedActivity[];
-    if (!activities.length) throw new Error("至少保留一場活動才能確認季度");
-    const now = new Date();
-    if (activities.some((entry) => new Date(entry.date + "T" + entry.startTime + ":00+08:00") <= now)) throw new Error("建議場次包含已開始的日期，請先調整");
+    const draft = quarterConfirmation(await transaction.get(planRef), input.revision);
+    if (draft.confirmed) return draft.confirmed;
+    const { plan, activities, now } = draft;
+    const manager = await transaction.get(db.collection("members").doc(actor.id));
+    if (manager.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
+    if ("error" in calendar) throw calendar.error;
+    const conflictsWithCalendar = activities.filter((entry) => calendar.closedDates.has(entry.date));
+    if (conflictsWithCalendar.length) throw new Error("以下場次遇國定假日或新北市停班停課，請先調整：" + conflictsWithCalendar.map((entry) => entry.date).join("、"));
     const [periods, members, rates, dates] = await Promise.all([
       transaction.get(db.collection("billingPeriods")),
       transaction.get(db.collection("members")),

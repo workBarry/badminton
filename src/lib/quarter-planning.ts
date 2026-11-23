@@ -9,7 +9,6 @@ export type QuarterRules = {
   regularCapacity: number;
   standbyCapacity: number;
   excludedDates: string[];
-  excludeWeekends: boolean;
 };
 export type SuggestedActivity = { date: string; startTime: string; endTime: string; courts: string; regularCapacity: number; standbyCapacity: number };
 export type QuarterPlan = QuarterRules & {
@@ -30,11 +29,14 @@ export function validCalendarDate(value: string) {
   const date = new Date(value + "T00:00:00Z");
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
+export function validateQuarterDateRange(startDate: string, endDate: string) {
+  if (!validCalendarDate(startDate) || !validCalendarDate(endDate) || endDate < startDate) throw new Error("請填寫正確的季度起訖日期");
+  const days = (Date.parse(endDate) - Date.parse(startDate)) / 86400000 + 1;
+  if (days > 100) throw new Error("每季日期範圍最多 100 天");
+}
 export function validateQuarterRules(rules: QuarterRules) {
   if (!rules || typeof rules.label !== "string" || !rules.label.trim() || rules.label.length > 60) throw new Error("請填寫季度名稱（最多 60 字）");
-  if (!validCalendarDate(rules.startDate) || !validCalendarDate(rules.endDate) || rules.endDate < rules.startDate) throw new Error("請填寫正確的季度起訖日期");
-  const days = (Date.parse(rules.endDate) - Date.parse(rules.startDate)) / 86400000 + 1;
-  if (days > 100) throw new Error("每季日期範圍最多 100 天");
+  validateQuarterDateRange(rules.startDate, rules.endDate);
   if (!Number.isInteger(rules.weekday) || rules.weekday < 0 || rules.weekday > 6) throw new Error("請選擇固定星期");
   if (!Array.isArray(rules.excludedDates) || rules.excludedDates.length > 100 || rules.excludedDates.some((date) => !validCalendarDate(date) || date < rules.startDate || date > rules.endDate)) throw new Error("假日排除日期必須是季度範圍內的有效日期");
   validateActivity({ ...rules, date: rules.startDate }, rules);
@@ -52,7 +54,7 @@ export function suggestActivities(rules: QuarterRules): SuggestedActivity[] {
   for (let timestamp = Date.parse(rules.startDate); timestamp <= Date.parse(rules.endDate); timestamp += 86400000) {
     const day = new Date(timestamp);
     const date = day.toISOString().slice(0, 10);
-    if (day.getUTCDay() !== rules.weekday || rules.excludedDates.includes(date) || (rules.excludeWeekends && [0, 6].includes(day.getUTCDay()))) continue;
+    if (day.getUTCDay() !== rules.weekday || rules.excludedDates.includes(date)) continue;
     activities.push({ date, startTime: rules.startTime, endTime: rules.endTime, courts: rules.courts.trim(), regularCapacity: rules.regularCapacity, standbyCapacity: rules.standbyCapacity });
   }
   return activities;

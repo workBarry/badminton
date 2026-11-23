@@ -274,7 +274,7 @@ function database() {
   };
   return db;
 }
-function setup(balance = 0) {
+function setup(balance = 0, fetchOfficialClosures = async () => []) {
   const db = database();
   db.seed("members/member", { displayName: "社員", membershipStatus: "MEMBER", role: "MEMBER", creditBalance: balance });
   db.seed("members/admin", { displayName: "社長", membershipStatus: "GUEST", role: "ADMIN", creditBalance: 0 });
@@ -288,9 +288,10 @@ function setup(balance = 0) {
     "@/lib/device-auth": { viewerFromMember: (id, data) => ({ id, name: data.displayName, role: data.role, membershipStatus: data.membershipStatus, primaryAdmin: clubRoles.isClubPresident(data), creditBalance: data.creditBalance ?? 0, accountType: data.accountType }) },
     "@/lib/club-roles": clubRoles,
     "@/lib/quarter-planning": planning,
+    "@/lib/official-closures": { fetchOfficialClosures },
   });
   const year = new Date().getUTCFullYear() + 1;
-  const rules = { label: "第一季", startDate: year + "-01-01", endDate: year + "-03-31", weekday: 5, startTime: "19:00", endTime: "21:00", courts: "A 場", regularCapacity: 10, standbyCapacity: 4, excludedDates: [], excludeWeekends: false };
+  const rules = { label: "第一季", startDate: year + "-01-01", endDate: year + "-03-31", weekday: 5, startTime: "19:00", endTime: "21:00", courts: "A 場", regularCapacity: 10, standbyCapacity: 4, excludedDates: [] };
   const activities = planning.suggestActivities(rules).slice(0, 10);
   const mutate = (action, input = {}, actor = admin) => backend.mutate(action, input, actor);
   const draft = () => mutate("saveQuarterDraft", { planId: "test-plan", revision: "0", draft: JSON.stringify({ rules, activities }) });
@@ -300,12 +301,17 @@ function setup(balance = 0) {
   return { db, mutate, rules, activities, draft, confirm, bill, invoicePath };
 }
 
-test("suggestions obey weekday, explicit holidays and weekends, and allow manual date overrides", () => {
+test("suggestions follow the selected weekday, including weekends, and honor explicit exclusions", () => {
   const { rules } = setup();
   const suggestions = planning.suggestActivities(rules);
   assert.ok(suggestions.every((entry) => new Date(entry.date).getUTCDay() === 5));
   assert.equal(planning.suggestActivities({ ...rules, excludedDates: [suggestions[0].date] }).length, suggestions.length - 1);
-  assert.equal(planning.suggestActivities({ ...rules, weekday: 6, excludeWeekends: true }).length, 0);
+  for (const weekday of [0, 6]) {
+    // Old drafts can still contain the retired flag.
+    const weekendSuggestions = planning.suggestActivities({ ...rules, weekday, excludeWeekends: true });
+    assert.ok(weekendSuggestions.length > 0);
+    assert.ok(weekendSuggestions.every((entry) => new Date(entry.date).getUTCDay() === weekday));
+  }
   assert.throws(() => planning.validateQuarterDraft(rules, [suggestions[0], suggestions[0]]), /重複/);
   assert.equal(planning.validCalendarDate("2027-02-30"), false);
   assert.throws(() => planning.validateQuarterDraft(rules, [{ ...suggestions[0], date: "2027-02-30" }]));
@@ -324,6 +330,62 @@ test("draft has no events; revision conflicts rejected; confirmation is idempote
   assert.equal(s.db.entries("events/").filter(([key]) => key.split("/").length === 2).length, 10);
   assert.equal(s.db.data("billingPeriods/quarter-test-plan").eventCount, 10);
   assert.equal(s.db.data("billingPeriods/quarter-test-plan").grossAmount, 1500);
+});
+test("confirmation rechecks saved activities for national holidays and New Taipei closures", async () => {
+  let officialDates = [];
+  const calls = [];
+  const s = setup(0, async (...range) => { calls.push(range); return officialDates; });
+  await s.draft();
+  assert.equal(calls.length, 0);
+  officialDates = [
+    { date: s.activities[0].date, name: "國定假日", kind: "holiday" },
+    { date: s.activities[2].date, name: "新北市停班停課", kind: "closure" },
+  ];
+  const before = s.db.entries("");
+  await assert.rejects(s.confirm(), (error) => {
+    assert.match(error.message, /國定假日或新北市停班停課/);
+    for (const { date } of officialDates) assert.ok(error.message.includes(date));
+    return true;
+  });
+  assert.deepEqual(calls, [[s.rules.startDate, s.rules.endDate]]);
+  assert.deepEqual(s.db.entries(""), before);
+});
+test("feed failure keeps a draft intact and an already confirmed retry avoids the feed", async () => {
+  let available = false;
+  let checks = 0;
+  const s = setup(0, async () => {
+    checks++;
+    if (!available) throw new Error("官方行事曆暫時無法讀取");
+    return [];
+  });
+  await s.draft();
+  const before = s.db.entries("");
+  await assert.rejects(s.confirm(), /官方行事曆暫時無法讀取/);
+  assert.deepEqual(s.db.entries(""), before);
+  available = true;
+  const confirmed = await s.confirm();
+  available = false;
+  assert.deepEqual(await s.confirm(), confirmed);
+  assert.equal(checks, 2);
+});
+test("confirmation rechecks draft revision and administrator after loading closures", async () => {
+  const revisionRace = setup(0, async () => {
+    await revisionRace.mutate("saveQuarterDraft", { planId: "test-plan", revision: "1", draft: JSON.stringify({ rules: revisionRace.rules, activities: revisionRace.activities.slice(1) }) });
+    throw new Error("官方行事曆暫時無法讀取");
+  });
+  await revisionRace.draft();
+  await assert.rejects(revisionRace.confirm(), /草稿版本已變更/);
+  assert.equal(revisionRace.db.data("quarterPlans/test-plan").revision, 2);
+  assert.equal(revisionRace.db.entries("events/").length, 0);
+
+  const permissionRace = setup(0, async () => {
+    permissionRace.db.seed("members/admin", { role: "MEMBER" });
+    return [];
+  });
+  await permissionRace.draft();
+  await assert.rejects(permissionRace.confirm(), /幹部權限已變更/);
+  assert.equal(permissionRace.db.data("quarterPlans/test-plan").status, "DRAFT");
+  assert.equal(permissionRace.db.entries("events/").length, 0);
 });
 test("date conflict rolls back the entire quarter confirmation", async () => {
   const s = setup(); await s.draft();

@@ -1549,13 +1549,11 @@ dialog.event-dialog {
   font-size: 12px;
   min-width: 0;
 }
-.quarter-planner input, .quarter-planner select, .quarter-planner textarea {
+.quarter-planner input, .quarter-planner select {
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
 }
-.quarter-planner label.quarter-check { flex-direction: row; align-items: center; }
-.quarter-check input { width: 16px; height: 16px; }
 .quarter-summary, .quarter-activity {
   padding: 14px;
   border: 1px solid var(--line);
@@ -1570,6 +1568,9 @@ dialog.event-dialog {
   line-height: 1.6;
 }
 .quarter-suggestions header { display: flex; flex-direction: column; gap: 6px; }
+.quarter-exclusions { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.quarter-exclusions summary { cursor: pointer; }
+.quarter-exclusions ul { margin: 6px 0 0; padding-inline-start: 20px; }
 .quarter-suggestions > fieldset { max-height: 420px; overflow-y: auto; padding-right: 5px; }
 .quarter-activity-heading, .quarter-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .quarter-actions { flex-wrap: wrap; padding-top: 8px; }

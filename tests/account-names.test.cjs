@@ -194,6 +194,7 @@ function setup() {
   const injected = {
     "firebase-admin/firestore": { FieldValue, Timestamp: FakeTimestamp },
     "@/lib/firebase-admin": { getAdminFirestore: () => db },
+    "@/lib/official-closures": {},
     // Crypto itself belongs to the WebAuthn library. These doubles exercise only
     // application identity binding, challenge persistence and account lookup.
     "@simplewebauthn/server": {
