@@ -184,6 +184,7 @@ test("billing renders self-payment for admin's own bill, reminders for others an
   const dashboard = loadTs("src/app/billing-dashboard.tsx", { "@/lib/billing-view": billingView });
   const dependencies = { "@simplewebauthn/browser": {}, "@/app/quarter-planner": { default: () => null }, "@/app/billing-dashboard": dashboard, "@/lib/billing-view": billingView, "@/lib/quarter-planning": planning };
   dependencies["@/app/loading-screen"] = loadingScreen;
+  dependencies["@/app/floating-notifications"] = { default: () => null };
   dependencies["@/app/balance-history-dialog"] = balanceHistoryDialog;
   dependencies["@/app/shuttle-art"] = shuttleArt;
   dependencies["@/lib/club-roles"] = clubRoles;
@@ -688,6 +689,7 @@ function accountComponentsForTest() {
     "@/app/quarter-planner": { default: () => null },
     "@/app/billing-dashboard": loadTs("src/app/billing-dashboard.tsx", { "@/lib/billing-view": billingView }),
     "@/app/loading-screen": loadingScreen,
+    "@/app/floating-notifications": { default: () => null },
     "@/app/balance-history-dialog": balanceHistoryDialog,
     "@/app/shuttle-art": shuttleArt,
     "@/lib/billing-view": billingView,

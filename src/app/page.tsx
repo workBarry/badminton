@@ -1,12 +1,13 @@
 "use client";
 
-import { FormEvent, ReactNode, type Ref, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import QuarterPlanner from "@/app/quarter-planner";
 import LoadingScreen from "@/app/loading-screen";
 import ShuttleArt from "@/app/shuttle-art";
 import BillingDashboard, { type BillingProps } from "@/app/billing-dashboard";
 import BalanceHistoryDialog, { type BalanceAdjustmentInput } from "@/app/balance-history-dialog";
+import FloatingNotifications from "@/app/floating-notifications";
 import { activityPayments, isPrincipal, type ManagedInvoice } from "@/lib/billing-view";
 import type { CalendarNotices, OfficialClosure } from "@/lib/official-closures";
 import type { QuarterPlan } from "@/lib/quarter-planning";
@@ -135,8 +136,6 @@ export default function Home() {
   const [notifications, setNotifications] = useState<ClubNotification[]>([]);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [notificationSaving, setNotificationSaving] = useState(false);
-  const notificationBellRef = useRef<HTMLButtonElement>(null);
-  const notificationPanelRef = useRef<HTMLElement>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [currentFees, setCurrentFees] = useState({ member: 150, guest: 180 });
   const [transferEventId, setTransferEventId] = useState<string | null>(null);
@@ -158,18 +157,6 @@ export default function Home() {
   const [editingMember, setEditingMember] = useState<Person | null>(null);
   const [memberSaving, setMemberSaving] = useState(false);
   const [claimCodeSaving, setClaimCodeSaving] = useState(false);
-
-  useEffect(() => {
-    if (!notificationOpen) return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (notificationBellRef.current?.contains(target) || notificationPanelRef.current?.contains(target)) return;
-      setNotificationOpen(false);
-    };
-    document.addEventListener("click", closeOnOutsideClick, true);
-    return () => document.removeEventListener("click", closeOnOutsideClick, true);
-  }, [notificationOpen]);
 
   useEffect(() => {
     if (!managerOpen && !announcementOpen && !billingManagerOpen && !editingMember && !codeNotice) return;
@@ -741,24 +728,12 @@ export default function Home() {
       </aside>
       <main>
         <header>
-          <div>
+          <div className="page-heading">
             <p>{headerDate}</p>
-            <h1>{tab}</h1>
+            <h1>{tab === "總覽" ? "活動" : tab}</h1>
           </div>
           <div className="header-actions">
-            <button ref={notificationBellRef} className="bell" aria-label={`通知，${unreadNotifications.length} 筆未讀`} aria-expanded={notificationOpen} onClick={() => setNotificationOpen((open) => !open)}>
-              🔔{unreadNotifications.length > 0 && <em>{unreadNotifications.length > 99 ? "99+" : unreadNotifications.length}</em>}
-            </button>
-            {notificationOpen && (
-              <NotificationPanel
-                panelRef={notificationPanelRef}
-                notifications={notifications}
-                saving={notificationSaving}
-                close={() => setNotificationOpen(false)}
-                openNotification={(notification) => void openNotification(notification)}
-                markAll={() => void markNotificationsRead(unreadNotifications.map((notification) => notification.id))}
-              />
-            )}
+            {tab === "總覽" && <button type="button" className="link view-all-activities" onClick={() => setTab("活動")}>查看全部活動 →</button>}
             {isAdmin && (tab === "活動" || tab === "公告" || tab === "費用管理") && (
               <button
                 className="primary small"
@@ -845,6 +820,20 @@ export default function Home() {
           />
         )}
       </main>
+      <FloatingNotifications
+        open={notificationOpen}
+        unreadCount={unreadNotifications.length}
+        onToggle={() => setNotificationOpen((open) => !open)}
+        onClose={() => setNotificationOpen(false)}
+      >
+        {notificationOpen && <NotificationPanel
+          notifications={notifications}
+          saving={notificationSaving}
+          close={() => setNotificationOpen(false)}
+          openNotification={(notification) => void openNotification(notification)}
+          markAll={() => void markNotificationsRead(unreadNotifications.map((notification) => notification.id))}
+        />}
+      </FloatingNotifications>
       {selectedEvent && (
         <EventDetailsDialog
           key={selectedEvent.id}
@@ -1400,14 +1389,12 @@ function Login({
 }
 
 function NotificationPanel({
-  panelRef,
   notifications,
   saving,
   close,
   openNotification,
   markAll,
 }: {
-  panelRef: Ref<HTMLElement>;
   notifications: ClubNotification[];
   saving: boolean;
   close: () => void;
@@ -1420,7 +1407,7 @@ function NotificationPanel({
     ? new Date(value).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
     : "";
   return (
-    <section ref={panelRef} className="notification-panel" role="dialog" aria-label="網站通知">
+    <section className="notification-panel" role="dialog" aria-label="網站通知">
       <header>
         <div><strong>通知中心</strong><span>{unreadCount > 0 ? `${unreadCount} 筆未讀` : "全部已讀"}</span></div>
         <button type="button" className="close-notifications" onClick={close} aria-label="關閉通知">×</button>
@@ -1729,12 +1716,6 @@ function Overview({
   if (!event) {
     return (
       <div className="dashboard overview-dashboard">
-        <section className="overview-heading">
-          <div>
-            <p>歡迎回來，{user.name}</p>
-            <h2>下一場活動</h2>
-          </div>
-        </section>
         <section className="overview-empty">
           <b>◷</b>
           <h3>目前沒有已排程的活動</h3>
@@ -1758,14 +1739,6 @@ function Overview({
 
   return (
     <div className="dashboard overview-dashboard">
-      <section className="overview-heading">
-        <div>
-          <p>歡迎回來，{user.name}</p>
-          <h2>下一場活動</h2>
-        </div>
-        <button className="link" onClick={showEvents}>查看全部活動 →</button>
-      </section>
-
       <section className="next-event-card">
         <div className="next-event-main">
           <div className="overview-date">

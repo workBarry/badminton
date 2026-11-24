@@ -660,10 +660,17 @@ select {
   padding: 0 48px 54px;
 }
 .app > main > header {
-  display: flex;
+  --header-bottom-space: 24px;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   min-height: 126px;
-  align-items: center;
-  justify-content: space-between;
+  align-items: end;
+  gap: 12px;
+  padding: 24px 0 var(--header-bottom-space);
+}
+.page-heading {
+  min-width: 0;
 }
 .app > main > header p {
   margin: 0 0 3px;
@@ -675,27 +682,65 @@ select {
 .app > main > header h1 {
   margin: 0;
   font-size: 28px;
+  line-height: 36px;
   letter-spacing: -0.04em;
 }
 .header-actions {
-  position: relative;
   display: flex;
-  gap: 15px;
+  gap: 12px;
   align-items: center;
-  padding-right: 52px;
+  align-self: end;
+  min-height: 36px;
+}
+.view-all-activities {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  white-space: nowrap;
+}
+.floating-notifications {
+  position: fixed;
+  z-index: 9;
+  top: var(--floating-y, calc(100dvh - 64px));
+  left: var(--floating-x, calc(100vw - 64px));
+  width: 48px;
+  height: 48px;
 }
 .bell {
-  position: fixed;
-  z-index: 101;
-  top: calc(20px + env(safe-area-inset-top));
-  right: calc(24px + env(safe-area-inset-right));
-  width: 36px;
-  height: 36px;
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  place-items: center;
   border: 1px solid var(--line);
   border-radius: 50%;
   background: #fff;
   color: var(--green);
+  font-size: 22px;
   box-shadow: 0 8px 24px #173f3720;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.bell:active {
+  cursor: grabbing;
+}
+.bell:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 3px;
+}
+.sr-only {
+  position: absolute;
+  overflow: hidden;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .bell em {
   position: absolute;
@@ -715,18 +760,18 @@ select {
 }
 .notification-panel {
   position: fixed;
-  z-index: 100;
-  top: calc(68px + env(safe-area-inset-top));
-  right: calc(24px + env(safe-area-inset-right));
+  top: var(--notification-top, 80px);
+  left: var(--notification-left, 16px);
   display: flex;
   overflow: hidden;
-  width: min(390px, calc(100vw - 32px));
-  max-height: min(560px, calc(100vh - 100px));
+  width: var(--notification-width, min(390px, calc(100vw - 32px)));
+  max-height: var(--notification-max-height, calc(100dvh - 96px));
   flex-direction: column;
   border: 1px solid #dfe9e6;
   border-radius: 18px;
   background: #fff;
   box-shadow: 0 22px 60px #173f3730;
+  transform: translateY(var(--notification-translate-y, 0));
 }
 .notification-panel > header {
   display: flex;
@@ -758,7 +803,20 @@ select {
 .notification-list {
   display: flex;
   overflow-y: auto;
+  min-height: 0;
   flex-direction: column;
+}
+.floating-notifications[data-compact="true"] .notification-panel {
+  overflow-y: auto;
+}
+.floating-notifications[data-compact="true"] .notification-list {
+  flex-shrink: 0;
+  max-height: none;
+  overflow: visible;
+}
+.notification-panel > header,
+.notification-panel > footer {
+  flex-shrink: 0;
 }
 .notification-list > button {
   display: flex;
@@ -832,23 +890,6 @@ select {
   display: flex;
   flex-direction: column;
   gap: 18px;
-}
-.overview-heading {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  padding: 4px;
-}
-.overview-heading p {
-  margin: 0 0 5px;
-  color: var(--green);
-  font-size: 12px;
-  font-weight: 800;
-}
-.overview-heading h2 {
-  margin: 0;
-  font-size: 31px;
-  letter-spacing: -0.04em;
 }
 .next-event-card {
   display: flex;
@@ -2987,7 +3028,6 @@ dialog.event-dialog {
   }
   .app {
     --mobile-nav-height: 64px;
-    --mobile-bell-top: calc(var(--mobile-nav-height) + 12px + env(safe-area-inset-top));
     display: block;
   }
   .sidebar,
@@ -3036,7 +3076,9 @@ dialog.event-dialog {
     padding: 0 16px 30px;
   }
   .app > main > header {
+    --header-bottom-space: 18px;
     min-height: 92px;
+    padding-top: 18px;
   }
   .app > main > header h1 {
     font-size: 23px;
@@ -3083,26 +3125,8 @@ dialog.event-dialog {
   .request-actions > button {
     flex: 1;
   }
-  .notification-panel {
-    --notification-panel-top: calc(var(--mobile-bell-top) + 48px);
-    top: var(--notification-panel-top);
-    right: calc(16px + env(safe-area-inset-right));
-    left: calc(16px + env(safe-area-inset-left));
-    width: auto;
-    max-height: min(560px, calc(100dvh - var(--notification-panel-top) - max(16px, env(safe-area-inset-bottom))));
-  }
   .header-actions {
-    padding-right: 46px;
-  }
-  .bell {
-    top: var(--mobile-bell-top);
-    right: calc(16px + env(safe-area-inset-right));
-  }
-  .overview-heading {
-    align-items: center;
-  }
-  .overview-heading h2 {
-    font-size: 25px;
+    gap: 8px;
   }
   .next-event-card {
     gap: 16px;
