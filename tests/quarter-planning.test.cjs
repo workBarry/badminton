@@ -58,7 +58,7 @@ function managementInput(s, id = "quarter-test-plan-member", extra = {}) {
  return { invoiceId: id, expectedStatus: invoice.status, expectedAmount: String(planning.effectiveInvoiceAmounts(invoice).amount), reason: "更正測試帳單", ...extra };
 }
 test("voiding a bill restores applied credit once, keeps history and does not cancel bookings", async () => {
- const s=setup(100); await s.draft(); await s.confirm(); await s.bill();
+ const s=setup(100); await s.confirm(); await s.bill();
  const input=managementInput(s); await s.mutate("voidInvoice",input); await s.mutate("voidInvoice",input);
  const old=s.db.data(s.invoicePath);
  assert.equal(old.status,"VOID"); assert.equal(old.grossAmount,1500);
@@ -68,7 +68,7 @@ test("voiding a bill restores applied credit once, keeps history and does not ca
  assert.equal(old.adjustments.at(-1).actorName,admin.name);
 });
 test("reissue is atomic, recalculates credit, links bills and preserves quarter baseline", async () => {
- const s=setup(100); await s.draft(); await s.confirm(); await s.bill();
+ const s=setup(100); await s.confirm(); await s.bill();
  const input=managementInput(s,undefined,{eventAmounts:JSON.stringify(Array(10).fill(100)),dueDate:s.rules.endDate});
  const result=await s.mutate("reissueInvoice",input);
  const retry=await s.mutate("reissueInvoice",input);
@@ -83,14 +83,14 @@ test("reissue is atomic, recalculates credit, links bills and preserves quarter 
  assert.equal(s.db.data("members/member").creditBalance,0);
 });
 test("reopening a previously voided invoice must not restore credit twice", async () => {
- const s=setup(100); await s.draft(); await s.confirm(); await s.bill();
+ const s=setup(100); await s.confirm(); await s.bill();
  await s.mutate("voidInvoice",managementInput(s));
  const result=await s.mutate("reissueInvoice",managementInput(s,undefined,{eventAmounts:JSON.stringify(Array(10).fill(150)),dueDate:s.rules.endDate}));
  assert.equal(s.db.data("members/member").creditBalance,0);
  assert.equal(s.db.data("invoices/"+result.invoiceId).amount,1400);
 });
 test("reissue rejects cancelled-event charges and stale invoice totals without writes", async () => {
- const s=setup(); await s.draft(); await s.confirm(); await s.bill();
+ const s=setup(); await s.confirm(); await s.bill();
  const stale=managementInput(s);
  await s.mutate("cancelEvent",{eventId:"quarter-test-plan-0"});
  await assert.rejects(s.mutate("voidInvoice",stale),/已變更/);
@@ -98,7 +98,7 @@ test("reissue rejects cancelled-event charges and stale invoice totals without w
  assert.equal(s.db.data(s.invoicePath).status,"PENDING");
 });
 test("refund subtracts prior credits and is not repeated by retries or subsequent cancellation", async () => {
- const s=setup(100); await s.draft(); await s.confirm(); await s.bill();
+ const s=setup(100); await s.confirm(); await s.bill();
  await s.mutate("confirmPayment",{invoiceId:"quarter-test-plan-member"});
  await s.mutate("cancelEvent",{eventId:"quarter-test-plan-0"});
  const input=managementInput(s,undefined,{refundMode:"BALANCE",expectedRefundable:"1350"});
@@ -110,7 +110,7 @@ test("refund subtracts prior credits and is not repeated by retries or subsequen
  assert.equal(s.db.data("members/member").creditBalance,1500);
 });
 test("offline refund requires acknowledgment and restores original applied balance separately", async () => {
- const s=setup(100); await s.draft(); await s.confirm(); await s.bill();
+ const s=setup(100); await s.confirm(); await s.bill();
  await s.mutate("confirmPayment",{invoiceId:"quarter-test-plan-member"});
  const input=managementInput(s,undefined,{refundMode:"OFFLINE",expectedRefundable:"1500"});
  await assert.rejects(s.mutate("refundInvoice",input),/人工退款/);
@@ -119,7 +119,7 @@ test("offline refund requires acknowledgment and restores original applied balan
  assert.equal(s.db.data("members/member").creditBalance,100);
 });
 test("reported transfers cannot be voided; reject after checking reverses pending credit into reduction", async () => {
- const s=setup(); await s.draft(); await s.confirm(); await s.bill();
+ const s=setup(); await s.confirm(); await s.bill();
  await s.mutate("reportPayment",{invoiceId:"quarter-test-plan-member"},member);
  await assert.rejects(s.mutate("voidInvoice",managementInput(s)),/未繳/);
  await s.mutate("cancelEvent",{eventId:"quarter-test-plan-0"});
@@ -132,7 +132,7 @@ test("reported transfers cannot be voided; reject after checking reverses pendin
 });
 test("bulk void reports per-item failures and refuses paid items", async () => {
  const s=setup(); s.db.seed("members/admin",{displayName:"社長",membershipStatus:"MEMBER",role:"ADMIN",creditBalance:0});
- await s.draft(); await s.confirm(); await s.bill();
+ await s.confirm(); await s.bill();
  await s.mutate("reportPayment",{invoiceId:"quarter-test-plan-admin"},admin);
  const result=await s.mutate("voidInvoiceBatch",{reason:"批次更正",invoices:JSON.stringify([{id:"quarter-test-plan-member",amount:1500},{id:"quarter-test-plan-admin",amount:1500}])});
  assert.equal(result.results.filter(entry=>entry.success).length,1);
@@ -140,7 +140,7 @@ test("bulk void reports per-item failures and refuses paid items", async () => {
  assert.equal(s.db.data("invoices/quarter-test-plan-admin").status,"REPORTED");
 });
 test("invoice management requires administrator and rejects ledger entries", async () => {
- const s=setup(); await s.draft(); await s.confirm(); await s.bill();
+ const s=setup(); await s.confirm(); await s.bill();
  for (const action of ["voidInvoice","reissueInvoice","refundInvoice","rejectPaymentReport","voidInvoiceBatch"]) await assert.rejects(s.mutate(action,managementInput(s),member),/只有幹部/);
  s.db.seed("invoices/credit-test",{type:"CREDIT",status:"CONFIRMED",amount:-100,memberId:"member"});
  await assert.rejects(s.mutate("voidInvoice",managementInput(s,"credit-test")),/調整紀錄/);
@@ -169,7 +169,7 @@ test("period filter keeps full quarterly bill in its own period and can identify
 test("administrator can report and confirm their own membership payment", async () => {
   const s = setup();
   s.db.seed("members/admin", { displayName: "社長", membershipStatus: "MEMBER", role: "ADMIN", creditBalance: 0 });
-  await s.draft(); await s.confirm(); await s.bill();
+  await s.confirm(); await s.bill();
   await s.mutate("reportPayment", { invoiceId: "quarter-test-plan-admin" }, admin);
   assert.equal(s.db.data("invoices/quarter-test-plan-admin").status, "REPORTED");
   await s.mutate("confirmPayment", { invoiceId: "quarter-test-plan-admin" }, admin);
@@ -294,11 +294,10 @@ function setup(balance = 0, fetchOfficialClosures = async () => []) {
   const rules = { label: "第一季", startDate: year + "-01-01", endDate: year + "-03-31", weekday: 5, startTime: "19:00", endTime: "21:00", courts: "A 場", regularCapacity: 10, standbyCapacity: 4, excludedDates: [] };
   const activities = planning.suggestActivities(rules).slice(0, 10);
   const mutate = (action, input = {}, actor = admin) => backend.mutate(action, input, actor);
-  const draft = () => mutate("saveQuarterDraft", { planId: "test-plan", revision: "0", draft: JSON.stringify({ rules, activities }) });
-  const confirm = () => mutate("confirmQuarterPlan", { planId: "test-plan", revision: "1" });
+  const confirm = (schedule = { rules, activities }, planId = "test-plan", actor = admin) => mutate("confirmQuarterPlan", { planId, schedule: JSON.stringify(schedule) }, actor);
   const bill = () => mutate("createQuarterlyInvoices", { planId: "test-plan", dueDate: year + "-01-15" });
   const invoicePath = "invoices/quarter-test-plan-member";
-  return { db, mutate, rules, activities, draft, confirm, bill, invoicePath };
+  return { db, mutate, rules, activities, confirm, bill, invoicePath };
 }
 
 test("suggestions follow the selected weekday, including weekends, and honor explicit exclusions", () => {
@@ -307,14 +306,14 @@ test("suggestions follow the selected weekday, including weekends, and honor exp
   assert.ok(suggestions.every((entry) => new Date(entry.date).getUTCDay() === 5));
   assert.equal(planning.suggestActivities({ ...rules, excludedDates: [suggestions[0].date] }).length, suggestions.length - 1);
   for (const weekday of [0, 6]) {
-    // Old drafts can still contain the retired flag.
+    // Legacy rules can still contain the retired flag.
     const weekendSuggestions = planning.suggestActivities({ ...rules, weekday, excludeWeekends: true });
     assert.ok(weekendSuggestions.length > 0);
     assert.ok(weekendSuggestions.every((entry) => new Date(entry.date).getUTCDay() === weekday));
   }
-  assert.throws(() => planning.validateQuarterDraft(rules, [suggestions[0], suggestions[0]]), /重複/);
+  assert.throws(() => planning.validateQuarterSchedule(rules, [suggestions[0], suggestions[0]]), /重複/);
   assert.equal(planning.validCalendarDate("2027-02-30"), false);
-  assert.throws(() => planning.validateQuarterDraft(rules, [{ ...suggestions[0], date: "2027-02-30" }]));
+  assert.throws(() => planning.validateQuarterSchedule(rules, [{ ...suggestions[0], date: "2027-02-30" }]));
 });
 test("unpaid reduction preserves original values and returns excess previously applied credit", () => {
   const original = { grossAmount: 1500, creditApplied: 1450, amount: 50 };
@@ -322,22 +321,49 @@ test("unpaid reduction preserves original values and returns excess previously a
   assert.deepEqual(result, { adjustedGrossAmount: 1350, adjustedCreditApplied: 1350, adjustedAmount: 0, restoredCredit: 100 });
   assert.equal(original.grossAmount, 1500);
 });
-test("draft has no events; revision conflicts rejected; confirmation is idempotent", async () => {
-  const s = setup(); await s.draft();
+test("direct confirmation publishes one schedule and accepts an equivalent retry", async () => {
+  const s = setup();
+  assert.equal(s.db.entries("quarterPlans/").length, 0);
   assert.equal(s.db.entries("events/").length, 0);
-  await assert.rejects(s.mutate("saveQuarterDraft", { planId: "test-plan", revision: "0", draft: JSON.stringify({ rules: s.rules, activities: s.activities }) }), /其他幹部/);
-  await s.confirm(); await s.confirm();
+  const confirmed = await s.confirm();
+  const after = s.db.entries("");
+  assert.deepEqual(confirmed, { planId: "test-plan", eventCount: 10, totalAmount: 1500 });
+  assert.deepEqual(await s.confirm({ activities: s.activities.toReversed(), rules: s.rules }), confirmed);
+  await assert.rejects(s.confirm({ rules: s.rules, activities: s.activities.slice(1) }));
+  assert.deepEqual(s.db.entries(""), after);
+  assert.equal(s.db.data("quarterPlans/test-plan").status, "CONFIRMED");
   assert.equal(s.db.entries("events/").filter(([key]) => key.split("/").length === 2).length, 10);
   assert.equal(s.db.data("billingPeriods/quarter-test-plan").eventCount, 10);
   assert.equal(s.db.data("billingPeriods/quarter-test-plan").grossAmount, 1500);
 });
-test("confirmation rechecks saved activities for national holidays and New Taipei closures", async () => {
-  let officialDates = [];
+test("legacy drafts cannot be published and the draft save action no longer exists", async () => {
+  const s = setup();
+  s.db.seed("quarterPlans/old-draft", { id: "old-draft", ...s.rules, activities: s.activities, status: "DRAFT", revision: 1 });
+  const before = s.db.entries("");
+  await assert.rejects(s.confirm({ rules: s.rules, activities: s.activities }, "old-draft"));
+  await assert.rejects(s.mutate("saveQuarterDraft", { planId: "new-draft", revision: "0", draft: JSON.stringify({ rules: s.rules, activities: s.activities }) }), /不支援/);
+  assert.deepEqual(s.db.entries(""), before);
+});
+test("direct confirmation rejects missing or invalid input without official lookup or writes", async () => {
+  let checks = 0;
+  const s = setup(0, async () => { checks++; return []; });
+  const schedule = JSON.stringify({ rules: s.rules, activities: s.activities });
+  const before = s.db.entries("");
+  for (const payload of [
+    { planId: "test-plan" },
+    { planId: "bad/id", schedule },
+    { planId: "test-plan", schedule: "{" },
+    { planId: "test-plan", schedule: JSON.stringify({ rules: s.rules, activities: [] }) },
+  ]) {
+    await assert.rejects(s.mutate("confirmQuarterPlan", payload));
+  }
+  assert.equal(checks, 0);
+  assert.deepEqual(s.db.entries(""), before);
+});
+test("confirmation checks the proposed activities for national holidays and New Taipei closures", async () => {
   const calls = [];
   const s = setup(0, async (...range) => { calls.push(range); return officialDates; });
-  await s.draft();
-  assert.equal(calls.length, 0);
-  officialDates = [
+  const officialDates = [
     { date: s.activities[0].date, name: "國定假日", kind: "holiday" },
     { date: s.activities[2].date, name: "新北市停班停課", kind: "closure" },
   ];
@@ -350,7 +376,7 @@ test("confirmation rechecks saved activities for national holidays and New Taipe
   assert.deepEqual(calls, [[s.rules.startDate, s.rules.endDate]]);
   assert.deepEqual(s.db.entries(""), before);
 });
-test("feed failure keeps a draft intact and an already confirmed retry avoids the feed", async () => {
+test("an official feed failure writes nothing and a confirmed retry avoids the feed", async () => {
   let available = false;
   let checks = 0;
   const s = setup(0, async () => {
@@ -358,7 +384,6 @@ test("feed failure keeps a draft intact and an already confirmed retry avoids th
     if (!available) throw new Error("官方行事曆暫時無法讀取");
     return [];
   });
-  await s.draft();
   const before = s.db.entries("");
   await assert.rejects(s.confirm(), /官方行事曆暫時無法讀取/);
   assert.deepEqual(s.db.entries(""), before);
@@ -368,39 +393,57 @@ test("feed failure keeps a draft intact and an already confirmed retry avoids th
   assert.deepEqual(await s.confirm(), confirmed);
   assert.equal(checks, 2);
 });
-test("confirmation rechecks draft revision and administrator after loading closures", async () => {
-  const revisionRace = setup(0, async () => {
-    await revisionRace.mutate("saveQuarterDraft", { planId: "test-plan", revision: "1", draft: JSON.stringify({ rules: revisionRace.rules, activities: revisionRace.activities.slice(1) }) });
-    throw new Error("官方行事曆暫時無法讀取");
-  });
-  await revisionRace.draft();
-  await assert.rejects(revisionRace.confirm(), /草稿版本已變更/);
-  assert.equal(revisionRace.db.data("quarterPlans/test-plan").revision, 2);
-  assert.equal(revisionRace.db.entries("events/").length, 0);
-
-  const permissionRace = setup(0, async () => {
-    permissionRace.db.seed("members/admin", { role: "MEMBER" });
+test("an overlapping retry returns a concurrent confirmation even if its own calendar read fails", async () => {
+  const enteredCalendar = Promise.withResolvers();
+  const calendar = Promise.withResolvers();
+  let checks = 0;
+  const s = setup(0, async () => {
+    checks++;
+    if (checks === 1) {
+      enteredCalendar.resolve();
+      return calendar.promise;
+    }
     return [];
   });
-  await permissionRace.draft();
-  await assert.rejects(permissionRace.confirm(), /幹部權限已變更/);
-  assert.equal(permissionRace.db.data("quarterPlans/test-plan").status, "DRAFT");
-  assert.equal(permissionRace.db.entries("events/").length, 0);
+  const first = s.confirm();
+  try {
+    await Promise.race([enteredCalendar.promise, first]);
+    assert.equal(checks, 1);
+    const confirmed = await s.confirm();
+    const after = s.db.entries("");
+    calendar.reject(new Error("官方行事曆暫時無法讀取"));
+    assert.deepEqual(await first, confirmed);
+    assert.deepEqual(s.db.entries(""), after);
+  } finally {
+    calendar.resolve([]);
+    await first.catch(() => {});
+  }
+});
+test("confirmation rechecks administrator permissions after loading closures", async () => {
+  const s = setup(0, async () => {
+    s.db.seed("members/admin", { ...s.db.data("members/admin"), role: "MEMBER" });
+    return [];
+  });
+  const otherRecords = () => s.db.entries("").filter(([key]) => key !== "members/admin");
+  const before = otherRecords();
+  await assert.rejects(s.confirm(), /幹部權限已變更/);
+  assert.equal(s.db.data("members/admin").role, "MEMBER");
+  assert.deepEqual(otherRecords(), before);
 });
 test("date conflict rolls back the entire quarter confirmation", async () => {
-  const s = setup(); await s.draft();
-  s.db.seed("eventDates/" + s.activities[5].date, { eventId: "existing" });
-  await assert.rejects(s.confirm(), /已有活動/);
-  assert.equal(s.db.entries("events/").length, 0);
-  assert.equal(s.db.data("quarterPlans/test-plan").status, "DRAFT");
-  assert.equal(s.db.entries("billingPeriods/").length, 0);
-});
-test("non-admin cannot save, confirm, or generate invoices", async () => {
   const s = setup();
-  for (const action of ["saveQuarterDraft", "confirmQuarterPlan", "createQuarterlyInvoices"]) await assert.rejects(s.mutate(action, {}, member), /只有幹部/);
+  s.db.seed("eventDates/" + s.activities[5].date, { eventId: "existing" });
+  const before = s.db.entries("");
+  await assert.rejects(s.confirm(), /已有活動/);
+  assert.deepEqual(s.db.entries(""), before);
+});
+test("non-admin cannot confirm a quarter or generate invoices", async () => {
+  const s = setup();
+  await assert.rejects(s.confirm(undefined, undefined, member), /只有幹部/);
+  await assert.rejects(s.mutate("createQuarterlyInvoices", {}, member), /只有幹部/);
 });
 test("cancel before billing preserves ten-event baseline and adds visible reduction; no duplicate bills", async () => {
-  const s = setup(); await s.draft(); await s.confirm();
+  const s = setup(); await s.confirm();
   await s.mutate("cancelEvent", { eventId: "quarter-test-plan-0" });
   await s.bill();
   const invoice = s.db.data(s.invoicePath);
@@ -413,7 +456,7 @@ test("cancel before billing preserves ten-event baseline and adds visible reduct
   await assert.rejects(s.bill(), /已經建立/);
 });
 test("cancel unpaid bill records delta, preserves baseline and is idempotent", async () => {
-  const s = setup(1450); await s.draft(); await s.confirm(); await s.bill();
+  const s = setup(1450); await s.confirm(); await s.bill();
   await s.mutate("cancelEvent", { eventId: "quarter-test-plan-0" });
   await s.mutate("cancelEvent", { eventId: "quarter-test-plan-0" });
   const invoice = s.db.data(s.invoicePath);
@@ -424,7 +467,7 @@ test("cancel unpaid bill records delta, preserves baseline and is idempotent", a
   assert.equal(s.db.data("members/member").creditBalance, 100);
 });
 test("reported transfer cancellation does not release credit until administrator confirms; repeat confirmation does not refund twice", async () => {
-  const s = setup(); await s.draft(); await s.confirm(); await s.bill();
+  const s = setup(); await s.confirm(); await s.bill();
   await s.mutate("reportPayment", { invoiceId: "quarter-test-plan-member" }, member);
   await s.mutate("cancelEvent", { eventId: "quarter-test-plan-0" });
   assert.equal(s.db.data("members/member").creditBalance, 0);
@@ -435,7 +478,7 @@ test("reported transfer cancellation does not release credit until administrator
   assert.equal(s.db.data(s.invoicePath).eventIds.length, 10);
 });
 test("confirmed payment cancellation credits account and keeps paid invoice immutable", async () => {
-  const s = setup(); await s.draft(); await s.confirm(); await s.bill();
+  const s = setup(); await s.confirm(); await s.bill();
   await s.mutate("confirmPayment", { invoiceId: "quarter-test-plan-member" });
   await s.mutate("cancelEvent", { eventId: "quarter-test-plan-0" });
   assert.equal(s.db.data("members/member").creditBalance, 150);
@@ -443,13 +486,13 @@ test("confirmed payment cancellation credits account and keeps paid invoice immu
   assert.equal(s.db.data(s.invoicePath).adjustments[0].kind, "CREDIT");
 });
 test("fee changes after confirmation do not reprice the quarter", async () => {
-  const s = setup(); await s.draft(); await s.confirm();
+  const s = setup(); await s.confirm();
   s.db.seed("feeRates/future", { kind: "MEMBER_VISIT", amount: 999, effectiveFrom: new Date("2020-01-01") });
   await s.bill();
   assert.equal(s.db.data(s.invoicePath).grossAmount, 1500);
 });
 test("extra activity creates separate invoice and never increases quarterly baseline", async () => {
-  const s = setup(); await s.draft(); await s.confirm(); await s.bill();
+  const s = setup(); await s.confirm(); await s.bill();
   const date = s.rules.endDate;
   await s.mutate("createEvent", { startsAt: date + "T19:00:00+08:00", endsAt: date + "T21:00:00+08:00", courts: "B", regularCapacity: "10", standbyCapacity: "4", memberBilling: "EXTRA", billingReason: "加租場地" });
   assert.equal(s.db.data(s.invoicePath).eventIds.length, 10);
@@ -502,7 +545,7 @@ test("legacy president cannot exit but same-name ordinary member can request exi
 });
 test("presidency transfer changes both roles atomically and preserves account, billing and activity data", async () => {
   const s = presidentSetup();
-  await s.draft(); await s.confirm(); await s.bill();
+  await s.confirm(); await s.bill();
   const eventsBefore = s.db.entries("events/");
   const invoicesBefore = s.db.entries("invoices/");
   const adminBefore = s.db.data("members/admin");
@@ -539,7 +582,7 @@ test("former president cannot reuse a stale admin session or repeat a transfer",
   const s = presidentSetup();
   await s.mutate("transferPresident", { memberId: "member", confirmed: "true" });
   const after = s.db.entries("");
-  for (const action of ["transferPresident", "updateMember", "reviewMembershipRequest", "setFeeRates", "saveQuarterDraft", "confirmPayment"]) {
+  for (const action of ["transferPresident", "updateMember", "reviewMembershipRequest", "setFeeRates", "confirmQuarterPlan", "confirmPayment"]) {
     await assert.rejects(s.mutate(action, { memberId: "member", confirmed: "true" }), /幹部|權限|社長/);
   }
   assert.deepEqual(s.db.entries(""), after);

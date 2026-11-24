@@ -476,6 +476,7 @@ select {
   align-self: flex-start;
   flex: 0 0 232px;
   flex-direction: column;
+  min-width: 0;
   height: 100vh;
   padding: 25px 16px 16px;
   background: #143c3b;
@@ -512,21 +513,20 @@ select {
 }
 .sidebar.collapsed .brand span,
 .sidebar.collapsed nav button span,
-.sidebar.collapsed .profile span,
-.sidebar.collapsed .profile button {
+.sidebar.collapsed .profile-copy {
   display: none;
 }
 .sidebar.collapsed nav button {
   justify-content: center;
   gap: 0;
 }
-.sidebar.collapsed nav i {
-  width: auto;
-}
 .sidebar.collapsed .profile {
   justify-content: center;
   padding-right: 0;
   padding-left: 0;
+}
+.sidebar.collapsed .profile-link {
+  justify-content: center;
 }
 .brand {
   display: flex;
@@ -593,31 +593,48 @@ select {
   background: #2a5955;
   color: #fff;
 }
-.sidebar nav i {
-  width: 17px;
+.sidebar .nav-icon {
+  flex-shrink: 0;
   color: var(--lime);
-  font-style: normal;
-  font-size: 19px;
-  text-align: center;
 }
 .profile {
   display: flex;
-  gap: 9px;
   align-items: center;
   margin-top: auto;
-  padding: 15px 8px 0;
+  padding: 12px 0 0;
   border-top: 1px solid #38635e;
 }
-.profile > span {
+.profile-link {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 8px;
+  border: 0;
+  border-radius: 10px;
+  background: #1e4846;
+  color: inherit;
+  text-align: left;
+}
+.profile-link:hover,
+.profile-link[aria-current="page"] {
+  background: #2a5955;
+  color: #fff;
+}
+.profile-link:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 2px;
+}
+.profile-copy {
   min-width: 0;
 }
-.profile strong,
-.profile .profile-account-name {
+.profile strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.profile > b {
+.profile-avatar {
   flex: 0 0 31px;
   display: flex;
   align-items: center;
@@ -636,13 +653,6 @@ select {
 .profile small {
   margin-top: 3px;
   font-size: 11px;
-}
-.profile button {
-  margin-left: auto;
-  border: 0;
-  background: none;
-  color: #c6dfd9;
-  font-size: 20px;
 }
 .app > main {
   width: min(100%, 1500px);
@@ -842,13 +852,18 @@ select {
 }
 .next-event-card {
   display: flex;
-  gap: 28px;
-  align-items: center;
-  min-height: 184px;
+  flex-direction: column;
+  gap: 18px;
   padding: 30px;
   border-radius: 20px;
   background: linear-gradient(120deg, #125e58, #174b49);
   color: #fff;
+}
+.next-event-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 28px;
 }
 .overview-date {
   display: flex;
@@ -877,10 +892,12 @@ select {
   font-size: 11px;
 }
 .next-event-detail {
-  flex: 1;
+  flex: 1 1 150px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .next-event-detail h3 {
-  margin: 10px 0 4px;
+  margin: 0 0 4px;
   font-size: 28px;
   letter-spacing: -.02em;
 }
@@ -917,12 +934,50 @@ select {
   font-size: 14px;
   font-weight: 600;
 }
-.overview-lower {
+.next-event-footer,
+.next-event-status,
+.next-event-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 18px;
+  align-items: center;
+  gap: 10px;
 }
-.overview-card,
+.next-event-footer {
+  justify-content: space-between;
+  gap: 12px 20px;
+  padding-top: 16px;
+  border-top: 1px solid #ffffff30;
+}
+.next-event-status {
+  color: #d3e4df;
+  font-size: 13px;
+}
+.next-event-actions > button {
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.next-event-actions > button:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 2px;
+}
+.next-event-actions > .primary {
+  background: var(--lime);
+  color: var(--green);
+}
+.next-event-actions > .primary:hover {
+  background: #c9e961;
+}
+.next-event-actions > .secondary {
+  border: 1px solid #ffffff70;
+  background: transparent;
+  color: #fff;
+}
+.next-event-actions > .secondary:hover {
+  background: #ffffff1a;
+}
+.payment-summary,
 .overview-empty,
 .table,
 .news-list article,
@@ -932,101 +987,41 @@ select {
   background: var(--card);
   box-shadow: 0 5px 18px #173f3706;
 }
-.overview-status {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-}
-.status-heading {
-  display: flex;
-  gap: 18px;
-  align-items: flex-start;
-  justify-content: space-between;
-}
-.overview-status p,
-.overview-card p {
-  margin: 0 0 5px;
+.payment-summary-heading p {
+  margin: 0;
   color: var(--green);
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.11em;
 }
-.overview-status h3 {
-  margin: 0 0 4px;
-  font-size: 24px;
-}
-.overview-status > span {
-  display: block;
-  max-width: 520px;
-  margin-top: 13px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.65;
-}
-.status-actions {
-  display: flex;
-  gap: 13px;
-  align-items: center;
-  margin-top: auto;
-  padding-top: 22px;
-}
-.overview-card {
-  flex: 1 1 260px;
-  min-height: 190px;
-  padding: 22px 24px;
-  border-radius: 18px;
-}
 .payment-summary {
   display: flex;
-  flex-direction: column;
-}
-.payment-summary > div {
-  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 12px 24px;
+  padding: 16px 24px;
+  border-radius: 18px;
+}
+.payment-summary-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.payment-summary-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 .payment-summary strong {
   display: block;
-  margin: 9px 0 3px;
-  font-size: 25px;
+  margin: 5px 0 2px;
+  font-size: 20px;
 }
-.payment-summary > span {
+.payment-summary-content > span {
   display: block;
-  margin-bottom: 8px;
   color: var(--muted);
   font-size: 12px;
-}
-.payment-summary > button {
-  align-self: flex-start;
-  margin-top: auto;
-  padding-top: 12px;
-}
-.capacity-note {
-  display: flex;
-  gap: 13px;
-  align-items: center;
-  background: #fbfdf1;
-}
-.capacity-note > b {
-  display: flex;
-  flex: 0 0 38px;
-  align-items: center;
-  justify-content: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 11px;
-  background: var(--lime);
-  color: var(--green);
-}
-.capacity-note h3 {
-  margin: 0 0 4px;
-  font-size: 15px;
-}
-.capacity-note span {
-  display: block;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
 }
 .overview-empty {
   display: flex;
@@ -1147,7 +1142,6 @@ dialog.event-dialog {
   font-size: 13px;
   overflow-wrap: anywhere;
 }
-.event-dialog-status,
 .event-dialog-actions {
   display: flex;
   align-items: flex-start;
@@ -1155,10 +1149,61 @@ dialog.event-dialog {
   gap: 10px;
 }
 .event-dialog-status {
-  padding: 14px 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 10px 0;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   font-size: 13px;
+}
+.event-status-label,
+.event-status-toggle,
+.event-status-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.event-status-label {
+  flex-wrap: wrap;
+  min-height: 32px;
+}
+.event-status-toggle {
+  min-height: 32px;
+  padding: 0 2px 0 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--green);
+  white-space: nowrap;
+}
+.event-status-toggle:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+.event-status-chevron {
+  width: 6px;
+  height: 6px;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: translateY(-1px) rotate(45deg);
+}
+.event-status-toggle[aria-expanded="true"] .event-status-chevron {
+  transform: translateY(1px) rotate(225deg);
+}
+.event-status-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-left: auto;
+}
+.event-status-actions > button {
+  min-height: 32px;
+  padding: 4px 6px;
+  border-radius: 7px;
+  font-size: 11px;
+  white-space: nowrap;
 }
 .event-dialog-roster h3 {
   margin: 20px 0 12px;
@@ -1275,6 +1320,10 @@ dialog.event-dialog {
 .calendar-controls .calendar-today {
   padding: 0 11px;
   font-size: 12px;
+}
+.calendar-controls .calendar-today:disabled {
+  color: var(--muted);
+  cursor: default;
 }
 .calendar-weekdays {
   display: flex;
@@ -1879,7 +1928,8 @@ dialog.event-dialog {
 .member-manager-modal .manager-form {
   margin-top: 18px;
 }
-.member-manager-actions {
+.member-manager-actions,
+.event-dialog-controls {
   position: absolute;
   top: 12px;
   right: 16px;
@@ -1887,7 +1937,8 @@ dialog.event-dialog {
   align-items: center;
   gap: 4px;
 }
-.member-manager-actions > .close {
+.member-manager-actions > .close,
+.event-dialog-controls > .close {
   position: static;
   display: flex;
   align-items: center;
@@ -1898,18 +1949,22 @@ dialog.event-dialog {
   border-radius: 10px;
   line-height: 1;
 }
-.member-manager-actions > .close:hover {
+.member-manager-actions > .close:hover,
+.event-dialog-controls > .close:hover {
   background: #edf4f1;
 }
 .member-manager-modal > p:first-of-type,
-.member-manager-modal > h2 {
+.member-manager-modal > h2,
+.event-dialog.has-settings > p:first-of-type,
+.event-dialog.has-settings > h2 {
   padding-right: 84px;
 }
-.member-account-menu {
+.member-account-menu,
+.event-settings {
   position: relative;
   max-width: 100%;
 }
-.member-account-menu summary,
+:is(.member-account-menu, .event-settings) summary,
 .balance-history-settings-button {
   display: flex;
   align-items: center;
@@ -1923,25 +1978,26 @@ dialog.event-dialog {
   list-style: none;
   cursor: pointer;
 }
-.member-account-menu summary:hover,
+:is(.member-account-menu, .event-settings) summary:hover,
 .balance-history-settings-button:hover:not(:disabled),
 .balance-history-settings-button[aria-expanded="true"] {
   background: #edf4f1;
   color: var(--green);
 }
-.member-account-menu summary::-webkit-details-marker {
+:is(.member-account-menu, .event-settings) summary::-webkit-details-marker {
   display: none;
 }
 
-.member-account-menu summary:focus-visible {
+:is(.member-account-menu, .event-settings) summary:focus-visible {
   outline: 2px solid var(--green);
   outline-offset: 2px;
 }
-.member-account-menu summary[aria-disabled="true"] {
+:is(.member-account-menu, .event-settings) summary[aria-disabled="true"] {
   opacity: .6;
   cursor: wait;
 }
 .member-account-menu-panel,
+.event-settings-panel,
 .balance-history-settings-panel {
   position: absolute;
   z-index: 1;
@@ -1958,6 +2014,7 @@ dialog.event-dialog {
   box-shadow: 0 12px 28px #173f3720;
 }
 .member-account-menu-panel > button,
+.event-settings-panel > button,
 .balance-history-settings-panel > button {
   min-height: 44px;
   padding: 8px;
@@ -1965,6 +2022,7 @@ dialog.event-dialog {
   text-align: left;
 }
 .member-account-menu-panel > button:hover,
+.event-settings-panel > button:hover,
 .balance-history-settings-panel > button:hover {
   background: #edf4f1;
 }
@@ -2092,7 +2150,8 @@ dialog.event-dialog {
   opacity: .6;
   cursor: wait;
 }
-.balance-history-settings-panel {
+.balance-history-settings-panel,
+.event-settings-panel {
   width: min(176px, calc(100vw - 120px));
 }
 .balance-history-actions > .close {
@@ -2597,6 +2656,7 @@ dialog.event-dialog {
 }
 .account-panels > .account-card {
   flex: 1 1 0;
+  min-width: 0;
 }
 .account-panels > .identity-card {
   flex-grow: .72;
@@ -2708,6 +2768,10 @@ dialog.event-dialog {
 .membership-card {
   display: flex;
   flex-direction: column;
+}
+.membership-card select {
+  width: 100%;
+  min-width: 0;
 }
 .membership-action {
   display: flex;
@@ -2865,21 +2929,22 @@ dialog.event-dialog {
     padding: 0 0 30px;
   }
   .brand span,
-  .profile span,
-  .profile button {
+  .profile-copy {
     display: none;
   }
   .sidebar nav button {
     justify-content: center;
     padding: 12px;
-    font-size: 0;
   }
-  .sidebar nav i {
-    font-size: 20px;
+  .sidebar nav button span {
+    display: none;
   }
   .profile {
     justify-content: center;
     padding: 14px 0 0;
+  }
+  .profile-link {
+    justify-content: center;
   }
   .app > main {
     padding: 0 25px 42px;
@@ -2890,18 +2955,21 @@ dialog.event-dialog {
   .account-panels > .account-card {
     width: 100%;
   }
-  .overview-lower {
-    flex-direction: column;
-  }
-  .overview-lower > .overview-card {
-    width: 100%;
-    min-height: 0;
-  }
   .news-layout {
     flex-direction: column;
   }
   .publish {
     order: -1;
+  }
+}
+@media (max-width: 620px) and (max-height: 360px) {
+  .notification-panel {
+    overflow-y: auto;
+  }
+  .notification-list {
+    flex-shrink: 0;
+    max-height: none;
+    overflow: visible;
   }
 }
 @media (max-width: 620px) {
@@ -2918,6 +2986,8 @@ dialog.event-dialog {
     flex-basis: calc(100% - 90px);
   }
   .app {
+    --mobile-nav-height: 64px;
+    --mobile-bell-top: calc(var(--mobile-nav-height) + 12px + env(safe-area-inset-top));
     display: block;
   }
   .sidebar,
@@ -2929,7 +2999,7 @@ dialog.event-dialog {
     align-self: auto;
     flex-direction: row;
     align-items: center;
-    height: 64px;
+    height: var(--mobile-nav-height);
     padding: 8px 12px;
   }
   .brand {
@@ -2952,7 +3022,15 @@ dialog.event-dialog {
     padding: 9px;
   }
   .profile {
-    display: none;
+    flex: 0 0 38px;
+    margin: 0 0 0 3px;
+    padding: 0;
+    border: 0;
+  }
+  .profile-link {
+    height: 38px;
+    padding: 0;
+    background: transparent;
   }
   .app > main {
     padding: 0 16px 30px;
@@ -3006,16 +3084,18 @@ dialog.event-dialog {
     flex: 1;
   }
   .notification-panel {
-    top: calc(64px + env(safe-area-inset-top));
+    --notification-panel-top: calc(var(--mobile-bell-top) + 48px);
+    top: var(--notification-panel-top);
     right: calc(16px + env(safe-area-inset-right));
     left: calc(16px + env(safe-area-inset-left));
     width: auto;
+    max-height: min(560px, calc(100dvh - var(--notification-panel-top) - max(16px, env(safe-area-inset-bottom))));
   }
   .header-actions {
     padding-right: 46px;
   }
   .bell {
-    top: calc(14px + env(safe-area-inset-top));
+    top: var(--mobile-bell-top);
     right: calc(16px + env(safe-area-inset-right));
   }
   .overview-heading {
@@ -3025,9 +3105,11 @@ dialog.event-dialog {
     font-size: 25px;
   }
   .next-event-card {
-    flex-wrap: wrap;
-    gap: 14px;
+    gap: 16px;
     padding: 20px;
+  }
+  .next-event-main {
+    gap: 14px;
   }
   .overview-date {
     flex-basis: 72px;
@@ -3053,14 +3135,8 @@ dialog.event-dialog {
   .attendance-summary strong {
     font-size: 24px;
   }
-  .overview-status h3 {
-    font-size: 20px;
-  }
-  .status-actions {
-    flex-wrap: wrap;
-  }
-  .overview-card {
-    padding: 20px;
+  .payment-summary {
+    padding: 16px 20px;
   }
   .activity-calendar {
     padding: 15px 11px;

@@ -1,4 +1,4 @@
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { isClubPresident, PRESIDENT_EXIT_MESSAGE } from "@/lib/club-roles";
 import {
   FieldValue,
@@ -15,7 +15,7 @@ import { memberAccountName, readMemberName, reserveMemberName, validatedAccountN
 import { createClaimCodeRecord, type Viewer } from "@/lib/device-auth";
 import { manageInvoice, voidInvoiceBatch } from "@/lib/invoice-management";
 import { fetchOfficialClosures } from "@/lib/official-closures";
-import { validateQuarterDraft, effectiveInvoiceAmounts, reduceUnpaidInvoice, type QuarterRules, type SuggestedActivity } from "@/lib/quarter-planning";
+import { validateQuarterSchedule, effectiveInvoiceAmounts, reduceUnpaidInvoice, type QuarterRules, type SuggestedActivity } from "@/lib/quarter-planning";
 
 type StoredDate = Timestamp | Date | string | null | undefined;
 
@@ -414,7 +414,7 @@ export async function readState(viewer: Viewer | null = null) {
     targetedNotificationQuery ? targetedNotificationQuery.get() : Promise.resolve(null),
     broadcastNotificationQuery ? broadcastNotificationQuery.get() : Promise.resolve(null),
     notificationReadQuery ? notificationReadQuery.get() : Promise.resolve(null),
-    isAdmin ? db.collection("quarterPlans").get() : Promise.resolve(null),
+    isAdmin ? db.collection("quarterPlans").where("status", "==", "CONFIRMED").get() : Promise.resolve(null),
     viewer ? db.collection("billingPeriods").get() : Promise.resolve(null),
     activeFee(db, "MEMBER_VISIT", new Date()),
     activeFee(db, "GUEST_VISIT", new Date()),
@@ -1014,10 +1014,11 @@ async function cancelEvent(eventId: string, actor: Viewer) {
 }
 
 
-function parseQuarterDraft(input: Record<string, string>) {
-  let parsed: { rules: QuarterRules; activities: SuggestedActivity[] };
-  try { parsed = JSON.parse(input.draft || ""); } catch { throw new Error("季度草稿格式不正確"); }
-  validateQuarterDraft(parsed.rules, parsed.activities);
+function parseQuarterSchedule(input: string) {
+  let parsed: { rules: QuarterRules; activities: SuggestedActivity[] } | null;
+  try { parsed = JSON.parse(input); } catch { throw new Error("季度規劃格式不正確"); }
+  if (!parsed) throw new Error("季度規劃格式不正確");
+  validateQuarterSchedule(parsed.rules, parsed.activities);
   const rules: QuarterRules = {
     label: parsed.rules.label.trim(), startDate: parsed.rules.startDate, endDate: parsed.rules.endDate,
     weekday: parsed.rules.weekday, startTime: parsed.rules.startTime, endTime: parsed.rules.endTime,
@@ -1031,53 +1032,34 @@ function parseQuarterDraft(input: Record<string, string>) {
   return { rules, activities };
 }
 
-async function saveQuarterDraft(input: Record<string, string>, actor: Viewer) {
-  const values = parseQuarterDraft(input);
-  const db = getAdminFirestore();
-  const id = input.planId || randomUUID();
-  if (!/^[a-zA-Z0-9-]{1,100}$/.test(id)) throw new Error("季度識別碼不正確");
-  const ref = db.collection("quarterPlans").doc(id);
-  return db.runTransaction(async (transaction) => {
-    const existing = await transaction.get(ref);
-    if (existing.exists && existing.data()?.status !== "DRAFT") throw new Error("已確認季度不能覆寫，請使用活動或帳單調整");
-    if (existing.exists && Number(input.revision) !== Number(existing.data()?.revision)) throw new Error("草稿已由其他幹部修改，請關閉視窗並重新開啟");
-    const revision = Number(existing.data()?.revision ?? 0) + 1;
-    transaction.set(ref, { id, ...values.rules, activities: values.activities, status: "DRAFT", revision, updatedBy: actor.id, updatedAt: new Date(), ...(!existing.exists ? { createdAt: new Date() } : {}) }, { merge: true });
-    return { planId: id, revision };
-  });
-}
-
-function quarterConfirmation(snapshot: DocumentSnapshot, revision: string) {
+function existingQuarterConfirmation(snapshot: DocumentSnapshot, confirmationKey: string) {
   const plan = snapshot.data();
-  if (!plan) throw new Error("找不到季度草稿");
-  if (plan.status === "CONFIRMED") {
-    return { confirmed: { eventCount: Number(plan.eventCount), totalAmount: Number(plan.grossAmount), planId: snapshot.id } };
+  if (!plan) return null;
+  if (plan.status !== "CONFIRMED" || plan.confirmationKey !== confirmationKey) {
+    throw new Error("此季度識別碼已使用，請重新整理頁面後再確認");
   }
-  if (Number(revision) !== Number(plan.revision)) throw new Error("草稿版本已變更，請重新檢查場次");
-  validateQuarterDraft(plan as QuarterRules, plan.activities);
-  const activities = plan.activities as SuggestedActivity[];
-  if (!activities.length) throw new Error("至少保留一場活動才能確認季度");
-  const now = new Date();
-  if (activities.some((entry) => new Date(entry.date + "T" + entry.startTime + ":00+08:00") <= now)) throw new Error("建議場次包含已開始的日期，請先調整");
-  return { plan, activities, now };
+  return { eventCount: Number(plan.eventCount), totalAmount: Number(plan.grossAmount), planId: snapshot.id };
 }
 
 async function confirmQuarterPlan(input: Record<string, string>, actor: Viewer) {
+  if (!/^[a-zA-Z0-9-]{1,100}$/.test(input.planId ?? "")) throw new Error("季度識別碼不正確");
+  const { rules: plan, activities } = parseQuarterSchedule(input.schedule ?? "");
+  const confirmationKey = createHash("sha256").update(JSON.stringify({ plan, activities })).digest("hex");
   const db = getAdminFirestore();
-  if (!/^[a-zA-Z0-9-]{1,100}$/.test(input.planId ?? "")) throw new Error("請先儲存季度草稿");
   const planRef = db.collection("quarterPlans").doc(input.planId);
-  const preview = quarterConfirmation(await planRef.get(), input.revision);
-  if (preview.confirmed) return preview.confirmed;
-  const calendar = await fetchOfficialClosures(preview.plan.startDate, preview.plan.endDate).then(
+  const confirmed = existingQuarterConfirmation(await planRef.get(), confirmationKey);
+  if (confirmed) return confirmed;
+  const calendar = await fetchOfficialClosures(plan.startDate, plan.endDate).then(
     (closures) => ({ closedDates: new Set(closures.map((entry) => entry.date)) }),
     (error: unknown) => ({ error }),
   );
   return db.runTransaction(async (transaction) => {
-    const draft = quarterConfirmation(await transaction.get(planRef), input.revision);
-    if (draft.confirmed) return draft.confirmed;
-    const { plan, activities, now } = draft;
-    const manager = await transaction.get(db.collection("members").doc(actor.id));
+    const [existingPlan, manager] = await transaction.getAll(planRef, db.collection("members").doc(actor.id));
     if (manager.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
+    const confirmed = existingQuarterConfirmation(existingPlan, confirmationKey);
+    if (confirmed) return confirmed;
+    const now = new Date();
+    if (activities.some((entry) => new Date(entry.date + "T" + entry.startTime + ":00+08:00") <= now)) throw new Error("建議場次包含已開始的日期，請先調整");
     if ("error" in calendar) throw calendar.error;
     const conflictsWithCalendar = activities.filter((entry) => calendar.closedDates.has(entry.date));
     if (conflictsWithCalendar.length) throw new Error("以下場次遇國定假日或新北市停班停課，請先調整：" + conflictsWithCalendar.map((entry) => entry.date).join("、"));
@@ -1111,7 +1093,7 @@ async function confirmQuarterPlan(input: Record<string, string>, actor: Viewer) 
     const grossAmount = eventAmounts.reduce((sum, amount) => sum + amount, 0);
     const periodId = "quarter-" + planRef.id;
     transaction.create(db.collection("billingPeriods").doc(periodId), { id: periodId, planId: planRef.id, type: "QUARTERLY_MEMBER", label: plan.label, startDate: plan.startDate, endDate: plan.endDate, eventIds, eventAmounts, eventSnapshots: snapshots, eventCount: eventIds.length, grossAmount, status: "PLANNED", confirmedBy: actor.id, confirmedAt: now, createdAt: now, updatedAt: now });
-    transaction.update(planRef, { status: "CONFIRMED", eventIds, eventAmounts, eventCount: eventIds.length, grossAmount, periodId, confirmedBy: actor.id, confirmedAt: now, updatedAt: now });
+    transaction.create(planRef, { id: planRef.id, ...plan, activities, status: "CONFIRMED", confirmationKey, eventIds, eventAmounts, eventCount: eventIds.length, grossAmount, periodId, confirmedBy: actor.id, confirmedAt: now, createdAt: now, updatedAt: now });
     transaction.create(db.collection("notifications").doc(), notificationData({ title: "季度活動已確認", message: plan.label + " 共 " + eventIds.length + " 場；社員已預設參加，季度計費基準已保存", type: "EVENT", tab: "活動" }));
     return { planId: planRef.id, eventCount: eventIds.length, totalAmount: grossAmount };
   });
@@ -1753,7 +1735,6 @@ export async function mutate(action: string, input: Record<string, string>, acto
   if (action === "createEvent") return createEvent(input, actor);
   if (action === "updateEvent") return updateEvent(input, actor);
   if (action === "cancelEvent") return cancelEvent(input.eventId, actor);
-  if (action === "saveQuarterDraft") return saveQuarterDraft(input, actor);
   if (action === "confirmQuarterPlan") return confirmQuarterPlan(input, actor);
   if (action === "promoteStandby") return promoteStandby(input.eventId);
   throw new Error("不支援的操作");

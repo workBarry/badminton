@@ -13,8 +13,7 @@ export type QuarterRules = {
 export type SuggestedActivity = { date: string; startTime: string; endTime: string; courts: string; regularCapacity: number; standbyCapacity: number };
 export type QuarterPlan = QuarterRules & {
   id: string;
-  revision: number;
-  status: "DRAFT" | "CONFIRMED";
+  status: "CONFIRMED";
   activities: SuggestedActivity[];
   eventIds?: string[];
   eventAmounts?: number[];
@@ -59,9 +58,10 @@ export function suggestActivities(rules: QuarterRules): SuggestedActivity[] {
   }
   return activities;
 }
-export function validateQuarterDraft(rules: QuarterRules, activities: SuggestedActivity[]) {
+export function validateQuarterSchedule(rules: QuarterRules, activities: SuggestedActivity[]) {
   validateQuarterRules(rules);
   if (!Array.isArray(activities) || activities.length > 32) throw new Error("每季最多 32 場活動");
+  if (!activities.length) throw new Error("至少保留一場活動才能確認季度");
   const dates = new Set<string>();
   for (const activity of activities) {
     validateActivity(activity, rules);

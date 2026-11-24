@@ -1,5 +1,5 @@
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return Response.json({ error: "已改用季度草稿確認流程，自動建立正式活動已停用" }, { status: 410 });
+  return Response.json({ error: "請在活動管理的季度規劃確認建立活動" }, { status: 410 });
 }
