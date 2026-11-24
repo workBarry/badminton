@@ -147,6 +147,14 @@ PASSKEY_ORIGIN=https://badminton.example.com
 
 `PASSKEY_RP_ID` 只能是網域名稱，不包含 `https://`；`PASSKEY_ORIGIN` 則包含協定且不可有結尾斜線。本機 `http://localhost:3000` 開發可以不設定，系統會依目前網址推導。
 
+### Android App 的 Passkey
+
+Android App 使用 Credential Manager 顯示手機驗證。正式環境的 `PASSKEY_ORIGIN` 應固定為 App 載入的 HTTPS 網址，且主機名稱須與 `PASSKEY_RP_ID` 完全相同。新增 `PASSKEY_ANDROID_SHA256_FINGERPRINTS`，填入實際發佈 APK 的簽章憑證 SHA-256 指紋（32 組冒號分隔的十六進位值，多張憑證以逗號分隔）。可用 `apksigner verify --print-certs` 查看 APK 的公開簽章指紋。若透過 Google Play 發佈，使用 Play App Signing 的應用程式簽章，而非上傳金鑰。
+
+部署後，該網域的 `/.well-known/assetlinks.json` 應回傳 HTTP 200 及 JSON，列出 `com.badminton.app` 和已設定的指紋。網站與 Android 來源共用同一組 RP ID。使用者可先在 App 的「個人資訊 → 帳號安全」建立 Passkey，重裝後從登入頁選「使用 Passkey 登入」。驗證成功時，App 會為同一帳號建立新的登入 Cookie。
+
+測試環境可使用專用 HTTPS 網域及測試簽章來驗證整個流程。正式環境只設定實際發佈所使用的簽章。
+
 ## Deploy on Vercel
 
 將 Firebase 與 Passkey 環境變數加入需要的 Vercel 環境，設定後重新部署。Production 與 Preview 的私鑰請標記為 Sensitive。

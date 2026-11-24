@@ -206,14 +206,20 @@ function setup() {
         webauthnCalls.push({ operation: "authenticate", options });
         return { challenge: "test-authentication-challenge" };
       },
-      verifyRegistrationResponse: async () => ({
-        verified: true,
-        registrationInfo: { credential: { id: "test-passkey", publicKey: new Uint8Array([1, 2, 3]), counter: 0 }, credentialBackedUp: false, credentialDeviceType: "singleDevice" },
-      }),
-      verifyAuthenticationResponse: async ({ credential }) => ({
-        verified: true,
-        authenticationInfo: { newCounter: credential.counter + 1, credentialBackedUp: false, credentialDeviceType: "singleDevice" },
-      }),
+      verifyRegistrationResponse: async (options) => {
+        webauthnCalls.push({ operation: "verifyRegistration", options });
+        return {
+          verified: true,
+          registrationInfo: { credential: { id: "test-passkey", publicKey: new Uint8Array([1, 2, 3]), counter: 0 }, credentialBackedUp: false, credentialDeviceType: "singleDevice" },
+        };
+      },
+      verifyAuthenticationResponse: async (options) => {
+        webauthnCalls.push({ operation: "verifyAuthentication", options });
+        return {
+          verified: true,
+          authenticationInfo: { newCounter: options.credential.counter + 1, credentialBackedUp: false, credentialDeviceType: "singleDevice" },
+        };
+      },
     },
   };
   function loadSource(relative) {
@@ -544,6 +550,37 @@ test("passkey registration and authentication keep a stable account identity acr
   const beforeReplay = s.db.state();
   await assert.rejects(s.passkeys.verifyAuthentication(authChallenge.challengeId, { id: "test-passkey", response: {} }, relyingParty));
   assert.equal(s.db.state(), beforeReplay);
+});
+
+test("Android Passkey verification uses configured origins and restores the account without a device cookie", async () => {
+  const s = setup();
+  const account = await s.auth.createGuestDeviceAccount("Passkey Account");
+  const site = "https://badminton.example";
+  const android = "android:apk-key-hash:" + Buffer.alloc(32, 12).toString("base64url");
+  const relyingParty = { origin: site, rpID: "badminton.example", expectedOrigins: [site, android] };
+
+  const registration = await s.passkeys.registrationOptions(account.viewer, relyingParty);
+  await s.passkeys.verifyRegistration(account.viewer, registration.challengeId, { id: "test-passkey", response: {} }, relyingParty);
+  const verifyRegistration = s.webauthnCalls.at(-1);
+  assert.equal(verifyRegistration.operation, "verifyRegistration");
+  assert.deepEqual(verifyRegistration.options.expectedOrigin, [site, android]);
+  assert.equal(verifyRegistration.options.expectedRPID, relyingParty.rpID);
+  assert.equal(verifyRegistration.options.expectedChallenge, registration.options.challenge);
+  assert.equal(verifyRegistration.options.requireUserVerification, true);
+
+  const authentication = await s.passkeys.authenticationOptions(relyingParty);
+  const reply = { id: "test-passkey", response: {} };
+  const restored = await s.passkeys.verifyAuthentication(authentication.challengeId, reply, relyingParty);
+  const verifyAuthentication = s.webauthnCalls.at(-1);
+  assert.equal(verifyAuthentication.operation, "verifyAuthentication");
+  assert.deepEqual(verifyAuthentication.options.expectedOrigin, [site, android]);
+  assert.equal(verifyAuthentication.options.expectedRPID, relyingParty.rpID);
+  assert.equal(verifyAuthentication.options.expectedChallenge, authentication.options.challenge);
+  assert.equal(verifyAuthentication.options.requireUserVerification, true);
+  assert.notEqual(restored.token, account.token);
+  assert.equal(restored.viewer.id, account.viewer.id);
+  assert.equal((await s.auth.viewerForDeviceToken(restored.token)).id, account.viewer.id);
+  await assert.rejects(s.passkeys.verifyAuthentication(authentication.challengeId, reply, relyingParty), /逾時/);
 });
 
 test("name validation rejects empty, overlong, control and invisible format characters", () => {
