@@ -8,6 +8,7 @@ import {
   viewerForDeviceToken,
 } from "@/lib/device-auth";
 import { readState } from "@/lib/firestore-database";
+import { passkeyRelyingParty } from "@/lib/passkey-config";
 import {
   authenticationOptions,
   registrationOptions,
@@ -27,19 +28,6 @@ function cookieBase() {
     sameSite: "lax" as const,
     path: "/",
   };
-}
-
-function relyingParty(request: NextRequest) {
-  const requestOrigin = request.nextUrl.origin;
-  const configuredOrigin = process.env.PASSKEY_ORIGIN?.trim().replace(/\/$/, "");
-  const origin = configuredOrigin || requestOrigin;
-  if (configuredOrigin && configuredOrigin !== requestOrigin) {
-    throw new Error(`Passkey 只能在 ${configuredOrigin} 使用`);
-  }
-  const rpID = process.env.PASSKEY_RP_ID?.trim() || new URL(origin).hostname;
-  const hostname = new URL(origin).hostname;
-  if (hostname !== rpID && !hostname.endsWith(`.${rpID}`)) throw new Error("PASSKEY_RP_ID 與網站網域不相符");
-  return { rpID, origin };
 }
 
 function assertSameOrigin(request: NextRequest) {
@@ -62,7 +50,7 @@ export async function POST(request: NextRequest) {
     const currentToken = request.cookies.get(DEVICE_COOKIE)?.value;
     const viewer = await viewerForDeviceToken(currentToken);
     const challengeId = request.cookies.get(CHALLENGE_COOKIE)?.value;
-    const rp = relyingParty(request);
+    const rp = passkeyRelyingParty(request.nextUrl.origin);
 
     if (body.action === "registrationOptions") {
       if (!viewer) return NextResponse.json({ error: "請先登入再建立 Passkey" }, { status: 401 });

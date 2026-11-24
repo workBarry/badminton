@@ -11,11 +11,12 @@ import {
 import { FieldValue } from "firebase-admin/firestore";
 import { createDeviceSessionForUser, type Viewer } from "@/lib/device-auth";
 import { getAdminFirestore } from "@/lib/firebase-admin";
+import type { PasskeyRelyingParty } from "@/lib/passkey-config";
 
 const CHALLENGE_LIFETIME_MS = 5 * 60 * 1000;
 const RP_NAME = "公司羽球社";
 
-type RelyingParty = { rpID: string; origin: string };
+type RelyingParty = Pick<PasskeyRelyingParty, "rpID" | "origin"> & Partial<Pick<PasskeyRelyingParty, "expectedOrigins">>;
 type ChallengeKind = "REGISTER" | "AUTHENTICATE";
 
 function challengeExpiry(value: FirebaseFirestore.DocumentData) {
@@ -91,7 +92,7 @@ export async function verifyRegistration(
   const verification = await verifyRegistrationResponse({
     response,
     expectedChallenge: String(challenge.challenge),
-    expectedOrigin: relyingParty.origin,
+    expectedOrigin: relyingParty.expectedOrigins ?? relyingParty.origin,
     expectedRPID: relyingParty.rpID,
     requireUserVerification: true,
   });
@@ -159,7 +160,7 @@ export async function verifyAuthentication(
   const verification = await verifyAuthenticationResponse({
     response,
     expectedChallenge: String(challenge.challenge),
-    expectedOrigin: relyingParty.origin,
+    expectedOrigin: relyingParty.expectedOrigins ?? relyingParty.origin,
     expectedRPID: relyingParty.rpID,
     credential,
     requireUserVerification: true,

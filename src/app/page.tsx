@@ -1375,12 +1375,12 @@ function Login({
         <div className="login-divider"><span>或</span></div>
         <button type="button" className="passkey-button" disabled={saving} onClick={passkeyLogin}>
           <strong>使用 Passkey 登入</strong>
-          <span>Windows Hello、Face ID 或裝置 PIN</span>
+          <span>使用指紋、臉部辨識或裝置 PIN</span>
         </button>
         {saving && <LoadingScreen compact title="正在處理登入…" description="若出現裝置驗證視窗，請依提示完成。" />}
         <aside className="notice">
           <strong>測試版帳號提醒</strong>
-          <span>帳號名稱固定且不得重複（英文大小寫、全半形與多餘空白視為相同）；顯示名稱可自行修改，也可與他人相同。已有帳號請使用快速登入或取回既有帳號；未建立復原碼前，清除瀏覽器資料或更換裝置可能導致帳號無法取回。</span>
+          <span>帳號名稱固定且不得重複（英文大小寫、全半形與多餘空白視為相同）；顯示名稱可自行修改，也可與他人相同。已有帳號請使用快速登入、Passkey 或復原碼。建議先在「個人資訊 → 帳號安全」設定至少一種復原方式。</span>
         </aside>
         </section>
       </div>
@@ -1661,7 +1661,7 @@ function AccountProfile({
           <div className="security-icon" aria-hidden="true">✓</div>
           <div className="security-copy">
             <div><strong>Passkey</strong><Badge tone={viewer.hasPasskey ? "green" : "gray"}>{viewer.hasPasskey ? "已啟用" : "未設定"}</Badge></div>
-            <span>使用 Windows Hello、Face ID 或裝置 PIN 登入，不需要輸入復原碼。</span>
+              <span>可用指紋、臉部辨識或裝置 PIN 登入。重裝 App 後，只要裝置仍能取用 Passkey，就能登入同一帳號。</span>
           </div>
           <button className={viewer.hasPasskey ? "secondary" : "primary small"} disabled={passkeySaving} onClick={registerPasskey}>
             {passkeySaving ? "處理中…" : viewer.hasPasskey ? "新增另一個 Passkey" : "建立 Passkey"}
