@@ -62,7 +62,7 @@ export async function registrationOptions(viewer: Viewer, relyingParty: RelyingP
     rpName: RP_NAME,
     rpID: relyingParty.rpID,
     userID: new TextEncoder().encode(viewer.id),
-    userName: viewer.name,
+    userName: viewer.accountName,
     userDisplayName: viewer.name,
     attestationType: "none",
     excludeCredentials: credentials.docs.map((document) => ({

@@ -12,6 +12,7 @@ import {
   viewerForDeviceToken,
 } from "@/lib/device-auth";
 import { mutate, readState } from "@/lib/firestore-database";
+import { BalanceHistoryError, readMemberBalanceHistory } from "@/lib/member-balance-history";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -40,6 +41,18 @@ async function stateForDevice(token: string | null | undefined, viewer: Viewer |
 
 export async function GET(request: NextRequest) {
   const token = request.cookies.get(DEVICE_COOKIE)?.value;
+  const historyMemberId = request.nextUrl.searchParams.get("balanceHistoryMemberId");
+  if (historyMemberId !== null) {
+    const headers = { "Cache-Control": "private, no-store" };
+    try {
+      const viewer = await viewerForDeviceToken(token);
+      return NextResponse.json(await readMemberBalanceHistory(historyMemberId, viewer), { headers });
+    } catch (error) {
+      const status = error instanceof BalanceHistoryError ? error.status : 500;
+      const message = error instanceof BalanceHistoryError ? error.message : "讀取餘額紀錄失敗，請稍後再試";
+      return NextResponse.json({ error: message }, { status, headers });
+    }
+  }
   const viewer = await viewerForDeviceToken(token);
   return NextResponse.json(await stateForDevice(token, viewer));
 }
@@ -53,14 +66,14 @@ export async function POST(request: NextRequest) {
     const viewer = await viewerForDeviceToken(currentToken);
 
     if (body.action === "createGuest") {
-      const account = await createGuestDeviceAccount(body.name ?? "", currentToken);
+      const account = await createGuestDeviceAccount(body.accountName ?? body.name ?? "", currentToken, body.displayName);
       const response = NextResponse.json(await stateForDevice(account.token, account.viewer));
       response.cookies.set(sessionCookie(account.token));
       return response;
     }
 
     if (body.action === "recover") {
-      const account = await loginWithRecoveryOrClaimCode(body.name ?? "", body.code ?? "", currentToken);
+      const account = await loginWithRecoveryOrClaimCode(body.accountName ?? body.name ?? "", body.code ?? "", currentToken);
       const response = NextResponse.json({ ...(await stateForDevice(account.token, account.viewer)), actionResult: { recoveryCode: account.recoveryCode } });
       response.cookies.set(sessionCookie(account.token));
       return response;

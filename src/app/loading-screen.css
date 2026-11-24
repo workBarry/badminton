@@ -1,0 +1,42 @@
+.loading-screen {
+  min-height: 100vh;
+  min-height: 100svh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 18px;
+  background: #f6f8f2;
+}
+
+.serve-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(100%, 360px);
+  gap: 20px;
+  text-align: center;
+  color: var(--green, #125e58);
+}
+.serve-loading__scene { width: clamp(240px, 70vw, 320px); aspect-ratio: 8 / 7; flex-shrink: 0; }
+.serve-loading__scene svg { display: block; width: 100%; height: 100%; overflow: hidden; }
+.serve-juggle__flight { animation: serve-juggle-flight var(--serve-juggle-duration) linear infinite; }
+.serve-juggle__racket { animation: serve-juggle-tap var(--serve-juggle-duration) linear infinite; }
+.serve-juggle__attitude { transform-origin: 0 0; animation: serve-juggle-turn var(--serve-juggle-duration) linear infinite; }
+.serve-loading__text { display: flex; flex-direction: column; gap: 9px; width: 100%; }
+.serve-loading__title { font-size: clamp(20px, 5vw, 25px); font-weight: 650; line-height: 1.5; color: var(--green, #125e58); letter-spacing: .025em; }
+.serve-loading__text p { margin: 0; font-size: 14px; line-height: 1.75; color: #526558; text-wrap: pretty; }
+.serve-loading__retry { padding: 10px 24px; border: 0; border-radius: 12px; background: #254d40; color: #fff; font: inherit; font-size: 14px; cursor: pointer; }
+.serve-loading__retry:hover { background: #376c56; }
+.serve-loading__retry:focus-visible { outline: 3px solid #a2c6a4; outline-offset: 4px; }
+
+.serve-loading--error .serve-loading__scene { width: clamp(144px, 28vw, 192px); aspect-ratio: 1; color: #9b5b22; }
+.serve-loading--compact { width: 100%; flex-direction: row; gap: 12px; padding: 14px; margin-top: 16px; border-radius: 12px; background: #f1f5eb; text-align: left; }
+.serve-loading--compact .serve-loading__scene { width: 64px; aspect-ratio: 1; }
+.serve-loading--compact .serve-loading__text { min-width: 0; gap: 4px; }
+.serve-loading--compact .serve-loading__title { font-size: 14px; letter-spacing: 0; }
+.serve-loading--compact .serve-loading__text p { font-size: 12px; }
+.serve-loading--compact .serve-loading__retry { flex-shrink: 0; padding: 8px 12px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .serve-juggle__flight, .serve-juggle__racket, .serve-juggle__attitude { animation: none; }
+}
