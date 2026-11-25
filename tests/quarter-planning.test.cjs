@@ -874,6 +874,7 @@ test("quarter fee drafts select only explicit eligible existing events and can b
   assert.equal(draft.status, "PLANNED");
   assert.ok(draft.revision);
   assert.equal(loaded.events.find((event) => event.id === normal.eventId).member_billing_label, "納入季度社費草稿");
+  assert.equal(loaded.events.find((event) => event.id === normal.eventId).quarter_eligible, true);
   assert.equal(loaded.events.find((event) => event.id === other.eventId).quarter_eligible, false);
   const additions = await s.schedule({ rules: s.rules, activities: s.activities.slice(1, 2) }, "before-billing-add");
   assert.equal(additions.eventCount, 1);
@@ -889,6 +890,7 @@ test("quarter fee drafts select only explicit eligible existing events and can b
   await assert.rejects(s.createPeriod(["quarter-test-plan-0"], { expectedRevision: draft.revision }), /不能編輯/);
   const updated = await s.readState(admin);
   assert.equal(updated.events.find((event) => event.id === normal.eventId).member_billing_label, "季度社費場次");
+  assert.equal(updated.events.find((event) => event.id === normal.eventId).quarter_eligible, false);
 });
 test("non-admin cannot confirm a quarter or generate invoices", async () => {
   const s = setup();
@@ -1433,4 +1435,84 @@ test("quarter preview expires after a schedule change, and a cross-quarter move 
   await assert.rejects(s.mutate("createQuarterlyInvoices", { ...input, previewKey: current.previewKey }), /已移出本期/);
   assert.equal(s.db.data("billingPeriods/quarter-test-plan").status, "PLANNED");
   assert.equal(s.db.entries("invoices/").length, 0);
+});
+
+test("manual activity prices are saved per event, drive later invoices, and do not change club rates", async () => {
+  const s = setup();
+  const input = (date) => ({ startsAt: date + "T18:00:00+08:00", endsAt: date + "T20:00:00+08:00", courts: "費率測試", regularCapacity: "10", standbyCapacity: "4" });
+  const date = s.rules.startDate;
+  for (const amount of ["-1", "1.5", "1e2", "10001"]) {
+    await assert.rejects(s.mutate("createEvent", { ...input(date), memberAmount: amount, guestAmount: "310" }), /社員費用須為/);
+  }
+  await assert.rejects(s.mutate("createEvent", { ...input(date), guestAmount: "abc" }), /非社員費用須為/);
+  const custom = await s.mutate("createEvent", { ...input(date), memberAmount: "235", guestAmount: "310" });
+  const free = await s.mutate("createEvent", { ...input(s.rules.endDate), memberBilling: "FREE", memberAmount: "235", guestAmount: "310" });
+  const atDefault = await s.mutate("createEvent", input(date.slice(0, 8) + "02"));
+  const eventDoc = (e) => s.db.data("events/" + e.eventId);
+  assert.deepEqual([eventDoc(custom).memberFeeSnapshot, eventDoc(custom).guestFeeSnapshot], [235, 310]);
+  assert.deepEqual([eventDoc(atDefault).memberFeeSnapshot, eventDoc(atDefault).guestFeeSnapshot], [150, 180]);
+  assert.deepEqual([eventDoc(free).memberFeeSnapshot, eventDoc(free).guestFeeSnapshot], [0, 0]);
+  assert.equal(s.db.entries("invoices/").length, 0);
+  assert.equal(s.db.entries("feeRates/").length, 0);
+  s.db.seed("members/price-guest", { displayName: "費率球友", accountName: "price-guest", membershipStatus: "GUEST", role: "MEMBER", creditBalance: 0 });
+  s.db.seed("events/" + custom.eventId + "/bookings/price-guest", { memberId: "price-guest", kindSnapshot: "GUEST", status: "REGULAR" });
+  await s.mutate("publishGuestEventBills", { eventId: custom.eventId, decisions: JSON.stringify([{ memberId: "price-guest", decision: "BILL" }]) });
+  const fee = s.db.entries("invoices/").map(([, data]) => data).find((data) => data.type === "SINGLE_EVENT");
+  assert.equal(fee.grossAmount, 310);
+  await s.createPeriod([custom.eventId]);
+  await s.bill();
+  assert.equal(s.db.data(s.invoicePath).grossAmount, 235);
+});
+
+test("event fee edits update unissued draft amounts and preserve the issued fee category", async () => {
+  const s = setup();
+  const date = s.rules.startDate;
+  const input = { startsAt: date + "T18:00:00+08:00", endsAt: date + "T20:00:00+08:00", courts: "費率測試", regularCapacity: "10", standbyCapacity: "4" };
+  const { eventId } = await s.mutate("createEvent", { ...input, memberAmount: "210", guestAmount: "230" });
+  const update = (fees) => s.mutate("updateEvent", { ...input, eventId, ...fees });
+  const eventPath = "events/" + eventId;
+  const draftPath = "billingPeriods/quarter-test-plan";
+  await s.createPeriod([eventId]);
+  const quoteInput = { planId: "test-plan", dueDate: date.slice(0, 8) + "15" };
+  const beforeQuote = await s.mutate("previewQuarterlyInvoices", quoteInput);
+  await update({ memberBilling: "NORMAL", memberAmount: "220", guestAmount: "260" });
+  assert.equal(s.db.data(eventPath).memberFeeSnapshot, 220);
+  assert.equal(s.db.data(eventPath).guestFeeSnapshot, 260);
+  assert.deepEqual(s.db.data(draftPath).eventAmounts, [220]);
+  assert.equal(s.db.data(draftPath).grossAmount, 220);
+  await assert.rejects(s.mutate("createQuarterlyInvoices", { ...quoteInput, previewKey: beforeQuote.previewKey }), /重新預覽/);
+  assert.equal(s.db.entries("invoices/").length, 0);
+  await s.bill();
+  assert.equal(s.db.data(s.invoicePath).grossAmount, 220);
+  await assert.rejects(update({ memberBilling: "FREE" }), /已有帳單/);
+  await assert.rejects(update({ memberAmount: "221" }), /社員費已開單/);
+  await update({ guestAmount: "300" });
+  assert.equal(s.db.data(eventPath).guestFeeSnapshot, 300);
+  assert.equal(s.db.data(s.invoicePath).grossAmount, 220);
+});
+
+test("editing a free event can restore prices and setting it free removes its unissued draft line", async () => {
+  const s = setup();
+  const date = s.rules.startDate;
+  const input = { startsAt: date + "T18:00:00+08:00", endsAt: date + "T20:00:00+08:00", courts: "費率測試", regularCapacity: "10", standbyCapacity: "4" };
+  const { eventId } = await s.mutate("createEvent", input);
+  await s.createPeriod([eventId]);
+  const update = (fees) => s.mutate("updateEvent", { ...input, eventId, ...fees });
+  await update({ memberBilling: "FREE" });
+  const path = "events/" + eventId;
+  assert.equal(s.db.data(path).memberBilling, "FREE");
+  assert.equal(s.db.data(path).memberFeeSnapshot, 0);
+  assert.equal(s.db.data(path).guestFeeSnapshot, 0);
+  assert.deepEqual(s.db.data("billingPeriods/quarter-test-plan").eventIds, []);
+  await update({ memberBilling: "NORMAL", memberAmount: "190", guestAmount: "200" });
+  assert.equal(s.db.data(path).memberBilling, "NORMAL");
+  assert.equal(s.db.data(path).memberFeeSnapshot, 190);
+  assert.equal(s.db.data(path).guestFeeSnapshot, 200);
+  assert.equal(s.db.entries("invoices/").length, 0);
+  s.db.seed("invoices/guest-edit-lock", { eventId, type: "SINGLE_EVENT", status: "PENDING" });
+  await assert.rejects(update({ memberBilling: "FREE" }), /已有帳單/);
+  await assert.rejects(update({ guestAmount: "201" }), /非社員費已開單/);
+  await update({ memberAmount: "205" });
+  assert.equal(s.db.data(path).memberFeeSnapshot, 205);
+  assert.equal(s.db.data(path).guestFeeSnapshot, 200);
 });

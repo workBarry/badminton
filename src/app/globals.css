@@ -3386,9 +3386,6 @@ dialog.event-dialog {
 .activity-month-workspace .calendar-date-picker { min-height:74px; cursor:pointer; overflow:hidden; }
 .activity-month-workspace .calendar-date-picker[data-active-date="true"] { border-color:#3d806b; background:#e2f2ea; }
 .activity-month-workspace .calendar-day.empty { min-height:0; }
-.calendar-billing-tools, .calendar-session-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
-.calendar-billing-tools { margin:0 4px 12px; }
-.calendar-billing-tools button[aria-pressed="true"] { background:#e1f1e9; color:#164f3e; border-color:#77a895; }
 .calendar-day-panel { display:grid; gap:10px; padding:17px; border:1px solid #dce9e2; border-radius:16px; background:#f6fbf8; }
 .calendar-day-panel > p:first-child { color:#47675d; font-size:.82rem; }
 .calendar-day-panel h2,.calendar-day-panel h3,.calendar-day-panel p { margin:0; }
@@ -3407,7 +3404,6 @@ dialog.event-dialog {
   .activity-month-workspace .calendar-date-picker { min-height:44px; align-items:center; text-align:center; padding:4px 1px; }
   .activity-month-workspace .calendar-date-picker .calendar-day-number { font-size:12px; }
   .calendar-selection-bar { bottom:calc(62px + env(safe-area-inset-bottom)); }
-  .calendar-session-actions .primary { flex:1 1 auto; min-height:44px; }
   .calendar-day-panel { padding:13px; }
 }
 
@@ -3485,3 +3481,20 @@ dialog.event-dialog {
   .calendar-checked-mark { top:5px; right:3px; width:13px; height:13px; }
   .calendar-date-picker[aria-checked="true"] .calendar-checked-mark::after { width:4px; height:7px; }
 }
+
+.calendar-issue-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-block: 8px;
+  border-top: 1px solid var(--line);
+}
+.calendar-issue-group ul { margin: 0; padding-inline-start: 18px; }
+.calendar-issue-group .secondary { min-height: 40px; }
+
+.new-event-fee-preview { background: #f6fbf8; border: 1px solid #dce9e2; border-radius: 10px; padding: 10px 12px; }
+.new-event-fee-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.new-event-fee-fields input { width: 100%; min-width: 0; }
+.new-event-fee-preview .form-note { margin-top: 4px; }

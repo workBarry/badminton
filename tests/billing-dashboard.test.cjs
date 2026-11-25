@@ -79,11 +79,11 @@ test("幹部以同一清單直接登記未回報與已回報的款，活動檢�
 
 
 test("活動收費模式可從月曆直接選季費，單場帳務只有一個入口", () => {
-  const { ActivityCalendar, EventDetailsDialog, GuestSettlementPanel } = load("src/app/page.tsx", {
+  const { ActivityCalendar, EventDetailsDialog, GuestSettlementPanel, CalendarIssueDialog, calendarBillingOptions } = load("src/app/page.tsx", {
     "@/lib/billing-view": billingView,
     "@/lib/club-roles": load("src/lib/club-roles.ts"),
     ...Object.fromEntries(["quarter-planner", "loading-screen", "shuttle-art", "billing-dashboard", "balance-history-dialog", "floating-notifications"].map((name) => ["@/app/" + name, {}])),
-  }, "\nexport { ActivityCalendar, EventDetailsDialog, GuestSettlementPanel };");
+  }, "\nexport { ActivityCalendar, EventDetailsDialog, GuestSettlementPanel, CalendarIssueDialog, calendarBillingOptions };");
   const date = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   const start = new Date(date + "T18:00:00+08:00");
   const court = "測試球場";
@@ -91,10 +91,13 @@ test("活動收費模式可從月曆直接選季費，單場帳務只有一個�
     courts: court, guestFee: 180, quarterEligible: true, bookings: [{ rank: "正取", kind: "非社員", name: "測試球友", memberId: "guest" }] };
   const noop = () => {};
   const renderCard = (quarterMode, activity = event, existingBills = [], admin = true, periods = [], pickedIds = []) => renderToStaticMarkup(React.createElement(ActivityCalendar,
-    { list: activity ? [activity] : [], invoices: existingBills, openEvent: noop, openQuarter: admin ? noop : undefined, quarterMode, pickedIds, setPickedIds: noop, toggleQuarterEvent: noop, periods }));
+    { list: activity ? [activity] : [], invoices: existingBills, openEvent: noop, openIssue: admin ? noop : undefined, quarterMode, pickedIds, setPickedIds: noop, toggleQuarterEvent: noop, periods }));
   const dateCell = (markup) => markup.match(new RegExp('<button[^>]*class="calendar-day calendar-date-picker[^"]*"[^>]*aria-label="' + date + '，.*?</button>'))?.[0] ?? "";
   const draft = { id: "draft", status: "PLANNED", revision: "1", startDate: date, endDate: date, eventIds: [event.id] };
-  assert.match(renderCard(true, event, [], true, [draft]), />繼續編輯季費</);
+  const draftCalendar = renderCard(true, { ...event, bookings: [] }, [], true, [draft], [event.id]);
+  assert.doesNotMatch(draftCalendar, />繼續編輯季費</);
+  assert.match(dateCell(draftCalendar), /role="checkbox" aria-checked="true".*選取開單/);
+  assert.match(draftCalendar, />預覽開單 →</);
   assert.doesNotMatch(renderCard(true, event, [], true, [{ ...draft, status: "GENERATING" }]), />繼續編輯季費</);
   assert.doesNotMatch(renderCard(false, event, [], true, [draft]), />繼續編輯季費</);
   assert.doesNotMatch(renderCard(true), />繼續編輯季費</);
@@ -105,14 +108,15 @@ test("活動收費模式可從月曆直接選季費，單場帳務只有一個�
   assert.match(card, /activity-detail-hit[^>]+aria-label="查看活動：羽球 · 測試球場 18:00–20:00"[^>]*aria-haspopup="dialog"/);
   assert.doesNotMatch(card, />活動詳情/);
   assert.doesNotMatch(card, /管理本場帳單|開零打帳單/);
-  assert.match(renderCard(true), />管理本場帳單</);
+  assert.doesNotMatch(renderCard(true), />管理本場帳單</);
+  assert.match(dateCell(renderCard(true, { ...event, quarterEligible: false })), /role="checkbox".*選取開單/);
   assert.match(renderCard(true), /activity-detail-hit[^>]+aria-label="查看活動：羽球 · 測試球場 18:00–20:00"[^>]*aria-haspopup="dialog"/);
   assert.doesNotMatch(renderCard(true), /<input type="checkbox"/);
-  assert.match(dateCell(renderCard(true)), /role="checkbox" aria-checked="false".*加入季費.*calendar-checked-mark/);
+  assert.match(dateCell(renderCard(true)), /role="checkbox" aria-checked="false".*選取開單.*calendar-checked-mark/);
   const checkedCard = renderCard(true, event, [], true, [], [event.id]);
   assert.match(dateCell(checkedCard), /role="checkbox" aria-checked="true".*calendar-checked-mark/);
   assert.doesNotMatch(dateCell(checkedCard), /已選|calendar-date-tag/);
-  assert.match(checkedCard, /季費已選 1 場/);
+  assert.match(checkedCard, /已選 1 場/);
   assert.doesNotMatch(card, /calendar-checked-mark/);
   assert.doesNotMatch(renderCard(true, { ...event, memberBilling: "FREE" }), /calendar-checked-mark/);
   assert.doesNotMatch(renderCard(true), /社員加場費|開零打帳單|加到季費帳單/);
@@ -124,16 +128,10 @@ test("活動收費模式可從月曆直接選季費，單場帳務只有一個�
     event: { ...event, startsAt: new Date(Date.now() + 3_600_000).toISOString(),
       endsAt: new Date(Date.now() + 7_200_000).toISOString(),
       bookings: [...event.bookings, { rank: "正取", kind: "社員", name: "社員", memberId: "member" }] },
-    viewerId: "admin", user: { member: true }, isAdmin: true, initialBillingOpen: true,
-    hasMemberBill: false, hasLinkedPeriod: false, ...options,
+    viewerId: "admin", user: { member: true }, isAdmin: true, ...options,
   }));
-  const billingDialog = renderDialog({});
-  assert.doesNotMatch(billingDialog, /加入季費|加到季費帳單/);
-  assert.match(billingDialog, />開零打帳單</);
-  assert.match(billingDialog, />另開本場帳單</);
-  assert.doesNotMatch(billingDialog, /參加名單|社員加場費/);
-  assert.doesNotMatch(renderDialog({ hasLinkedPeriod: true }), />另開本場帳單</);
-  assert.match(renderDialog({ showEventBills: noop }), />查看已開帳單</);
+  assert.match(renderDialog({}), /參加名單/);
+  assert.doesNotMatch(renderDialog({ showEventBills: noop }), /管理本場帳單|開零打帳單|另開本場帳單/);
   assert.match(dateCell(renderCard(true)), /data-fee-tone="unbilled".*aria-label="[^"]*，未開單[^"]*"/);
   assert.doesNotMatch(dateCell(renderCard(true)), /calendar-fee-tag|收費標示圖例|>未開單</);
   assert.doesNotMatch(dateCell(card), /calendar-fee-tag|data-fee-tone/);
@@ -161,12 +159,30 @@ test("活動收費模式可從月曆直接選季費，單場帳務只有一個�
     { ...bills[0], member_id: "paid", memberName: "已繳清的人", status: "CONFIRMED" },
   ];
   const payerDialog = renderDialog({ billingInvoices: payerBills });
-  assert.match(payerDialog, /測試球友<\/span><span class="badge orange">未繳費/);
-  assert.match(payerDialog, /社員<\/span><span class="badge blue">待確認/);
-  assert.match(payerDialog, /未報名的季費付款人<\/span><span class="badge orange">未繳費/);
+  assert.match(payerDialog, /測試球友.*未繳費/);
+  assert.match(payerDialog, /社員.*待確認/);
+  const attendeeRoster = payerDialog.match(/<section[^>]+aria-label="參加名單"[^>]*>.*?<\/section>/)?.[0] ?? "";
+  const otherPayers = payerDialog.match(/<section[^>]+aria-label="其他待收款人"[^>]*>.*?<\/section>/)?.[0] ?? "";
+  assert.match(attendeeRoster, /測試球友.*未繳費/);
+  assert.match(attendeeRoster, /社員.*待確認/);
+  assert.doesNotMatch(attendeeRoster, /未報名的季費付款人/);
+  assert.match(otherPayers, /未報名的季費付款人<\/span><span class="badge orange">未繳費/);
   assert.doesNotMatch(payerDialog, /已作廢的人|本場金額為零|已繳清的人/);
   assert.match(renderDialog({ billingInvoices: payerBills, initialBillingOpen: false }), /測試球友.*未繳費/);
   assert.doesNotMatch(renderDialog({ billingInvoices: payerBills, isAdmin: false, initialBillingOpen: false }), /未繳費|待確認|未報名的季費付款人/);
+  const mixed = { ...event, id: "mixed" };
+  const guestOnly = { ...event, id: "guest-only", quarterEligible: false, memberBilling: "NO_CHARGE" };
+  const fullyBilled = { ...guestOnly, id: "fully-billed" };
+  const settledBill = { ...bills[0], event_id: fullyBilled.id, status: "CONFIRMED" };
+  const mixedExisting = { ...bills[0], event_id: mixed.id };
+  assert.equal(calendarBillingOptions(mixed, [mixedExisting], [], Date.now()).guests.length, 0);
+  assert.equal(calendarBillingOptions(guestOnly, [], [], Date.now()).guests.length, 1);
+  assert.equal(calendarBillingOptions(fullyBilled, [settledBill], [], Date.now()).guests.length, 0);
+  const issue = renderToStaticMarkup(React.createElement(CalendarIssueDialog, {
+    events: [event, mixed, guestOnly, fullyBilled], invoices: [settledBill, mixedExisting], periods: [], openQuarter: noop,
+  }));
+  assert.match(issue, /季費 · 依計費期間開立.*預覽季費（2 場）/);
+  assert.equal((issue.match(/核對零打名單（1 人）/g) ?? []).length, 2);
   const paid = { ...bills[1], status: "CONFIRMED" };
   assert.match(renderCard(true, event, [bills[0], paid]), /<dt>社員<\/dt><dd>已結清<\/dd>.*<dt>非社員<\/dt><dd>未收齊<\/dd>/);
   const noCharge = { ...event, bookings: [], quarterEligible: false };
@@ -192,7 +208,7 @@ function calendarInteraction(list, quarterMode = true) {
   let props = {
     list, quarterMode, invoices: [], periods: [], pickedIds: [],
     openEvent: (...args) => calls.opened.push(args),
-    openQuarter: (ids) => calls.previewed.push([...ids]),
+    openIssue: () => calls.previewed.push([...props.pickedIds]),
     setPickedIds: (ids) => { props.pickedIds = ids; },
     toggleQuarterEvent: (event) => {
       calls.toggled.push(event.id);
@@ -310,41 +326,83 @@ test("一般模式與不可納入季費的活動維持開啟詳情，管理帳�
   assert.deepEqual(calendar.calls.toggled, []);
 
   calendar.render({ quarterMode: true });
-  calendar.button("管理本場帳單").props.onClick();
-  assert.deepEqual(calendar.calls.opened, [[event.id], [event.id, true]]);
+  assert.equal(calendar.all((node) => node.type === "button" && elementText(node) === "管理本場帳單").length, 0);
+  calendar.one(isCardHit, calendar.card(event.id)).props.onClick();
+  assert.deepEqual(calendar.calls.opened, [[event.id], [event.id]]);
   assert.deepEqual(calendar.calls.toggled, []);
   calendar.render({ list: [{ ...event, quarterEligible: false }] });
   hit = calendar.one(isCardHit, calendar.card(event.id));
   assert.equal(hit.props["aria-haspopup"], "dialog");
   assert.equal(calendar.all(isSelectionInput).length, 0);
   hit.props.onClick();
-  assert.deepEqual(calendar.calls.opened, [[event.id], [event.id, true], [event.id]]);
+  assert.deepEqual(calendar.calls.opened, [[event.id], [event.id], [event.id]]);
   assert.deepEqual(calendar.calls.toggled, []);
 });
 
 test("選取失敗會顯示原因，成功後可預覽並清除已選活動", () => {
   const event = todayActivity();
   const calendar = calendarInteraction([event]);
-  assert.equal(calendar.button("預覽季費 →").props.disabled, true);
+  assert.equal(calendar.button("預覽開單 →").props.disabled, true);
   calendar.rejectSelection("請選同一個計費期間內的場次。");
   const dateButton = () => calendar.one((node) => node.type === "button" && node.props["aria-label"]?.startsWith(event.date + "，"));
   dateButton().props.onClick();
   calendar.render();
   assert.equal(elementText(calendar.one((node) => node.props.role === "alert")), "請選同一個計費期間內的場次。");
   assert.deepEqual(calendar.pickedIds(), []);
-  assert.equal(calendar.button("預覽季費 →").props.disabled, true);
+  assert.equal(calendar.button("預覽開單 →").props.disabled, true);
 
   calendar.rejectSelection("");
   dateButton().props.onClick();
   calendar.render();
   assert.equal(calendar.all((node) => node.props.role === "alert").length, 0);
-  assert.equal(calendar.button("預覽季費 →").props.disabled, false);
-  calendar.button("預覽季費 →").props.onClick();
+  assert.equal(calendar.button("預覽開單 →").props.disabled, false);
+  calendar.button("預覽開單 →").props.onClick();
   assert.deepEqual(calendar.calls.previewed, [[event.id]]);
   calendar.button("清除").props.onClick();
   calendar.render();
   assert.deepEqual(calendar.pickedIds(), []);
   assert.equal(dateButton().props["aria-checked"], false);
-  assert.equal(calendar.button("預覽季費 →").props.disabled, true);
+  assert.equal(calendar.button("預覽開單 →").props.disabled, true);
   assert.equal(calendar.all((node) => node.type === "button" && elementText(node) === "清除").length, 0);
+});
+
+test("新增羽球活動只提供收費與不收費，不會自動開單", () => {
+  const { ActivityManagerModal } = load("src/app/page.tsx", {
+    "@/lib/billing-view": billingView,
+    "@/lib/club-roles": load("src/lib/club-roles.ts"),
+    ...Object.fromEntries(["quarter-planner", "loading-screen", "shuttle-art", "billing-dashboard", "balance-history-dialog", "floating-notifications"].map((name) => ["@/app/" + name, {}])),
+  }, "\nexport { ActivityManagerModal };");
+  const props = { initialDate: "2027-01-08", tab: "single", saving: false, plans: [], existingDates: [], periods: [],
+    currentFees: { member: 150, guest: 180 }, feeRates: [
+      { kind: "MEMBER_VISIT", amount: 220, effective_from: "2027-01-08T17:00:00+08:00", effective_to: null },
+      { kind: "GUEST_VISIT", amount: 250, effective_from: "2027-01-08T19:00:00+08:00", effective_to: null },
+    ] };
+  const markup = (overrides) => renderToStaticMarkup(React.createElement(ActivityManagerModal, { ...props, ...overrides }));
+  const html = markup({});
+  assert.match(html, /name="memberAmount"[^>]*value="220"/);
+  assert.match(html, /name="guestAmount"[^>]*value="180"/);
+  assert.match(markup({ periods: [{ status: "ACTIVE", startDate: "2027-01-01", endDate: "2027-03-31" }] }), /社員金額只會用在另開的單場帳單/);
+  assert.match(markup({ initialDate: "", currentFees: { member: 155, guest: 185 } }), /name="guestAmount"[^>]*value="185"/);
+  const choices = html.match(/<select[^>]+name="memberBilling"[^>]*>(.*?)<\/select>/)?.[1];
+  assert.match(choices, /value="NORMAL" selected="">收費<\/option><option value="FREE">不收費<\/option>/);
+  assert.equal((choices.match(/<option/g) ?? []).length, 2);
+  assert.doesNotMatch(html, /先帶入目前費率|建立活動不會開單/);
+  assert.doesNotMatch(markup({ initialDate: "" }), /先帶入目前費率|建立活動不會開單/);
+});
+
+test("編輯活動只鎖定已開單的價格，免費場不顯示金額", () => {
+  const { EditEventBillingFields } = load("src/app/page.tsx", {
+    "@/lib/billing-view": billingView,
+    "@/lib/club-roles": load("src/lib/club-roles.ts"),
+    ...Object.fromEntries(["quarter-planner", "loading-screen", "shuttle-art", "billing-dashboard", "balance-history-dialog", "floating-notifications"].map((name) => ["@/app/" + name, {}])),
+  }, "\nexport { EditEventBillingFields };");
+  const markup = (event, invoices = [], periods = []) => renderToStaticMarkup(React.createElement(EditEventBillingFields, { event, invoices, periods, currentFees: { member: 150, guest: 180 } }));
+  const event = { id: "practice", eventKind: "BADMINTON", memberBilling: "NORMAL", memberFee: 215, guestFee: 240 };
+  const html = markup(event, [invoice("guest", "SINGLE_EVENT", "PENDING", 240, 2)]);
+  assert.match(html, /name="memberBilling" disabled/);
+  assert.doesNotMatch(html.match(/<input[^>]+name="memberAmount"[^>]*>/)[0], /disabled/);
+  assert.match(html.match(/<input[^>]+name="guestAmount"[^>]*>/)[0], /disabled/);
+  assert.match(html, /value="215"/);
+  assert.match(markup(event, [], [{ status: "GENERATING", eventIds: [event.id] }]).match(/<input[^>]+name="memberAmount"[^>]*>/)[0], /disabled/);
+  assert.doesNotMatch(markup({ ...event, memberBilling: "FREE" }), /name="(?:memberAmount|guestAmount)"/);
 });

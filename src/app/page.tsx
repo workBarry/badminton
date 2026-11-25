@@ -105,6 +105,7 @@ type ClubEvent = {
   regularBooked: number;
   waitBooked: number;
   memberFee: number;
+  memberListRate?: number;
   guestFee: number;
   bookings: Booking[];
 };
@@ -112,7 +113,7 @@ type ClubEvent = {
 type ApiState = {
   viewer: Viewer | null;
   members: { id: string; name: string; accountName: string; department?: string; role: string; membershipStatus: string; membershipEndingAt?: string | null; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean }[];
-  events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; regular_count: number; standby_count: number; member_fee: number; guest_fee: number; member_billing?: string; event_kind?: string; quarter_eligible?: boolean; status?: string; member_billing_label?: string | null; guest_settlements?: GuestSettlement[]; bookings: { memberId: string; name: string; accountName?: string; kind: string; status: string; transferred?: boolean }[] }[];
+  events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; regular_count: number; standby_count: number; member_fee: number; member_list_rate?: number; guest_fee: number; member_billing?: string; event_kind?: string; quarter_eligible?: boolean; status?: string; member_billing_label?: string | null; guest_settlements?: GuestSettlement[]; bookings: { memberId: string; name: string; accountName?: string; kind: string; status: string; transferred?: boolean }[] }[];
   announcements: { id: string; title: string; content: string; publishedAt: string; linkUrl?: string; pinned: boolean }[];
   invoices: Invoice[];
   quarterPlans: QuarterPlan[];
@@ -167,7 +168,7 @@ export default function Home() {
   const [transferEventId, setTransferEventId] = useState<string | null>(null);
   const [recipient, setRecipient] = useState("");
   const [editingEvent, setEditingEvent] = useState<ClubEvent | null>(null);
-  const [eventDetails, setEventDetails] = useState<{ eventId: string; viewerId: string; manageBills?: boolean } | null>(null);
+  const [eventDetails, setEventDetails] = useState<{ eventId: string; viewerId: string } | null>(null);
   const [managerTab, setManagerTab] = useState<ActivityManagerTab>("quarter");
   const [managerOpen, setManagerOpen] = useState(false);
   const [managerDate, setManagerDate] = useState("");
@@ -177,9 +178,9 @@ export default function Home() {
   const [announcementSaving, setAnnouncementSaving] = useState(false);
   const [billingManagerOpen, setBillingManagerOpen] = useState(false);
   const [calendarBillIds, setCalendarBillIds] = useState<string[]>([]);
-  const [calendarDraftId, setCalendarDraftId] = useState<string>();
   const [calendarQuarterMode, setCalendarQuarterMode] = useState(false);
   const [calendarPickedIds, setCalendarPickedIds] = useState<string[]>([]);
+  const [calendarIssueOpen, setCalendarIssueOpen] = useState(false);
   const [billingManagerTab, setBillingManagerTab] = useState<BillingManagerTab>("quarterly");
   const [billingSaving, setBillingSaving] = useState(false);
   const [membershipSaving, setMembershipSaving] = useState(false);
@@ -217,7 +218,7 @@ export default function Home() {
       const endsAt = new Date(item.ends_at);
       const date = `${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "numeric" })} ${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", day: "numeric" })}`;
       const time = `${startsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })} – ${endsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })}`;
-      return { id: item.id, memberBilling: item.member_billing, quarterEligible: item.quarter_eligible, eventKind: item.event_kind, billingLabel: item.member_billing_label, status: item.status, guestSettlements: item.guest_settlements, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, regularBooked: item.regular_count, waitBooked: item.standby_count, memberFee: item.member_fee, guestFee: item.guest_fee, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, accountName: booking.accountName, transferred: booking.transferred, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
+      return { id: item.id, memberBilling: item.member_billing, quarterEligible: item.quarter_eligible, eventKind: item.event_kind, billingLabel: item.member_billing_label, status: item.status, guestSettlements: item.guest_settlements, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, regularBooked: item.regular_count, waitBooked: item.standby_count, memberFee: item.member_fee, memberListRate: item.member_list_rate, guestFee: item.guest_fee, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, accountName: booking.accountName, transferred: booking.transferred, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
     }));
     setNews(state.announcements.map((item) => ({
       id: item.id,
@@ -497,7 +498,7 @@ export default function Home() {
     if (!times) return;
     setManagerSaving(true);
     try {
-      if (await execute("createEvent", { ...times, eventKind: String(data.get("eventKind") ?? "BADMINTON"), memberBilling: String(data.get("memberBilling") ?? "FREE"), billingReason: String(data.get("billingReason") ?? ""), courts: String(data.get("courts")), regularCapacity: String(data.get("regular")), standbyCapacity: String(data.get("standby")) })) {
+      if (await execute("createEvent", { ...times, eventKind: String(data.get("eventKind") ?? "BADMINTON"), memberBilling: String(data.get("memberBilling") ?? "FREE"), memberAmount: String(data.get("memberAmount") ?? ""), guestAmount: String(data.get("guestAmount") ?? ""), courts: String(data.get("courts")), regularCapacity: String(data.get("regular")), standbyCapacity: String(data.get("standby")) })) {
         element.reset();
         setManagerOpen(false);
       }
@@ -513,7 +514,7 @@ export default function Home() {
     if (!times) return;
     setManagerSaving(true);
     try {
-      if (await execute("updateEvent", { eventId: editingEvent.id, ...times, courts: String(data.get("courts")), regularCapacity: String(data.get("regular")), standbyCapacity: String(data.get("standby")) })) {
+      if (await execute("updateEvent", { eventId: editingEvent.id, ...times, memberBilling: String(data.get("memberBilling") ?? ""), memberAmount: String(data.get("memberAmount") ?? ""), guestAmount: String(data.get("guestAmount") ?? ""), courts: String(data.get("courts")), regularCapacity: String(data.get("regular")), standbyCapacity: String(data.get("standby")) })) {
         setEditingEvent(null);
       }
     } finally {
@@ -701,18 +702,16 @@ export default function Home() {
   const detailInvoices = detailId ? invoices.filter((invoice) => isPrincipal(invoice) && (isAdmin || invoice.member_id === viewer.id) && (invoice.event_id === detailId || invoice.event_ids?.includes(detailId))) : [];
   const selectedEvent = detailId ? events.find((item) => item.id === detailId)
     ?? archivedClubEvent(detailInvoices.flatMap((invoice) => invoice.event_schedules ?? []).find((entry) => entry.id === detailId)) : undefined;
-  const openEventDetails = (eventId: string, manageBills = false) => setEventDetails({ eventId, viewerId: viewer.id, manageBills });
+  const openEventDetails = (eventId: string) => setEventDetails({ eventId, viewerId: viewer.id });
   const toggleQuarterBillingEvent = (event: ClubEvent) => {
-    const selection = calendarPickedIds.filter((id) => events.some((item) => item.id === id && canSelectQuarterEvent(item, quarterBillingPeriods)));
+    const eligible = (item: ClubEvent) => hasBillToIssue(calendarBillingOptions(item, invoices, quarterBillingPeriods, Date.now()));
+    const selection = calendarPickedIds.filter((id) => events.some((item) => item.id === id && eligible(item)));
     if (selection.includes(event.id)) { setCalendarPickedIds(selection.filter((id) => id !== event.id)); return ""; }
-    const first = events.find((item) => item.id === selection[0]);
-    if (!canSelectQuarterEvent(event, quarterBillingPeriods)) return "本場目前不能納入季費。";
-    if (first && quarterKeyForEvent(first, quarterBillingPeriods) !== quarterKeyForEvent(event, quarterBillingPeriods)) return "請選同一個計費期間內的場次。";
-    if (selection.length >= 32) return "每期最多選 32 場。";
+    if (!eligible(event)) return "本場目前沒有可開立的帳單。";
     setCalendarPickedIds([...selection, event.id]);
     return "";
   };
-  const openCalendarBilling = (ids: string[], draftId?: string) => { setCalendarBillIds(ids); setCalendarDraftId(draftId); setBillingManagerTab("quarterly"); setBillingManagerOpen(true); };
+  const openCalendarBilling = (ids: string[]) => { setCalendarBillIds(ids); setBillingManagerTab("quarterly"); setBillingManagerOpen(true); };
   const closeEventDetails = () => setEventDetails(null);
   return (
     <div className="app">
@@ -827,7 +826,7 @@ export default function Home() {
               list={events}
               invoices={invoices}
               openEvent={openEventDetails}
-              openQuarter={isAdmin ? openCalendarBilling : undefined}
+              openIssue={isAdmin ? () => setCalendarIssueOpen(true) : undefined}
               quarterMode={isAdmin && calendarQuarterMode}
               pickedIds={calendarPickedIds}
               setPickedIds={setCalendarPickedIds}
@@ -854,7 +853,6 @@ export default function Home() {
             remindPayment={remindInvoicePayment}
             openRates={() => {
               setCalendarBillIds([]);
-              setCalendarDraftId(undefined);
               setBillingManagerTab("rates");
               setBillingManagerOpen(true);
             }}
@@ -899,33 +897,17 @@ export default function Home() {
         <EventDetailsDialog
           key={selectedEvent.id}
           event={selectedEvent}
-          initialBillingOpen={eventDetails?.manageBills === true}
           billingInvoices={isAdmin ? detailInvoices : undefined}
-          hasMemberBill={detailInvoices.some((bill) => bill.type !== "SINGLE_EVENT" && isLiveInvoice(bill) && includesEvent(bill, selectedEvent.id))}
-          hasLinkedPeriod={quarterBillingPeriods.some((period) => period.eventIds.includes(selectedEvent.id))}
           viewerId={viewer.id}
           user={user}
           isAdmin={isAdmin}
           close={closeEventDetails}
           join={join}
           cancel={cancel}
-          publishGuestSettlement={async (decisions) => {
-            const payload = await execute("publishGuestEventBills", { eventId: selectedEvent.id, decisions: JSON.stringify(decisions) });
-            const result = payload?.actionResult;
-            return typeof result?.issued === "number" && typeof result.skipped === "number" ? { issued: result.issued, skipped: result.skipped } : null;
-          }}
-          refreshGuestSettlement={() => refresh()}
           transfer={() => { closeEventDetails(); setTransferEventId(selectedEvent.id); }}
           edit={() => { closeEventDetails(); setEditingEvent(selectedEvent); }}
           invoiceLabel={detailInvoices.some((invoice) => !["VOID", "CREDITED", "REFUNDED"].includes(invoice.status) && ["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED"].includes(invoice.type)) ? "已納入季度社費" : detailInvoices.some((invoice) => !["VOID", "CREDITED", "REFUNDED"].includes(invoice.status) && invoice.type === "MEMBER_EXTRA") ? "加場費已開單" : detailInvoices.some((invoice) => !["VOID", "CREDITED", "REFUNDED"].includes(invoice.status)) ? "已開單" : null}
           showEventBills={detailInvoices.length ? () => { setBillingEventId(selectedEvent.id); setTab("費用管理"); closeEventDetails(); } : undefined}
-          previewMemberExtra={async () => {
-            const result = (await execute("previewMemberExtraBills", { eventId: selectedEvent.id }))?.actionResult;
-            return result && Array.isArray(result.rows) && typeof result.previewKey === "string" && typeof result.totalAmount === "number"
-              ? { rows: result.rows, previewKey: result.previewKey, totalAmount: result.totalAmount, periodLabel: result.periodLabel ?? "社員加場費" }
-              : null;
-          }}
-          publishMemberExtra={async (previewKey, reason) => Boolean(await execute("publishMemberExtraBills", { eventId: selectedEvent.id, previewKey, reason }))}
           previewCancellation={() => previewClubEventCancellation(selectedEvent.id)}
           cancelEvent={async (reason, previewKey) => {
             if (!await execute("cancelEvent", { eventId: selectedEvent.id, reason, previewKey })) return false;
@@ -958,6 +940,9 @@ export default function Home() {
       {isAdmin && managerOpen && (
         <ActivityManagerModal
           initialDate={managerDate}
+          currentFees={currentFees}
+          feeRates={feeRates}
+          periods={quarterBillingPeriods}
           tab={managerTab}
           saving={managerSaving}
           setTab={setManagerTab}
@@ -976,6 +961,26 @@ export default function Home() {
           save={saveAnnouncement}
         />
       )}
+      {isAdmin && tab === "活動" && calendarIssueOpen && !billingManagerOpen && (
+        <CalendarIssueDialog
+          events={events.filter((item) => calendarPickedIds.includes(item.id))}
+          invoices={invoices} periods={quarterBillingPeriods}
+          close={() => setCalendarIssueOpen(false)}
+          openQuarter={openCalendarBilling}
+          refresh={async () => { await refresh(); }}
+          publishGuest={async (eventId, decisions) => {
+            const result = (await execute("publishGuestEventBills", { eventId, decisions: JSON.stringify(decisions) }))?.actionResult;
+            return typeof result?.issued === "number" && typeof result.skipped === "number" ? { issued: result.issued, skipped: result.skipped } : null;
+          }}
+          previewExtra={async (eventId) => {
+            const result = (await execute("previewMemberExtraBills", { eventId }))?.actionResult;
+            return result && Array.isArray(result.rows) && typeof result.previewKey === "string" && typeof result.totalAmount === "number"
+              ? { rows: result.rows, previewKey: result.previewKey, totalAmount: result.totalAmount, periodLabel: result.periodLabel ?? "社員加場費" }
+              : null;
+          }}
+          publishExtra={async (eventId, previewKey, reason) => Boolean(await execute("publishMemberExtraBills", { eventId, previewKey, reason }))}
+        />
+      )}
       {isAdmin && billingManagerOpen && (
         <BillingManagerModal
           tab={billingManagerTab}
@@ -985,7 +990,6 @@ export default function Home() {
           feeRates={feeRates}
           periods={quarterBillingPeriods}
           calendarBillIds={calendarBillIds}
-          calendarDraftId={calendarDraftId}
           events={events}
           createBillingPeriod={async (input) => {
             const result = await manageInvoiceAction("createQuarterBillingPeriod", input);
@@ -1000,10 +1004,10 @@ export default function Home() {
       )}
       {editingEvent && (
         <div className="modal-cover">
-          <section className="modal manager-modal">
-            <button className="close" onClick={() => setEditingEvent(null)} disabled={managerSaving}>×</button>
+          <section className="modal manager-modal" role="dialog" aria-modal="true" aria-labelledby="edit-event-title">
+            <button type="button" className="close" aria-label="關閉編輯活動" onClick={() => setEditingEvent(null)} disabled={managerSaving}>×</button>
             <p>活動管理</p>
-            <h2>編輯活動</h2>
+            <h2 id="edit-event-title">編輯活動</h2>
             <form className="manager-form" onSubmit={updateEvent}>
               <label>活動日期<input name="date" type="date" defaultValue={taipeiInputDate(editingEvent.startsAt)} required /></label>
               <div className="time-pair">
@@ -1015,6 +1019,7 @@ export default function Home() {
                 <label>正取基準人數<input name="regular" type="number" min="1" defaultValue={editingEvent.regular} required /></label>
                 <label>候補可參加人數<input name="standby" type="number" min="0" defaultValue={editingEvent.wait} required /></label>
               </div>
+              <EditEventBillingFields key={editingEvent.id} event={editingEvent} invoices={invoices} periods={quarterBillingPeriods} currentFees={currentFees} />
               <p className="form-note">社員會自動列為正取並保證名額；社員超過基準人數時不會被排入候補。</p>
               <button className="primary" disabled={managerSaving}>{managerSaving ? "儲存中…" : "儲存變更"}</button>
             </form>
@@ -1032,8 +1037,45 @@ export default function Home() {
   );
 }
 
+function EditEventBillingFields({ event, invoices, periods, currentFees }: {
+  event: ClubEvent;
+  invoices: Invoice[];
+  periods: QuarterBillingPeriod[];
+  currentFees: { member: number; guest: number };
+}) {
+  const [mode, setMode] = useState(event.memberBilling === "FREE" || event.eventKind === "OTHER" ? "FREE" : "NORMAL");
+  const [memberPrice, setMemberPrice] = useState(String(event.memberListRate ?? (event.memberFee > 0 ? event.memberFee : currentFees.member)));
+  const [guestPrice, setGuestPrice] = useState(String(event.guestFee > 0 ? event.guestFee : currentFees.guest));
+
+  const relevant = invoices.filter((bill) => isPrincipal(bill) && isLiveInvoice(bill) && referencesEvent(bill, event.id));
+  const memberLocked = event.memberBilling === "EXTRA" || relevant.some((bill) => bill.type !== "SINGLE_EVENT")
+    || periods.some((period) => period.status !== "PLANNED" && period.eventIds.includes(event.id));
+  const guestLocked = relevant.some((bill) => bill.type === "SINGLE_EVENT")
+    || event.guestSettlements?.some((entry) => entry.status === "LEGACY" || entry.status === "ISSUED");
+  const modeLocked = memberLocked || guestLocked || event.eventKind === "OTHER";
+  return <>
+    <label>活動收費<select name="memberBilling" disabled={modeLocked} value={mode} onChange={(event) => setMode(event.target.value)}>
+      <option value="NORMAL">收費</option><option value="FREE">不收費</option>
+    </select></label>
+    {mode === "NORMAL" && <div className="new-event-fee-preview">
+      <div className="new-event-fee-fields" role="group" aria-label="每人費用">
+        <label>社員（NT$／人）<input name="memberAmount" type="number" min={1} max={10000} step={1} inputMode="numeric" required disabled={memberLocked}
+          value={memberPrice} onChange={(event) => setMemberPrice(event.target.value)} /></label>
+        <label>非社員（NT$／人）<input name="guestAmount" type="number" min={1} max={10000} step={1} inputMode="numeric" required disabled={guestLocked}
+          value={guestPrice} onChange={(event) => setGuestPrice(event.target.value)} /></label>
+      </div>
+      {(memberLocked || guestLocked) && <p className="form-note">{memberLocked && guestLocked ? "本場已開單，價格不可修改。"
+        : memberLocked ? "社員費已開單或正在開單。非社員費仍可修改。" : "非社員費已開單。社員費仍可修改。"}</p>}
+      {!memberLocked && event.memberBilling === "NO_CHARGE" && <p className="form-note">社員金額只會用在另開的單場帳單。</p>}
+    </div>}
+  </>;
+}
+
 function ActivityManagerModal({
   initialDate,
+  currentFees,
+  feeRates,
+  periods,
   tab,
   saving,
   setTab,
@@ -1044,6 +1086,9 @@ function ActivityManagerModal({
   confirmQuarter,
 }: {
   initialDate: string;
+  currentFees: { member: number; guest: number };
+  feeRates: FeeRate[];
+  periods: QuarterBillingPeriod[];
   tab: ActivityManagerTab;
   saving: boolean;
   setTab: (tab: ActivityManagerTab) => void;
@@ -1055,6 +1100,21 @@ function ActivityManagerModal({
 }) {
   const [eventKind, setEventKind] = useState("BADMINTON");
   const [memberBilling, setMemberBilling] = useState("NORMAL");
+  const [eventDate, setEventDate] = useState(initialDate);
+  const [startTime, setStartTime] = useState("18:00");
+  const [customMemberAmount, setCustomMemberAmount] = useState<string>();
+  const [customGuestAmount, setCustomGuestAmount] = useState<string>();
+  const startsAt = eventDate && startTime ? Date.parse(`${eventDate}T${startTime}:00+08:00`) : NaN;
+  const dated = Number.isFinite(startsAt);
+  const rateFor = (kind: "MEMBER_VISIT" | "GUEST_VISIT", fallback: number) => feeRates
+    .filter((rate) => rate.kind === kind && rate.effective_from && Date.parse(rate.effective_from) <= startsAt &&
+      (!rate.effective_to || startsAt < Date.parse(rate.effective_to)))
+    .sort((a, b) => Date.parse(b.effective_from!) - Date.parse(a.effective_from!))[0]?.amount ?? fallback;
+  const memberCovered = dated && periods.some((period) =>
+    ["ACTIVE", "GENERATING"].includes(period.status) && period.startDate <= eventDate && eventDate <= period.endDate);
+  const memberAmount = dated ? rateFor("MEMBER_VISIT", 150) : currentFees.member;
+  const guestAmount = dated ? rateFor("GUEST_VISIT", 180) : currentFees.guest;
+
   return (
     <div
       className="modal-cover"
@@ -1082,12 +1142,12 @@ function ActivityManagerModal({
           <form className="manager-form" onSubmit={createEvent}>
             <label>
               活動日期
-              <input name="date" type="date" defaultValue={initialDate} required autoFocus />
+              <input name="date" type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} required autoFocus />
             </label>
             <div className="time-pair">
               <label>
                 開始時間
-                <input name="start" type="time" defaultValue="18:00" required />
+                <input name="start" type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} required />
               </label>
               <label>
                 結束時間
@@ -1110,14 +1170,22 @@ function ActivityManagerModal({
             </div>
             <label>活動類型<select name="eventKind" value={eventKind} onChange={(event) => setEventKind(event.target.value)}><option value="BADMINTON">羽球</option><option value="OTHER">其他免費活動（例如桌遊）</option></select></label>
             {eventKind === "BADMINTON" && <p className="form-note">有效社員預設列為正取。非社員額滿後列候補。</p>}
-            {eventKind === "BADMINTON" ? <details className="billing-more" open={memberBilling === "NO_CHARGE" || memberBilling === "FREE"}>
-              <summary>收費設定（選用）</summary>
-              <div className="manager-form">
-                <label>本場收費<select name="memberBilling" value={memberBilling} onChange={(event) => setMemberBilling(event.target.value)}><option value="NORMAL">正常排程，不開單</option><option value="NO_CHARGE">本場不另計社員費</option><option value="FREE">所有人免費</option></select></label>
-                {memberBilling === "NO_CHARGE" && <label>免收原因<input name="billingReason" maxLength={200} required placeholder="例如：場地補償" /></label>}
-              </div>
-            </details> : <input type="hidden" name="memberBilling" value="FREE" />}
-            <p className="form-note">建立活動不會開單。社費從「費用管理」開立；已開單期間的加場不會自動補收。</p>
+            {eventKind === "BADMINTON" ? <>
+              <label>活動收費
+                <select name="memberBilling" value={memberBilling} onChange={(event) => setMemberBilling(event.target.value)} aria-describedby={memberBilling === "FREE" ? "new-event-fee-note" : undefined}>
+                  <option value="NORMAL">收費</option>
+                  <option value="FREE">不收費</option>
+                </select>
+              </label>
+              {memberBilling === "NORMAL" && <div className="new-event-fee-preview" aria-live="polite">
+                <div className="new-event-fee-fields" role="group" aria-label="每人費用">
+                  <label>社員（NT$／人）<input name="memberAmount" type="number" inputMode="numeric" min={1} max={10000} step={1} required value={customMemberAmount ?? memberAmount} onChange={(event) => setCustomMemberAmount(event.target.value)} /></label>
+                  <label>非社員（NT$／人）<input name="guestAmount" type="number" inputMode="numeric" min={1} max={10000} step={1} required value={customGuestAmount ?? guestAmount} onChange={(event) => setCustomGuestAmount(event.target.value)} /></label>
+                </div>
+                {memberCovered && <p className="form-note">該季已開單或正在開單，社員金額只會用在另開的單場帳單。</p>}
+              </div>}
+              {memberBilling === "FREE" && <p id="new-event-fee-note" className="form-note">社員、非社員都不收費。</p>}
+            </> : <input type="hidden" name="memberBilling" value="FREE" />}
             <button className="primary" disabled={saving}>{saving ? "建立中…" : "建立活動"}</button>
           </form>
         )}
@@ -1306,7 +1374,6 @@ function BillingManagerModal({
   feeRates,
   periods,
   calendarBillIds,
-  calendarDraftId,
   events,
   createBillingPeriod,
   onClose,
@@ -1321,7 +1388,6 @@ function BillingManagerModal({
   feeRates: FeeRate[];
   periods: QuarterBillingPeriod[];
   calendarBillIds: string[];
-  calendarDraftId?: string;
   events: ClubEvent[];
   createBillingPeriod: ComponentProps<typeof QuarterPeriodCreator>["onCreate"];
   onClose: () => void;
@@ -1338,7 +1404,7 @@ function BillingManagerModal({
   const pickedDate = events.find((event) => event.id === calendarBillIds[0])?.startsAt;
   const pickedDay = pickedDate ? taipeiInputDate(pickedDate) : "";
   const matchingDraft = billablePlans.find((period) => period.status === "PLANNED" && period.revision
-    && (calendarDraftId ? period.id === calendarDraftId : period.startDate <= pickedDay && pickedDay <= period.endDate));
+    && period.startDate <= pickedDay && pickedDay <= period.endDate);
   const [selectedPlanId, setSelectedPlanId] = useState(matchingDraft?.id ?? (calendarBillIds.length ? "" : billablePlans[0]?.id ?? ""));
   const selectedPlan = billablePlans.find((plan) => plan.id === selectedPlanId);
   const [dueDate, setDueDate] = useState(() => inputDate(due));
@@ -2005,11 +2071,31 @@ function quarterKeyForEvent(event: ClubEvent, periods: QuarterBillingPeriod[]) {
   return period?.id ?? year + "-Q" + (1 + Math.floor((month - 1) / 3));
 }
 
-function ActivityCalendar({ list, invoices, openEvent, openQuarter, quarterMode, pickedIds, setPickedIds, toggleQuarterEvent, periods, createOnDate }: {
+function calendarBillingOptions(event: ClubEvent, invoices: Invoice[], periods: QuarterBillingPeriod[], now: number) {
+  const bills = invoices.filter((bill) => billCoversCalendarEvent(bill, event.id));
+  const covered = new Set(bills.map((bill) => bill.member_id));
+  const canBill = allowsGuestBilling(event);
+  const hasMemberBill = bills.some((bill) => bill.type !== "SINGLE_EVENT");
+  const guests = canBill && event.guestFee > 0 ? event.bookings.filter((booking) =>
+    booking.kind === "非社員" && booking.rank === "正取" && !booking.transferred && !covered.has(booking.memberId)
+    && !event.guestSettlements?.some((item) => item.memberId === booking.memberId)) : [];
+  const quarter = canSelectQuarterEvent(event, periods) && event.memberBilling !== "NO_CHARGE" && !hasMemberBill;
+  const extra = canBill && !hasMemberBill && Boolean(event.startsAt && Date.parse(event.startsAt) > now)
+    && !periods.some((period) => period.eventIds.includes(event.id))
+    && !event.billingLabel?.includes("季度社費") && ["NORMAL", "NO_CHARGE"].includes(event.memberBilling ?? "NORMAL")
+    && event.bookings.some((booking) => booking.kind === "社員" && booking.rank === "正取" && !booking.transferred);
+  return { bills, quarter, extra, guests };
+}
+
+function hasBillToIssue(options?: ReturnType<typeof calendarBillingOptions>) {
+  return Boolean(options && (options.quarter || options.extra || options.guests.length));
+}
+
+function ActivityCalendar({ list, invoices, openEvent, openIssue, quarterMode, pickedIds, setPickedIds, toggleQuarterEvent, periods, createOnDate }: {
   list: ClubEvent[];
   invoices: Invoice[];
-  openEvent: (id: string, manageBills?: boolean) => void;
-  openQuarter?: (ids: string[], draftId?: string) => void;
+  openEvent: (id: string) => void;
+  openIssue?: () => void;
   quarterMode: boolean;
   pickedIds: string[];
   setPickedIds: (ids: string[]) => void;
@@ -2072,17 +2158,12 @@ function ActivityCalendar({ list, invoices, openEvent, openQuarter, quarterMode,
   const eventCount = [...eventsByDay.values()].reduce((total, events) => total + events.length, 0);
   const todayKey = `${today.year}-${String(today.month).padStart(2, "0")}-${String(today.day).padStart(2, "0")}`;
 
-  const admin = Boolean(openQuarter);
+  const admin = Boolean(openIssue);
   const selectedDate = pickedDate.startsWith(monthKey + "-") ? pickedDate : isCurrentMonth ? todayKey : monthKey + "-01";
   const selectedEvents = eventsByDay.get(Number(selectedDate.slice(-2))) ?? [];
-  const editableDrafts = periods.filter((period) => period.status === "PLANNED" && period.revision);
-  const calendarDraft = editableDrafts.find((period) => period.startDate <= selectedDate && selectedDate <= period.endDate) ?? editableDrafts[0];
-  const selectable = (event: ClubEvent) => canSelectQuarterEvent(event, periods);
-  const selection = pickedIds.filter((id) => list.some((event) => event.id === id && selectable(event)));
-  const matchingInvoices = (event: ClubEvent) => invoices.filter((invoice) => isPrincipal(invoice) && referencesEvent(invoice, event.id));
-  const canSettle = (event: ClubEvent, billedGuests?: ReadonlySet<string>) => admin && allowsGuestBilling(event) && event.bookings.some((booking) =>
-    booking.kind === "非社員" && booking.rank === "正取" && !booking.transferred
-    && !billedGuests?.has(booking.memberId) && !event.guestSettlements?.some((item) => item.memberId === booking.memberId));
+  const options = new Map(admin && quarterMode ? list.map((item) => [item.id, calendarBillingOptions(item, invoices, periods, calendarNow)]) : []);
+  const selectable = (event: ClubEvent) => hasBillToIssue(options.get(event.id));
+  const selection = pickedIds.filter((id) => hasBillToIssue(options.get(id)));
   const eventName = (event: ClubEvent) => event.eventKind === "OTHER"
     ? event.courts || "其他活動"
     : event.courts ? "羽球 · " + event.courts : "羽球活動";
@@ -2098,15 +2179,13 @@ function ActivityCalendar({ list, invoices, openEvent, openQuarter, quarterMode,
         paymentByEvent.set(entry.id, { member: label, guest: label });
         continue;
       }
-      const bills = matchingInvoices(entry).filter((bill) => billCoversCalendarEvent(bill, entry.id));
+      const plan = options.get(entry.id)!;
+      const bills = plan.bills;
       const linked = periods.find((period) => period.eventIds.includes(entry.id));
       const memberBills = bills.filter((bill) => bill.type !== "SINGLE_EVENT");
       const guestBills = bills.filter((bill) => bill.type === "SINGLE_EVENT");
-      const pendingMemberBill = selectable(entry)
-        && entry.memberBilling !== "NO_CHARGE"
-        && !memberBills.length;
-      const billedGuests = new Set(bills.map((bill) => bill.member_id));
-      const pendingGuestBill = entry.guestFee > 0 && canSettle(entry, billedGuests);
+      const pendingMemberBill = plan.quarter || plan.extra;
+      const pendingGuestBill = plan.guests.length > 0;
       if (pendingGuestBill || pendingMemberBill) statuses.add("unbilled");
       for (const bill of bills) {
         if (bill.amount <= 0) continue;
@@ -2147,9 +2226,6 @@ function ActivityCalendar({ list, invoices, openEvent, openQuarter, quarterMode,
           <button type="button" onClick={() => changeMonth(1)} aria-label="下個月">›</button>
         </div>
       </div>
-      {openQuarter && quarterMode && calendarDraft && <div className="calendar-billing-tools">
-        <button type="button" className="link" onClick={() => openQuarter([], calendarDraft.id)}>繼續編輯季費</button>
-      </div>}
       {unavailable.length > 0 && <div className="calendar-notice-status">
         <span role="status">{unavailable.map((kind) => kind === "holiday" ? "國定假日" : "停班停課公告").join("、")}暫時無法載入</span>
         <button type="button" className="link" onClick={() => setNoticeAttempt((attempt) => attempt + 1)}>重試</button>
@@ -2186,7 +2262,7 @@ function ActivityCalendar({ list, invoices, openEvent, openQuarter, quarterMode,
             aria-checked={directSelection ? selection.includes(directSelection.id) : undefined}
             aria-pressed={directSelection ? undefined : selectedDate === dateKey}
             data-active-date={selectedDate === dateKey}
-            aria-label={[dateKey, ...daySummary, ...dayNotices.map((notice) => notice.name), directSelection && "加入季費"].filter(Boolean).join("，")}
+            aria-label={[dateKey, ...daySummary, ...dayNotices.map((notice) => notice.name), directSelection && "選取開單"].filter(Boolean).join("，")}
             onClick={() => {
               setPickedDate(dateKey);
               setQuarterSelectionError(directSelection ? toggleQuarterEvent(directSelection) : "");
@@ -2212,7 +2288,6 @@ function ActivityCalendar({ list, invoices, openEvent, openQuarter, quarterMode,
       {!selectedEvents.length && <p className="calendar-panel-note">這天沒有活動。</p>}
       {!selectedEvents.length && !quarterMode && createOnDate && selectedDate >= todayKey && <button type="button" className="secondary" onClick={() => createOnDate(selectedDate)}>新增當天活動</button>}
       {selectedEvents.map((event) => {
-        const showBillingEntry = admin && quarterMode && (allowsGuestBilling(event) || matchingInvoices(event).length > 0);
         const payment = paymentByEvent.get(event.id);
         const chooseInCard = admin && quarterMode && selectable(event) && selectedEvents.filter(selectable).length > 1;
         return <article key={event.id} className="calendar-session activity-detail-card">
@@ -2224,19 +2299,16 @@ function ActivityCalendar({ list, invoices, openEvent, openQuarter, quarterMode,
             <div><dt>非社員</dt><dd>{payment.guest}</dd></div>
           </dl>}
           {chooseInCard && <label className="calendar-session-check activity-detail-action">
-            <input type="checkbox" checked={selection.includes(event.id)} onChange={() => setQuarterSelectionError(toggleQuarterEvent(event))} />加入季費
+            <input type="checkbox" checked={selection.includes(event.id)} onChange={() => setQuarterSelectionError(toggleQuarterEvent(event))} />選取開單
           </label>}
-          {showBillingEntry && <div className="calendar-session-actions">
-            <button type="button" className="secondary activity-detail-action" aria-haspopup="dialog" onClick={() => openEvent(event.id, true)}>管理本場帳單</button>
-          </div>}
         </article>;
       })}
     </aside>
     {quarterMode && <div className="calendar-selection-bar">
       {quarterSelectionError && <p className="guest-settlement-error calendar-selection-error" role="alert">{quarterSelectionError}</p>}
-      <strong aria-live="polite">季費已選 {selection.length} 場</strong>
+      <strong aria-live="polite">已選 {selection.length} 場</strong>
       {selection.length > 0 && <button type="button" className="link" onClick={() => { setPickedIds([]); setQuarterSelectionError(""); }}>清除</button>}
-      <button type="button" className="primary" disabled={!selection.length} onClick={() => openQuarter?.(selection)}>預覽季費 →</button>
+      <button type="button" className="primary" disabled={!selection.length} onClick={openIssue}>預覽開單 →</button>
     </div>}
     </div>
   );
@@ -2255,12 +2327,9 @@ function taipeiTime(value: string) {
   return new Date(value).toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
-function EventDetailsDialog({ event, initialBillingOpen, billingInvoices = [], hasMemberBill, hasLinkedPeriod, viewerId, user, isAdmin, close, join, cancel, transfer, edit, invoiceLabel, showEventBills, previewMemberExtra, publishMemberExtra, previewCancellation, cancelEvent, publishGuestSettlement, refreshGuestSettlement }: {
+function EventDetailsDialog({ event, billingInvoices = [], viewerId, user, isAdmin, close, join, cancel, transfer, edit, invoiceLabel, showEventBills, previewCancellation, cancelEvent }: {
   event: ClubEvent;
-  initialBillingOpen: boolean;
   billingInvoices?: Invoice[];
-  hasMemberBill: boolean;
-  hasLinkedPeriod: boolean;
   viewerId: string;
   user: Person;
   isAdmin: boolean;
@@ -2271,25 +2340,15 @@ function EventDetailsDialog({ event, initialBillingOpen, billingInvoices = [], h
   edit: () => void;
   invoiceLabel: string | null;
   showEventBills?: () => void;
-  previewMemberExtra: () => Promise<QuarterInvoicePreview | null>;
-  publishMemberExtra: (previewKey: string, reason: string) => Promise<boolean>;
   previewCancellation: () => Promise<EventCancellationPreview | null>;
   cancelEvent: (reason: string, previewKey: string) => Promise<boolean>;
-  publishGuestSettlement: (decisions: GuestSettlementDecision[]) => Promise<GuestSettlementReceipt | null>;
-  refreshGuestSettlement: () => Promise<void>;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const settingsRef = useRef<HTMLDetailsElement>(null);
   const attendanceRef = useRef<HTMLDivElement>(null);
   const [attendanceOpen, setAttendanceOpen] = useState(false);
-  const [billingOpen, setBillingOpen] = useState(initialBillingOpen && isAdmin);
-  const [guestSettlementOpen, setGuestSettlementOpen] = useState(false);
   const [cancelPreview, setCancelPreview] = useState<EventCancellationPreview | null>(null);
   const [cancelReason, setCancelReason] = useState("");
-  const [extraPreview, setExtraPreview] = useState<QuarterInvoicePreview | null>(null);
-  const [extraReason, setExtraReason] = useState("");
-  const [extraFeedback, setExtraFeedback] = useState("");
-  const extraPanelRef = useRef<HTMLElement>(null);
   const cancelPanelRef = useRef<HTMLElement>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -2317,42 +2376,8 @@ function EventDetailsDialog({ event, initialBillingOpen, billingInvoices = [], h
   const ended = Boolean(event.endsAt && new Date(event.endsAt).getTime() <= now);
   const archived = event.status === "CANCELLED" || event.status === "ARCHIVED";
   const canManage = isAdmin && !ended && !archived;
-  const canOpenBills = isAdmin && (allowsGuestBilling(event) || Boolean(showEventBills));
-  const canBillGuests = allowsGuestBilling(event) && event.bookings.some((booking) =>
-    booking.kind === "非社員" && booking.rank === "正取" && !booking.transferred
-    && !event.guestSettlements?.some((entry) => entry.memberId === booking.memberId));
-  const canPreviewExtra = canManage && allowsGuestBilling(event) && Boolean(event.startsAt && Date.parse(event.startsAt) > now)
-    && !hasMemberBill && !hasLinkedPeriod && !event.billingLabel?.includes("季度社費")
-    && ["NORMAL", "NO_CHARGE"].includes(event.memberBilling ?? "NORMAL")
-    && event.bookings.some((booking) => booking.kind === "社員" && booking.rank === "正取" && !booking.transferred);
-  const openExtraPreview = async () => {
-    setSaving(true);
-    setError("");
-    setCancelPreview(null);
-    if (settingsRef.current) settingsRef.current.open = false;
-    try {
-      const preview = await previewMemberExtra();
-      setExtraPreview(preview);
-      if (preview) requestAnimationFrame(() => extraPanelRef.current?.focus());
-    } catch { setError("無法預覽加場補收，請重試。"); }
-    finally { setSaving(false); }
-  };
-  const submitExtra = async (form: FormEvent<HTMLFormElement>) => {
-    form.preventDefault();
-    if (!extraPreview?.rows.length || !extraReason.trim() || saving) return;
-    setSaving(true);
-    setError("");
-    try {
-      if (await publishMemberExtra(extraPreview.previewKey, extraReason.trim())) {
-        setExtraFeedback("本場帳單已開立，未併入季費。");
-      } else setError("未開立加場帳單，請重新預覽。");
-      setExtraPreview(null);
-    } catch { setError("無法確認開單結果，請重新整理後再試。"); }
-    finally { setSaving(false); }
-  };
   const openCancelPreview = async () => {
     setSaving(true);
-    setExtraPreview(null);
     setError("");
     if (settingsRef.current) settingsRef.current.open = false;
     try {
@@ -2373,12 +2398,6 @@ function EventDetailsDialog({ event, initialBillingOpen, billingInvoices = [], h
         setError("未取消活動，請重新預覽後確認。");
       }
     } catch { setError("無法確認取消結果，請重新整理活動後再試。"); }
-    finally { setSaving(false); }
-  };
-  const publishGuestDecisions = async (decisions: GuestSettlementDecision[]) => {
-    if (saving) return null;
-    setSaving(true);
-    try { return await publishGuestSettlement(decisions); }
     finally { setSaving(false); }
   };
   const canChangeAttendance = Boolean(entry && !started && !archived);
@@ -2407,7 +2426,7 @@ function EventDetailsDialog({ event, initialBillingOpen, billingInvoices = [], h
   return (
     <dialog
       ref={dialogRef}
-      className={`modal event-dialog${canManage && !billingOpen ? " has-settings" : ""}`}
+      className={`modal event-dialog${canManage ? " has-settings" : ""}`}
       aria-labelledby="event-dialog-title"
       onCancel={(event) => {
         event.preventDefault();
@@ -2433,7 +2452,7 @@ function EventDetailsDialog({ event, initialBillingOpen, billingInvoices = [], h
       }}
     >
       <div className="event-dialog-controls">
-        {canManage && !billingOpen && <details className="event-settings" ref={settingsRef}>
+        {canManage && <details className="event-settings" ref={settingsRef}>
           <summary aria-label="活動設定" title="活動設定" aria-controls="event-settings-panel" aria-disabled={saving} onClick={(event) => { if (saving) event.preventDefault(); }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
           </summary>
@@ -2444,28 +2463,16 @@ function EventDetailsDialog({ event, initialBillingOpen, billingInvoices = [], h
         </details>}
         <button type="button" className="close" aria-label="關閉活動詳情" disabled={saving} onClick={close} autoFocus>×</button>
       </div>
-      <p>{billingOpen ? "管理本場帳單" : "活動詳情"}</p>
+      <p>活動詳情</p>
       <h2 id="event-dialog-title">{event.startsAt ? taipeiInputDate(event.startsAt) : event.date}（{event.weekday}）</h2>
       <dl className="event-dialog-facts">
         <div><dt>時間</dt><dd>{event.time}</dd></div>
         <div><dt>場地</dt><dd>{event.courts}</dd></div>
-        {!billingOpen && <div><dt>收費歸屬</dt><dd>{archived ? "活動已取消／封存" : invoiceLabel ?? event.billingLabel ?? (event.memberBilling === "FREE" ? "全員免費" : event.memberBilling === "NO_CHARGE" ? "本場不另計社員費" : "尚未出帳")}</dd></div>}
-        {!archived && !billingOpen && event.memberBilling !== "FREE" && <div><dt>零打費</dt><dd>NT$ {event.guestFee.toLocaleString("zh-TW")}／人</dd></div>}
+        <div><dt>收費歸屬</dt><dd>{archived ? "活動已取消／封存" : invoiceLabel ?? event.billingLabel ?? (event.memberBilling === "FREE" ? "全員免費" : event.memberBilling === "NO_CHARGE" ? "本場不另計社員費" : "尚未出帳")}</dd></div>
+        {!archived && event.memberBilling !== "FREE" && <div><dt>零打費</dt><dd>NT$ {event.guestFee.toLocaleString("zh-TW")}／人</dd></div>}
       </dl>
       {event.cancellationReason && <p className="form-note">取消原因：{event.cancellationReason}</p>}
       {!isAdmin && showEventBills && <button type="button" className="link" disabled={saving} onClick={showEventBills}>查看我的本場帳單 →</button>}
-      {billingOpen && extraPreview && <section ref={extraPanelRef} tabIndex={-1} className="event-cancel-review" aria-label="本場帳單預覽">
-        <h3>本場帳單預覽</h3>
-        <p>向本場符合資格的社員收費，不併入季費。{extraPreview.rows.length} 人 · 合計 NT$ {extraPreview.totalAmount.toLocaleString("zh-TW")}</p>
-        <ul className="billing-receipt-list" role="list">{extraPreview.rows.map((row) => <li key={row.memberId}><span>{row.name}</span><strong>NT$ {row.amount.toLocaleString("zh-TW")}</strong></li>)}</ul>
-        <form className="manager-form" onSubmit={(form) => void submitExtra(form)}>
-          <label>補收原因<input required maxLength={200} value={extraReason} onChange={(e) => setExtraReason(e.target.value)} placeholder="例如：額外租場費" disabled={saving} /></label>
-          <div className="event-dialog-actions">
-            <button type="button" className="secondary" disabled={saving} onClick={() => setExtraPreview(null)}>返回</button>
-            <button type="submit" className="primary" disabled={saving || !extraReason.trim() || !extraPreview.rows.length}>確認開單</button>
-          </div>
-        </form>
-      </section>}
       {cancelPreview && <section ref={cancelPanelRef} tabIndex={-1} className="event-cancel-review" aria-label="取消活動影響">
         <h3>取消活動 · 帳務影響</h3>
         <p>取消 {cancelPreview.cancelledBookings} 筆報名。只調整這一場，不會自動轉帳。</p>
@@ -2483,27 +2490,7 @@ function EventDetailsDialog({ event, initialBillingOpen, billingInvoices = [], h
           </div>
         </form>
       </section>}
-      {canOpenBills && !cancelPreview && !extraPreview && <>
-        <button type="button" className="secondary" aria-expanded={billingOpen} aria-controls="event-billing-panel" disabled={saving} onClick={() => {
-          setBillingOpen((open) => !open); setGuestSettlementOpen(false); setError("");
-        }}>{billingOpen ? "返回活動詳情" : "管理本場帳單"}</button>
-        {billingOpen && <section id="event-billing-panel" className="guest-settlement" aria-labelledby="event-billing-title">
-          <div className="guest-settlement-heading"><h3 id="event-billing-title">本場帳單</h3></div>
-          <div className="event-dialog-actions">
-            {showEventBills && <button type="button" className="secondary" disabled={saving} onClick={showEventBills}>查看已開帳單</button>}
-            {(canBillGuests || guestSettlementOpen) && <button type="button" className="secondary" aria-expanded={guestSettlementOpen} disabled={saving} onClick={() => setGuestSettlementOpen((open) => !open)}>{guestSettlementOpen ? "收合開單名單" : "開零打帳單"}</button>}
-            {canPreviewExtra && !guestSettlementOpen && <button type="button" className="link" disabled={saving} onClick={() => void openExtraPreview()}>另開本場帳單</button>}
-          </div>
-          {!showEventBills && !canBillGuests && !canPreviewExtra && <p className="form-note">目前沒有可處理的帳單。</p>}
-          {outstanding.length > 0 && <section className="event-dialog-roster" aria-label="未收齊款項">
-            <h4>未收齊款項</h4>
-            <ul>{outstanding.map((person) => <li key={person.id}><span>{person.name}</span>{paymentBadge(person.status)}</li>)}</ul>
-          </section>}
-          {extraFeedback && <p role="status">{extraFeedback}</p>}
-          {guestSettlementOpen && <GuestSettlementPanel event={event} busy={saving} publish={publishGuestDecisions} refresh={refreshGuestSettlement} />}
-        </section>}
-      </>}
-      {!archived && !billingOpen && !cancelPreview && !extraPreview && <><div className="event-dialog-status" ref={attendanceRef} tabIndex={-1}>
+      {!archived && !cancelPreview && <><div className="event-dialog-status" ref={attendanceRef} tabIndex={-1}>
         {canChangeAttendance ? (
           <button
             type="button"
@@ -2539,8 +2526,12 @@ function EventDetailsDialog({ event, initialBillingOpen, billingInvoices = [], h
         )}
       </section>
       </>}
+      {outstanding.some((person) => !event.bookings.some((booking) => booking.memberId === person.id)) && <section className="event-dialog-roster" aria-label="其他待收款人">
+        <h3>其他待收款人</h3>
+        <ul>{outstanding.filter((person) => !event.bookings.some((booking) => booking.memberId === person.id)).map((person) => <li key={person.id}><span>{person.name}</span>{paymentBadge(person.status)}</li>)}</ul>
+      </section>}
       {error && <p role="alert">{error}</p>}
-      {!archived && !billingOpen && !cancelPreview && !extraPreview && !started && !entry && <div className="event-dialog-actions">
+      {!archived && !cancelPreview && !started && !entry && <div className="event-dialog-actions">
         <button type="button" className="primary" disabled={saving || ((!user.member || event.eventKind === "OTHER") && full)} onClick={() => void updateAttendance(join)}>
           {saving ? "處理中…" : full && (!user.member || event.eventKind === "OTHER") ? "本場已額滿" : "參加"}
         </button>
@@ -2548,6 +2539,120 @@ function EventDetailsDialog({ event, initialBillingOpen, billingInvoices = [], h
     </dialog>
   );
 }
+
+function CalendarIssueDialog({ events, invoices, periods, close, openQuarter, refresh, publishGuest, previewExtra, publishExtra }: {
+  events: ClubEvent[];
+  invoices: Invoice[];
+  periods: QuarterBillingPeriod[];
+  close: () => void;
+  openQuarter: (ids: string[]) => void;
+  refresh: () => Promise<void>;
+  publishGuest: (id: string, decisions: GuestSettlementDecision[]) => Promise<GuestSettlementReceipt | null>;
+  previewExtra: (id: string) => Promise<QuarterInvoicePreview | null>;
+  publishExtra: (id: string, key: string, reason: string) => Promise<boolean>;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [active, setActive] = useState<{ id: string; kind: "guest" | "extra" } | null>(null);
+  const [quote, setQuote] = useState<QuarterInvoicePreview | null>(null);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  useEffect(() => {
+    const node = dialog.current;
+    const trigger = document.activeElement;
+    if (!node) return;
+    node.showModal();
+    return () => { node.close(); if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus(); };
+  }, []);
+  const rows = events.map((event) => ({ event, ...calendarBillingOptions(event, invoices, periods, Date.now()) }))
+    .filter(hasBillToIssue).sort((a, b) => (a.event.startsAt ?? "").localeCompare(b.event.startsAt ?? ""));
+  const quarters = new Map<string, ClubEvent[]>();
+  for (const row of rows.filter((row) => row.quarter)) {
+    const group = quarterKeyForEvent(row.event, periods);
+    quarters.set(group, [...(quarters.get(group) ?? []), row.event]);
+  }
+  const chosen = active && rows.find((row) => row.event.id === active.id);
+  const label = (event: ClubEvent) => [taipeiInputDate(event.startsAt) || event.date, event.time, event.courts].join(" · ");
+  const open = async (id: string, kind: "guest" | "extra") => {
+    setActive({ id, kind }); setQuote(null); setReason(""); setFeedback("");
+    if (kind !== "extra") return;
+    setBusy(true);
+    try {
+      const result = await previewExtra(id);
+      setQuote(result);
+      if (!result?.rows.length) setFeedback("本場沒有可加收的社員，請確認名單和費率。");
+    } catch { setFeedback("無法預覽補收，請重新整理後再試。"); }
+    finally { setBusy(false); }
+  };
+  const saveExtra = async (form: FormEvent<HTMLFormElement>) => {
+    form.preventDefault();
+    if (!active || !quote?.rows.length || !reason.trim() || busy) return;
+    setBusy(true);
+    try {
+      if (await publishExtra(active.id, quote.previewKey, reason.trim())) {
+        setActive(null); setQuote(null); setFeedback("本場社員補收已開單。");
+      } else { setQuote(null); setFeedback("未開單。名單可能已變動，請重新預覽。"); }
+    } catch { setQuote(null); setFeedback("無法確認開單結果，重新整理後再試。"); }
+    finally { setBusy(false); }
+  };
+  return <dialog ref={dialog} className="modal event-dialog" aria-labelledby="calendar-issue-title"
+    onCancel={(event) => { event.preventDefault(); if (!busy) close(); }}>
+    <button type="button" className="close" aria-label="關閉開單預覽" disabled={busy} onClick={close}>×</button>
+    <p>活動收費</p><h2 id="calendar-issue-title">開單預覽</h2>
+    {feedback && <p role="status">{feedback}</p>}
+    {!chosen && !rows.length && <p>所選場次沒有待開帳單。</p>}
+    {!chosen && <>
+      {quarters.size > 0 && <section className="guest-settlement" aria-label="季費">
+        <h3>季費 · 依計費期間開立</h3>
+        {[...quarters].map(([key, group]) => <div key={key} className="calendar-issue-group">
+          <ul>{group.map((event) => <li key={event.id}>{label(event)}</li>)}</ul>
+          <button type="button" className="secondary" disabled={group.length > 32} onClick={() => openQuarter(group.map((event) => event.id))}>預覽季費（{group.length} 場）</button>
+          {group.length > 32 && <p className="form-note">每期最多 32 場，請返回調整選取。</p>}
+        </div>)}
+      </section>}
+      {rows.some((row) => row.guests.length) && <section className="guest-settlement" aria-label="零打費">
+        <h3>零打費 · 依場次開立</h3>
+        {rows.filter((row) => row.guests.length).map(({ event, guests }) => <div key={event.id} className="calendar-issue-group">
+          <span>{label(event)}</span>
+          <button type="button" className="secondary" onClick={() => void open(event.id, "guest")}>核對零打名單（{guests.length} 人）</button>
+        </div>)}
+      </section>}
+      {rows.some((row) => row.extra) && <section className="guest-settlement" aria-label="社員單場補收">
+        <h3>社員單場補收 · 不併入季費</h3><p className="form-note">同一場社員費可選季費或單場補收，不會重複開單。</p>
+        {rows.filter((row) => row.extra).map(({ event }) => <div key={event.id} className="calendar-issue-group">
+          <span>{label(event)}</span>
+          <button type="button" className="secondary" onClick={() => void open(event.id, "extra")}>預覽單場補收</button>
+        </div>)}
+      </section>}
+    </>}
+    {chosen && <>
+      <p className="form-note">{label(chosen.event)}</p>
+      <button type="button" className="link" disabled={busy} onClick={() => { setActive(null); setFeedback(""); }}>返回所選場次</button>
+      {active?.kind === "guest" && <GuestSettlementPanel key={chosen.event.id} event={{ ...chosen.event, bookings: chosen.guests }}
+        busy={busy} refresh={refresh} publish={async (decisions) => {
+          setBusy(true);
+          try {
+            const result = await publishGuest(chosen.event.id, decisions);
+            if (result) {
+              setFeedback(`零打已開單 ${result.issued} 筆，免收 ${result.skipped} 人。`);
+              setActive(null);
+            }
+            return result;
+          } finally { setBusy(false); }
+        }} />}
+      {active?.kind === "extra" && (busy && !quote ? <p role="status">正在核對名單…</p> : quote && quote.rows.length > 0 && <section className="guest-settlement" aria-label="單場補收預覽">
+        <h3>社員單場補收</h3>
+        <p>抵扣後合計 NT$ {quote.totalAmount.toLocaleString("zh-TW")}</p>
+        <ul className="billing-receipt-list">{quote.rows.map((row) => <li key={row.memberId}><span>{row.name}</span><strong>NT$ {row.amount.toLocaleString("zh-TW")}</strong></li>)}</ul>
+        <form className="manager-form" onSubmit={(event) => void saveExtra(event)}>
+          <label>補收原因<input required maxLength={200} value={reason} onChange={(event) => setReason(event.target.value)} disabled={busy} /></label>
+          <button type="submit" className="primary" disabled={busy || !reason.trim()}>確認開單</button>
+        </form>
+      </section>)}
+    </>}
+  </dialog>;
+}
+
 
 function GuestSettlementPanel({
   event,
