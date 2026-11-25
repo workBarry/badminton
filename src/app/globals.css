@@ -3379,3 +3379,102 @@ dialog.event-dialog {
   margin-block: .75rem;
 }
 .event-cancel-review .event-dialog-actions { flex-wrap: wrap; }
+
+/* Calendar date selection and the associated session panel. */
+.activity-month-workspace { display:grid; grid-template-columns:minmax(0,1fr) minmax(248px,320px); align-items:start; gap:16px; }
+.activity-month-workspace > * { min-width:0; }
+.activity-month-workspace .calendar-date-picker { min-height:74px; cursor:pointer; overflow:hidden; }
+.activity-month-workspace .calendar-date-picker[data-active-date="true"] { border-color:#3d806b; background:#e2f2ea; }
+.activity-month-workspace .calendar-day.empty { min-height:0; }
+.calendar-billing-tools, .calendar-session-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.calendar-billing-tools { margin:0 4px 12px; }
+.calendar-billing-tools button[aria-pressed="true"] { background:#e1f1e9; color:#164f3e; border-color:#77a895; }
+.calendar-day-panel { display:grid; gap:10px; padding:17px; border:1px solid #dce9e2; border-radius:16px; background:#f6fbf8; }
+.calendar-day-panel > p:first-child { color:#47675d; font-size:.82rem; }
+.calendar-day-panel h2,.calendar-day-panel h3,.calendar-day-panel p { margin:0; }
+.calendar-day-panel h2 { font-size:1.21rem; }
+.calendar-session { display:grid; gap:8px; background:#fff; border:1px solid #dce9e2; border-radius:12px; padding:12px; }
+.calendar-session-heading { display:flex; flex-wrap:wrap; align-items:center; gap:7px; }
+.calendar-session-heading h3 { font-size:1rem; margin-right:auto; overflow-wrap:anywhere; }
+.calendar-panel-note,.calendar-session p { color:#486458; font-size:.84rem; }
+.calendar-session-check { display:flex; align-items:center; gap:8px; min-height:44px; color:#174f40; }
+.calendar-session-check input { accent-color:#16654e; width:18px; height:18px; }
+.calendar-selection-bar { grid-column:1/-1; position:sticky; bottom:12px; z-index:3; display:flex; align-items:center; flex-wrap:wrap; gap:8px; background:#fff; border:1px solid #abcdbd; border-radius:12px; padding:10px 12px; box-shadow:0 5px 15px #16372d16; }
+.calendar-selection-bar .primary { margin-inline-start:auto; }
+@media (max-width:950px) { .activity-month-workspace { grid-template-columns:minmax(0,1fr); } }
+@media (max-width:600px) {
+  .activity-month-workspace { gap:11px; }
+  .activity-month-workspace .calendar-date-picker { min-height:44px; align-items:center; text-align:center; padding:4px 1px; }
+  .activity-month-workspace .calendar-date-picker .calendar-day-number { font-size:12px; }
+  .calendar-selection-bar { bottom:calc(62px + env(safe-area-inset-bottom)); }
+  .calendar-session-actions .primary { flex:1 1 auto; min-height:44px; }
+  .calendar-day-panel { padding:13px; }
+}
+
+.header-actions .calendar-quarter-toggle { white-space:nowrap; }
+.header-actions .calendar-quarter-toggle[aria-pressed="true"] { background:#e1f1e9; color:#164f3e; border-color:#77a895; }
+@media (max-width:600px) {
+  .header-actions:has(.calendar-quarter-toggle) { display:flex; flex-wrap:wrap; gap:6px; }
+  .header-actions:has(.calendar-quarter-toggle) > button { min-height:40px; }
+}
+
+.calendar-day-event { display:grid; gap:2px; min-width:0; max-width:100%; margin-top:5px; color:#2e6858; }
+.calendar-day-event-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; font-weight:700; }
+.calendar-day-event-time { white-space:nowrap; font-size:10px; font-variant-numeric:tabular-nums; }
+.calendar-day-event-more { font-size:10px; color:#486458; }
+@media (max-width:600px) {
+  .calendar-day-event { gap:1px; width:100%; margin-top:2px; }
+  .calendar-day-event-name { font-size:10px; }
+  .calendar-day-event-time { white-space:normal; overflow-wrap:anywhere; font-size:9px; }
+  .calendar-day-event-more { font-size:9px; }
+}
+
+
+/* A real button covers the card; secondary controls stay independently usable. */
+.activity-detail-card { position:relative; isolation:isolate; }
+.activity-detail-card .activity-detail-hit {
+  position:absolute; inset:0; z-index:1; width:100%; height:100%;
+  border:0; border-radius:inherit; padding:0; background:transparent; cursor:pointer;
+}
+.activity-detail-card .activity-detail-hit:hover { box-shadow:inset 0 0 0 1px #77a895; }
+.activity-detail-card .activity-detail-hit:focus-visible { outline:2px solid #16654e; outline-offset:2px; }
+.activity-detail-card .activity-detail-action { position:relative; z-index:2; }
+.calendar-session-check { justify-self:start; cursor:pointer; }
+
+/* Billing mode only: a warm tint marks any date with fees to handle. */
+.activity-month-workspace .calendar-date-picker.has-fee-task {
+  background:#fff0d8;
+  border-color:#d9ac71;
+}
+.activity-month-workspace .calendar-date-picker.has-fee-task:hover,
+.activity-month-workspace .calendar-date-picker.has-fee-task[data-active-date="true"] {
+  background:#ffe7bf;
+}
+.activity-month-workspace .calendar-date-picker.has-fee-task[data-active-date="true"] {
+  border-color:#3d806b;
+}
+
+
+.calendar-payment-summary { display:grid; gap:4px; margin:0; padding:8px 0 0; border-top:1px solid #e0eae5; font-size:.82rem; }
+.calendar-payment-summary > div { display:grid; grid-template-columns:4em minmax(0,1fr); gap:6px; align-items:baseline; }
+.calendar-payment-summary dt { color:#486458; }
+.calendar-payment-summary dd { margin:0; color:#243e34; overflow-wrap:anywhere; }
+
+
+/* The checkbox indicator belongs to the date button, not a separate hit target. */
+.calendar-date-picker[role="checkbox"] { position:relative; }
+.calendar-date-picker[role="checkbox"] .calendar-day-number { padding-inline-end:18px; }
+.calendar-checked-mark {
+  position:absolute; top:8px; right:8px; display:grid; place-items:center; width:16px; height:16px;
+  border:1px solid #799288; border-radius:4px; background:#fff;
+}
+.calendar-date-picker[aria-checked="true"] .calendar-checked-mark { background:#16654e; border-color:#16654e; }
+.calendar-date-picker[aria-checked="true"] .calendar-checked-mark::after {
+  content:""; width:5px; height:8px; border:solid #fff; border-width:0 2px 2px 0; transform:translateY(-1px) rotate(45deg);
+}
+.calendar-selection-error { flex-basis:100%; margin:0; }
+@media (max-width:600px) {
+  .calendar-date-picker[role="checkbox"] .calendar-day-number { align-self:stretch; justify-content:flex-start; flex-wrap:wrap; padding-inline-start:3px; }
+  .calendar-checked-mark { top:5px; right:3px; width:13px; height:13px; }
+  .calendar-date-picker[aria-checked="true"] .calendar-checked-mark::after { width:4px; height:7px; }
+}

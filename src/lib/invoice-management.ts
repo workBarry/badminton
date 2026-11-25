@@ -3,9 +3,13 @@ import { FieldValue, type DocumentData } from "firebase-admin/firestore";
 import { getAdminFirestore } from "@/lib/firebase-admin";
 import { recordBalanceMovement } from "@/lib/balance-ledger";
 import type { Viewer } from "@/lib/device-auth";
-import { effectiveInvoiceAmounts, reduceUnpaidInvoice, validCalendarDate } from "@/lib/quarter-planning";
+import { effectiveInvoiceAmounts, invoiceCoversEvent, reduceUnpaidInvoice, validCalendarDate } from "@/lib/quarter-planning";
 const TYPES = ["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "SINGLE_EVENT", "MEMBER_EXTRA"];
-function eventIds(data: DocumentData): string[] { return Array.isArray(data.eventIds) ? data.eventIds.map(String) : data.eventId ? [String(data.eventId)] : []; }
+function eventIds(data: DocumentData): string[] {
+  const ids = Array.isArray(data.eventIds) ? data.eventIds.map(String) : [];
+  if (data.eventId && !ids.includes(String(data.eventId))) ids.push(String(data.eventId));
+  return ids;
+}
 
 export async function manageInvoice(action: string, input: Record<string, string>, actor: Viewer) {
   if (actor.role !== "ADMIN") throw new Error("只有幹部可以管理帳單");
@@ -82,13 +86,22 @@ export async function manageInvoice(action: string, input: Record<string, string
     }
     if (data.status !== "PENDING" && !(data.status === "VOID" && data.cancellationReason === "ADMIN_VOID")) throw new Error("僅未繳或幹部作廢的帳單可重開");
     const ids = eventIds(data);
-    const events = ids.length ? await transaction.getAll(...ids.map((id) => db.collection("events").doc(id))) : [];
+    if (new Set(ids).size !== ids.length) throw new Error("原帳單包含重複場次，請先核對");
+    const [events, otherInvoices] = await Promise.all([
+      ids.length ? transaction.getAll(...ids.map((id) => db.collection("events").doc(id))) : [],
+      ids.length ? transaction.get(db.collection("invoices").where("memberId", "==", memberRef.id)) : null,
+    ]);
     let amounts: number[];
     try { amounts = JSON.parse(input.eventAmounts || ""); } catch { throw new Error("請填寫重開帳單各項金額"); }
     if (!Array.isArray(amounts) || amounts.length !== Math.max(ids.length, 1) || amounts.some((amount) => !Number.isSafeInteger(amount) || amount < 0 || amount > 1000000)) throw new Error("重開金額須為 0 至 1,000,000 的整數元，且項目數需符合原單");
     events.forEach((event, index) => { if ((!event.exists || event.data()?.status === "CANCELLED") && amounts[index] !== 0) throw new Error("已取消或不存在的場次不能重新收費"); });
     for (const [index, id] of ids.entries()) {
       if (amounts[index] !== 0 && Array.isArray(data.adjustments) && data.adjustments.some((entry: DocumentData) => entry.eventId === id && ["MEMBERSHIP_END_REDUCTION", "MEMBERSHIP_END_CREDIT"].includes(entry.kind))) throw new Error("已因會籍結束減免的場次不能重新收費");
+    }
+    for (const [index, id] of ids.entries()) {
+      if (amounts[index] > 0 && otherInvoices?.docs.some((invoice) => invoice.id !== ref.id && invoiceCoversEvent(invoice.data(), id))) {
+        throw new Error("此球友的同一場次已有有效帳單，不能重複收費");
+      }
     }
     const grossAmount = amounts.reduce((sum, amount) => sum + amount, 0);
     if (grossAmount <= 0) throw new Error("總金額需大於 0；免收請直接作廢帳單");
@@ -99,7 +112,7 @@ export async function manageInvoice(action: string, input: Record<string, string
     const creditApplied = Math.min(grossAmount, Number(member.data()?.creditBalance ?? 0) + restoredCredit);
     const amount = grossAmount - creditApplied;
     const membershipAdjustments = Array.isArray(data.adjustments) ? data.adjustments.filter((entry: DocumentData) => ["MEMBERSHIP_END_REDUCTION", "MEMBERSHIP_END_CREDIT"].includes(entry.kind)) : [];
-    transaction.create(replacementRef, { id: replacementRef.id, memberId: data.memberId, memberNameSnapshot: data.memberNameSnapshot ?? member.data()?.displayName, type: data.type, eventId: data.eventId ?? null, eventIds: ids, eventAmounts: ids.length ? amounts : [], eventSnapshots: data.eventSnapshots ?? [], periodId: data.periodId ?? null, relatedPeriodId: data.relatedPeriodId ?? null, periodLabel: data.periodLabel ?? "重開帳單", baselineEventCount: data.baselineEventCount ?? ids.length, baselineGrossAmount: data.baselineGrossAmount ?? data.grossAmount ?? effective.grossAmount, baselineEventAmounts: data.baselineEventAmounts ?? data.eventAmounts ?? [], grossAmount, creditApplied, amount, dueAt, status: amount === 0 ? "CONFIRMED" : "PENDING", confirmedAt: amount === 0 ? now : null, reportedAt: null, replacementOfId: ref.id, adjustments: [...membershipAdjustments, { ...audit, kind: "REISSUE", amount: grossAmount - effective.grossAmount, previousGrossAmount: effective.grossAmount }], createdAt: now, updatedAt: now });
+    transaction.create(replacementRef, { id: replacementRef.id, memberId: data.memberId, memberNameSnapshot: data.memberNameSnapshot ?? member.data()?.displayName, type: data.type, ...(typeof data.guestSettlementSource === "string" ? { guestSettlementSource: data.guestSettlementSource } : {}), eventId: data.eventId ?? null, eventIds: ids, eventAmounts: ids.length ? amounts : [], eventSnapshots: data.eventSnapshots ?? [], periodId: data.periodId ?? null, relatedPeriodId: data.relatedPeriodId ?? null, periodLabel: data.periodLabel ?? "重開帳單", baselineEventCount: data.baselineEventCount ?? ids.length, baselineGrossAmount: data.baselineGrossAmount ?? data.grossAmount ?? effective.grossAmount, baselineEventAmounts: data.baselineEventAmounts ?? data.eventAmounts ?? [], grossAmount, creditApplied, amount, dueAt, status: amount === 0 ? "CONFIRMED" : "PENDING", confirmedAt: amount === 0 ? now : null, reportedAt: null, replacementOfId: ref.id, adjustments: [...membershipAdjustments, { ...audit, kind: "REISSUE", amount: grossAmount - effective.grossAmount, previousGrossAmount: effective.grossAmount }], createdAt: now, updatedAt: now });
     transaction.update(ref, { status: "VOID", cancellationReason: "ADMIN_VOID", voidReason: reason, replacedById: replacementRef.id, voidedAt: now, updatedAt: now, adjustments: FieldValue.arrayUnion({ ...audit, kind: "REISSUED", amount: -effective.amount, replacementId: replacementRef.id }) });
     transaction.update(memberRef, { creditBalance: FieldValue.increment(restoredCredit - creditApplied), updatedAt: now });
     recordBalanceMovement(transaction, db, { memberId: memberRef.id, amount: restoredCredit, reason: "重開帳單恢復原抵扣：" + reason, sourceKey: `invoice:${ref.id}:reissue-return`, invoiceId: ref.id, eventId: data.eventId ?? null, actorId: actor.id, actorName: actor.name, createdAt: now });

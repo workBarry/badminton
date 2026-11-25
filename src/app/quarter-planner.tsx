@@ -154,8 +154,8 @@ export default function QuarterPlanner({ plans, existingDates, saving, confirmPl
 
 type QuarterPeriodEvent = { id: string; startsAt?: string; endsAt?: string; courts: string; quarterEligible?: boolean };
 
-function defaultBillingPeriod() {
-  const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(new Date());
+function defaultBillingPeriod(anchor?: string) {
+  const today = anchor || new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(new Date());
   const year = Number(today.slice(0, 4));
   const quarter = Math.floor((Number(today.slice(5, 7)) - 1) / 3);
   return {
@@ -165,17 +165,19 @@ function defaultBillingPeriod() {
   };
 }
 
-export function QuarterPeriodCreator({ events, saving, initialPeriod, onCreate, onCreated }: {
+export function QuarterPeriodCreator({ events, saving, initialPeriod, initialEventIds = [], initialDate, onCreate, onCreated }: {
   events: QuarterPeriodEvent[];
   saving: boolean;
   initialPeriod?: QuarterBillingPeriod;
+  initialEventIds?: string[];
+  initialDate?: string;
   onCreate: (input: QuarterPeriodInput) => Promise<QuarterPeriodResult | null>;
-  onCreated?: (id: string) => void;
+  onCreated?: (id: string) => void | Promise<void>;
 }) {
   const [period, setPeriod] = useState(() => initialPeriod
     ? { label: initialPeriod.label, startDate: initialPeriod.startDate, endDate: initialPeriod.endDate }
-    : defaultBillingPeriod());
-  const [selected, setSelected] = useState<string[]>(() => initialPeriod?.eventIds ?? []);
+    : defaultBillingPeriod(initialDate));
+  const [selected, setSelected] = useState<string[]>(() => [...new Set([...(initialPeriod?.eventIds ?? []), ...initialEventIds])]);
   const [error, setError] = useState("");
   const pendingId = useRef<string | null>(null);
   const dateFormat = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" });
@@ -213,7 +215,7 @@ export function QuarterPeriodCreator({ events, saving, initialPeriod, onCreate, 
         if (result?.eventCount) {
           pendingId.current = null;
           if (!initialPeriod) setSelected([]);
-          onCreated?.(result.periodId);
+          await onCreated?.(result.periodId);
         } else setError("未建立季度社費期間，請重試。");
       } catch (failure) {
         setError(failure instanceof Error ? failure.message : "未建立季度社費期間，請重試。");
@@ -233,7 +235,7 @@ export function QuarterPeriodCreator({ events, saving, initialPeriod, onCreate, 
           </li>)}</ul>
         </div> : <p className="form-note" role="status">這個日期範圍目前沒有可納入的活動。</p>}
         {error && <p className="guest-settlement-error" role="alert">{error}</p>}
-        <button className="primary" disabled={!selectedIds.length}>{saving ? "儲存中…" : initialPeriod ? "儲存草稿變更" : "儲存期間"}</button>
+        <button className="primary" disabled={!selectedIds.length}>{saving ? "儲存中…" : initialEventIds.length ? "儲存草稿並預覽" : initialPeriod ? "儲存草稿變更" : "儲存期間"}</button>
       </fieldset>
     </form>
   );
