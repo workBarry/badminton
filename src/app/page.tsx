@@ -900,6 +900,7 @@ export default function Home() {
           key={selectedEvent.id}
           event={selectedEvent}
           initialBillingOpen={eventDetails?.manageBills === true}
+          billingInvoices={isAdmin ? detailInvoices : undefined}
           hasMemberBill={detailInvoices.some((bill) => bill.type !== "SINGLE_EVENT" && isLiveInvoice(bill) && includesEvent(bill, selectedEvent.id))}
           hasLinkedPeriod={quarterBillingPeriods.some((period) => period.eventIds.includes(selectedEvent.id))}
           viewerId={viewer.id}
@@ -1964,13 +1965,31 @@ function allowsGuestBilling(event: ClubEvent) {
 }
 
 const calendarFeeStatuses = [
-  { id: "unbilled", label: "待開單" },
-  { id: "unpaid", label: "待收款" },
-  { id: "reported", label: "待核對" },
+  { id: "unbilled", label: "未開單" },
+  { id: "unpaid", label: "未收齊" },
+  { id: "reported", label: "待確認" },
 ] as const;
 
 function isLiveInvoice(invoice: Invoice) {
   return !["VOID", "CREDITED", "REFUNDED"].includes(invoice.status);
+}
+
+function billCoversCalendarEvent(invoice: Invoice, eventId: string) {
+  if (!isPrincipal(invoice) || !isLiveInvoice(invoice) || !includesEvent(invoice, eventId)) return false;
+  const index = invoice.event_ids?.length ? invoice.event_ids.indexOf(eventId) : 0;
+  return index < 0 || invoice.event_amounts?.[index] !== 0;
+}
+
+function outstandingEventPayers(event: ClubEvent, invoices: Invoice[]) {
+  const names = new Map(event.bookings.map((booking) => [booking.memberId, booking.name]));
+  const people = new Map<string, { id: string; name: string; status: "PENDING" | "REPORTED" }>();
+  for (const bill of invoices) {
+    const { status, member_id: id } = bill;
+    if (bill.amount <= 0 || (status !== "PENDING" && status !== "REPORTED") || !billCoversCalendarEvent(bill, event.id)) continue;
+    if (people.get(id)?.status === "PENDING") continue;
+    people.set(id, { id, name: names.get(id) || bill.memberName, status });
+  }
+  return [...people.values()].sort((a, b) => Number(a.status === "REPORTED") - Number(b.status === "REPORTED") || a.name.localeCompare(b.name, "zh-Hant"));
 }
 
 function canSelectQuarterEvent(event: ClubEvent, periods: QuarterBillingPeriod[]) {
@@ -2079,19 +2098,14 @@ function ActivityCalendar({ list, invoices, openEvent, openQuarter, quarterMode,
         paymentByEvent.set(entry.id, { member: label, guest: label });
         continue;
       }
-      const bills = matchingInvoices(entry).filter((bill) => {
-        if (!isLiveInvoice(bill) || !includesEvent(bill, entry.id)) return false;
-        const index = bill.event_ids?.length ? bill.event_ids.indexOf(entry.id) : 0;
-        return index < 0 || bill.event_amounts?.[index] !== 0;
-      });
+      const bills = matchingInvoices(entry).filter((bill) => billCoversCalendarEvent(bill, entry.id));
       const linked = periods.find((period) => period.eventIds.includes(entry.id));
       const memberBills = bills.filter((bill) => bill.type !== "SINGLE_EVENT");
       const guestBills = bills.filter((bill) => bill.type === "SINGLE_EVENT");
       const pendingMemberBill = selectable(entry)
         && entry.memberBilling !== "NO_CHARGE"
-        && entry.bookings.some((booking) => booking.kind === "社員" && booking.rank === "正取" && !booking.transferred)
         && !memberBills.length;
-      const billedGuests = new Set(guestBills.map((bill) => bill.member_id));
+      const billedGuests = new Set(bills.map((bill) => bill.member_id));
       const pendingGuestBill = entry.guestFee > 0 && canSettle(entry, billedGuests);
       if (pendingGuestBill || pendingMemberBill) statuses.add("unbilled");
       for (const bill of bills) {
@@ -2100,9 +2114,9 @@ function ActivityCalendar({ list, invoices, openEvent, openQuarter, quarterMode,
         if (bill.status === "REPORTED") statuses.add("reported");
       }
       const paymentLabel = (group: Invoice[], unbilled: boolean, fallback: string) => [
-        unbilled && "待開單",
-        group.some((bill) => bill.status === "PENDING" && bill.amount > 0) && "待繳",
-        group.some((bill) => bill.status === "REPORTED" && bill.amount > 0) && "待核對",
+        unbilled && "未開單",
+        group.some((bill) => bill.status === "PENDING" && bill.amount > 0) && "未收齊",
+        group.some((bill) => bill.status === "REPORTED" && bill.amount > 0) && "待確認",
         group.some((bill) => bill.status === "CONFIRMED") && "已結清",
       ].filter(Boolean).join("、") || fallback;
       const memberFallback = linked?.status === "GENERATING" ? "開單中"
@@ -2162,7 +2176,12 @@ function ActivityCalendar({ list, invoices, openEvent, openQuarter, quarterMode,
             ...calendarFeeStatuses.filter(({ id }) => feeStatuses.has(id)).map(({ label }) => label)];
           const singleCandidate = admin && quarterMode ? dayEvents.filter(selectable) : [];
           const directSelection = singleCandidate.length === 1 ? singleCandidate[0] : undefined;
-          return <button type="button" key={day} className={`calendar-day calendar-date-picker${dayEvents.length ? " has-event" : ""}${isToday ? " today" : ""}${feeStatuses.size ? " has-fee-task" : ""}`}
+          const hasUnbilled = feeStatuses.has("unbilled");
+          const hasOutstanding = feeStatuses.has("unpaid") || feeStatuses.has("reported");
+          const feeTone = hasUnbilled ? "unbilled" : hasOutstanding ? "outstanding" : undefined;
+          return <button type="button" key={day} className={`calendar-day calendar-date-picker${dayEvents.length ? " has-event" : ""}${isToday ? " today" : ""}`}
+            data-fee-tone={feeTone}
+            title={feeTone ? [hasUnbilled && "未開單", hasOutstanding && "未收齊"].filter(Boolean).join("、") : undefined}
             role={directSelection ? "checkbox" : undefined}
             aria-checked={directSelection ? selection.includes(directSelection.id) : undefined}
             aria-pressed={directSelection ? undefined : selectedDate === dateKey}
@@ -2236,9 +2255,10 @@ function taipeiTime(value: string) {
   return new Date(value).toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
-function EventDetailsDialog({ event, initialBillingOpen, hasMemberBill, hasLinkedPeriod, viewerId, user, isAdmin, close, join, cancel, transfer, edit, invoiceLabel, showEventBills, previewMemberExtra, publishMemberExtra, previewCancellation, cancelEvent, publishGuestSettlement, refreshGuestSettlement }: {
+function EventDetailsDialog({ event, initialBillingOpen, billingInvoices = [], hasMemberBill, hasLinkedPeriod, viewerId, user, isAdmin, close, join, cancel, transfer, edit, invoiceLabel, showEventBills, previewMemberExtra, publishMemberExtra, previewCancellation, cancelEvent, publishGuestSettlement, refreshGuestSettlement }: {
   event: ClubEvent;
   initialBillingOpen: boolean;
+  billingInvoices?: Invoice[];
   hasMemberBill: boolean;
   hasLinkedPeriod: boolean;
   viewerId: string;
@@ -2289,6 +2309,9 @@ function EventDetailsDialog({ event, initialBillingOpen, hasMemberBill, hasLinke
       if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
     };
   }, []);
+  const outstanding = isAdmin ? outstandingEventPayers(event, billingInvoices) : [];
+  const paymentStatus = new Map(outstanding.map((person) => [person.id, person.status]));
+  const paymentBadge = (status: "PENDING" | "REPORTED") => <Badge tone={status === "PENDING" ? "orange" : "blue"}>{status === "PENDING" ? "未繳費" : "待確認"}</Badge>;
   const entry = event.bookings.find((booking) => booking.memberId === viewerId);
   const started = Boolean(event.startsAt && new Date(event.startsAt).getTime() <= now);
   const ended = Boolean(event.endsAt && new Date(event.endsAt).getTime() <= now);
@@ -2472,6 +2495,10 @@ function EventDetailsDialog({ event, initialBillingOpen, hasMemberBill, hasLinke
             {canPreviewExtra && !guestSettlementOpen && <button type="button" className="link" disabled={saving} onClick={() => void openExtraPreview()}>另開本場帳單</button>}
           </div>
           {!showEventBills && !canBillGuests && !canPreviewExtra && <p className="form-note">目前沒有可處理的帳單。</p>}
+          {outstanding.length > 0 && <section className="event-dialog-roster" aria-label="未收齊款項">
+            <h4>未收齊款項</h4>
+            <ul>{outstanding.map((person) => <li key={person.id}><span>{person.name}</span>{paymentBadge(person.status)}</li>)}</ul>
+          </section>}
           {extraFeedback && <p role="status">{extraFeedback}</p>}
           {guestSettlementOpen && <GuestSettlementPanel event={event} busy={saving} publish={publishGuestDecisions} refresh={refreshGuestSettlement} />}
         </section>}
@@ -2503,7 +2530,10 @@ function EventDetailsDialog({ event, initialBillingOpen, hasMemberBill, hasLinke
           <ul>{[...event.bookings].sort((a, b) => Number(a.rank === "候補") - Number(b.rank === "候補")).map((booking) => (
             <li key={booking.memberId}>
               <span>{booking.name}{booking.memberId === viewerId ? "（我）" : ""}<small>{booking.accountName ? `帳號：${booking.accountName} · ` : ""}{booking.kind}</small></span>
-              <Badge tone={booking.rank === "正取" ? "green" : "orange"}>{booking.rank}</Badge>
+              <span className="event-roster-badges">
+                <Badge tone={booking.rank === "正取" ? "green" : "orange"}>{booking.rank}</Badge>
+                {paymentStatus.has(booking.memberId) && paymentBadge(paymentStatus.get(booking.memberId)!)}
+              </span>
             </li>
           ))}</ul>
         )}
