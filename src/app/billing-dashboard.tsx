@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { activityPayments, billingSummary, invoiceEventLines, invoiceInRange, isOpen, isPrincipal, referencesEvent, taipeiDay, type BillingActivity, type ManagedInvoice } from "@/lib/billing-view";
+import { activityPayments, billingSummary, invoiceEventLines, invoiceInRange, isOpen, isPrincipal, referencesEvent, taipeiDay, type BillingActivity, type InvoiceSchedule, type ManagedInvoice } from "@/lib/billing-view";
 
 type ActionResult = { results?: { id: string; success: boolean; error?: string }[]; status?: string; invoiceId?: string; recorded?: number; alreadyRecorded?: number; totalAmount?: number };
 export type BillingProps = {
@@ -23,6 +23,14 @@ const invoiceStatusLabel = (invoice: ManagedInvoice) => invoice.refund_completed
   : labels[invoice.status] ?? invoice.status;
 const receiptMethod = (method?: string | null) => method === "CASH" ? "現金" : method === "BANK" ? "轉帳" : "";
 function schedule(value?: string | null) { return value ? new Date(value).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "日期未設定"; }
+function scheduleDescription(event?: InvoiceSchedule) {
+  if (!event) return "日期未設定";
+  const { starts_at: start, ends_at: end, courts } = event;
+  const until = end && (start && taipeiDay(start) === taipeiDay(end)
+    ? new Intl.DateTimeFormat("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(end))
+    : schedule(end));
+  return [start ? schedule(start) + (until ? " 至 " + until : "") : until ? "結束時間 " + until : "", courts].filter(Boolean).join(" · ") || "日期未設定";
+}
 type Operation = "voidInvoice" | "reissueInvoice" | "refundInvoice" | "rejectPaymentReport";
 type Selection = { operation: Operation; invoice: ManagedInvoice } | { operation: "voidInvoiceBatch"; invoices: ManagedInvoice[]; excluded: number };
 const operationLabels = { voidInvoice: "作廢帳單", reissueInvoice: "作廢並重開", refundInvoice: "辦理退款", rejectPaymentReport: "核對未入帳，退回待繳", voidInvoiceBatch: "批次作廢未繳帳單" };
@@ -119,10 +127,13 @@ export default function BillingDashboard(props: BillingProps) {
       <div className="billing-invoice-detail">
         <small>帳單編號：{invoice.id}</small>
         {invoice.type === "QUARTERLY_MEMBER" && <p>本季確認基準 {invoice.baseline_event_count ?? invoice.event_ids?.length} 場；原單金額 {money(invoice.original_gross_amount ?? invoice.gross_amount)}</p>}
-        {invoiceEventLines(invoice).map(({ id, event, amount, adjustments }) => {
+        {invoiceEventLines(invoice).map(({ id, event, original, timeChanged, venueChanged, amount, adjustments }) => {
           const linked = invoices.filter((entry) => entry.related_invoice_id === invoice.id && referencesEvent(entry, id));
+          const showOriginal = original && (!event || timeChanged || venueChanged);
           return <div className="billing-event-line" key={id}>
-            <div><strong>{schedule(event?.starts_at)}{event?.courts ? " · " + event.courts : ""}</strong>{amount !== undefined && amount >= 0 && <span>{money(amount)}</span>}</div>
+            <div><strong>{showOriginal ? "原訂：" + scheduleDescription(original) : schedule(event?.starts_at) + (event?.courts ? " · " + event.courts : "")}</strong>{amount !== undefined && amount >= 0 && <span>{money(amount)}</span>}</div>
+            {timeChanged && <small>改期至：{scheduleDescription(event)}</small>}
+            {!timeChanged && venueChanged && <small>場地改為：{event?.courts}</small>}
             {event?.status === "CANCELLED" && <small>已取消{event.cancellation_reason ? " · " + event.cancellation_reason : ""}</small>}
             {adjustments.some((entry) => entry.kind === "REDUCTION") && <small>已減收 {money(adjustments.filter((entry) => entry.kind === "REDUCTION").reduce((sum, entry) => sum + Math.abs(entry.amount), 0))}</small>}
             {linked.filter((entry) => entry.status !== "VOID").map((entry) => <div className="billing-adjustment-money" key={entry.id}>

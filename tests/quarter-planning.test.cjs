@@ -88,6 +88,44 @@ test("reissue is atomic, recalculates credit, links bills and preserves quarter 
  assert.equal(planning.effectiveInvoiceAmounts(s.db.data("invoices/"+result.invoiceId)).amount,800);
  assert.equal(s.db.data("members/member").creditBalance,0);
 });
+test("invoice details keep stored dates and courts alongside the current schedule and cancellation", async () => {
+ const s=setup(100); await s.confirm(); await s.bill();
+ const invoiceId="quarter-test-plan-member", eventId="quarter-test-plan-0";
+ const original=s.db.data("events/"+eventId);
+ const before=(await s.readState(member)).invoices.find((invoice)=>invoice.id===invoiceId);
+ const originalSchedule={id:eventId,starts_at:original.startsAt.toISOString(),ends_at:original.endsAt.toISOString(),courts:original.courts};
+ assert.deepEqual(before.original_event_schedules[0],originalSchedule);
+ assert.equal(billingView.invoiceEventLines(before)[0].timeChanged,false);
+ // Existing bills without their own snapshot do not fabricate an original from the period.
+ s.db.seed("invoices/legacy-reschedule",{...s.db.data(s.invoicePath),id:"legacy-reschedule",status:"VOID",eventSnapshots:[]});
+ const update={eventId,startsAt:original.startsAt.toISOString(),endsAt:original.endsAt.toISOString(),courts:"B 場",regularCapacity:"10",standbyCapacity:"4"};
+ await s.mutate("updateEvent",update);
+ let current=(await s.readState(member)).invoices.find((invoice)=>invoice.id===invoiceId);
+ assert.deepEqual([billingView.invoiceEventLines(current)[0].timeChanged,billingView.invoiceEventLines(current)[0].venueChanged],[false,true]);
+ const newStart=new Date(original.startsAt.getTime()+86_400_000).toISOString();
+ const newEnd=new Date(original.endsAt.getTime()+86_400_000+1_800_000).toISOString();
+ await s.mutate("updateEvent",{...update,startsAt:newStart,endsAt:newEnd});
+ for(const actor of [member,admin]){
+   const state=await s.readState(actor);
+   current=state.invoices.find((invoice)=>invoice.id===invoiceId);
+   const line=billingView.invoiceEventLines(current)[0];
+   assert.deepEqual(line.original,originalSchedule);
+   assert.deepEqual([line.event.starts_at,line.event.ends_at,line.event.courts,line.timeChanged,line.venueChanged,line.amount],[newStart,newEnd,"B 場",true,true,150]);
+   assert.deepEqual([current.gross_amount,current.credit_applied,current.amount],[before.gross_amount,before.credit_applied,before.amount]);
+   assert.equal(state.events.find((event)=>event.id===eventId).starts_at,newStart);
+   const legacy=state.invoices.find((invoice)=>invoice.id==="legacy-reschedule");
+   assert.equal(legacy.original_event_schedules,undefined);
+   assert.equal(billingView.invoiceEventLines(legacy)[0].timeChanged,false);
+ }
+ await cancelEventWithPreview(s,eventId);
+ current=(await s.readState(member)).invoices.find((invoice)=>invoice.id===invoiceId);
+ const cancelled=billingView.invoiceEventLines(current)[0];
+ assert.equal(cancelled.event.status,"CANCELLED");
+ assert.equal(cancelled.event.starts_at,newStart);
+ assert.deepEqual(cancelled.original,originalSchedule);
+ assert.equal(cancelled.amount,150);
+ assert.equal(current.amount,before.amount-150);
+});
 test("reopening a previously voided invoice must not restore credit twice", async () => {
  const s=setup(100); await s.confirm(); await s.bill();
  await s.mutate("voidInvoice",managementInput(s));

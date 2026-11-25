@@ -4,6 +4,7 @@ export type ManagedInvoice = {
   id: string; member_id: string; memberName: string; memberAccountName?: string; type: string; status: string;
   gross_amount: number; credit_applied: number; amount: number;
   event_id?: string | null; event_ids?: string[]; event_amounts?: number[]; original_event_amounts?: number[]; event_schedules?: InvoiceSchedule[];
+  original_event_schedules?: InvoiceSchedule[];
   original_gross_amount?: number; original_amount?: number; baseline_event_count?: number;
   period_id?: string | null; period_label?: string; period_start?: string | null; period_end?: string | null;
   due_at?: string | null; created_at?: string | null; adjustments?: InvoiceAdjustment[];
@@ -81,13 +82,20 @@ export function referencesEvent(invoice: ManagedInvoice, eventId: string) {
 export function invoiceEventLines(invoice: ManagedInvoice) {
   const ids = invoice.event_ids?.length ? invoice.event_ids : invoice.event_id ? [invoice.event_id] : (invoice.event_schedules ?? []).map((entry) => entry.id);
   const schedules = new Map(invoice.event_schedules?.map((event) => [event.id, event]));
+  const originals = new Map(invoice.original_event_schedules?.map((event) => [event.id, event]));
   return ids.map((id, index) => {
     const event = schedules.get(id);
+    const original = originals.get(id);
+    const timeChanged = Boolean(event && original && (
+      (original.starts_at && event.starts_at && original.starts_at !== event.starts_at) ||
+      (original.ends_at && event.ends_at && original.ends_at !== event.ends_at)
+    ));
+    const venueChanged = Boolean(event && original?.courts && event.courts && original.courts !== event.courts);
     const adjustments = (invoice.adjustments ?? []).filter((entry) => entry.eventId === id);
     const showsOriginal = invoice.original_event_amounts?.[index] ?? (ids.length === 1 ? invoice.original_gross_amount : undefined);
     const listed = invoice.event_amounts?.[index];
     // Older records may omit the original amount of a cancelled line; never guess.
     const amount = showsOriginal ?? (event?.status === "CANCELLED" && !listed ? undefined : listed);
-    return { id, event, amount, adjustments };
+    return { id, event, original, timeChanged, venueChanged, amount, adjustments };
   });
 }

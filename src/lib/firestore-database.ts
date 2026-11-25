@@ -718,6 +718,18 @@ export async function readState(viewer: Viewer | null = null) {
       const refundTotal = (invoiceSnapshot?.docs ?? []).filter((entry) => entry.data().relatedInvoiceId === document.id && entry.data().type === "CREDIT" && CREDIT_RESERVED.includes(entry.data().status)).reduce((sum, entry) => sum + Math.max(0, -Number(entry.data().amount)), 0);
       const directEventId = invoice.eventId ? String(invoice.eventId) : null;
       const eventIds = Array.isArray(invoice.eventIds) ? invoice.eventIds.map(String) : directEventId ? [directEventId] : [];
+      const storedSchedules: (DocumentData | null)[] = Array.isArray(invoice.eventSnapshots) ? invoice.eventSnapshots : [];
+      const originalsById = new Map<string, DocumentData>(storedSchedules.flatMap((snapshot) => typeof snapshot?.id === "string" ? [[snapshot.id, snapshot]] : []));
+      const originalEventSchedules = eventIds.flatMap((id, index) => {
+        const snapshot = originalsById.get(id) ?? (storedSchedules[index]?.id == null ? storedSchedules[index] : undefined);
+        if (!snapshot) return [];
+        const originalStart = dateValue(snapshot.startsAt);
+        const originalEnd = dateValue(snapshot.endsAt);
+        const starts_at = originalStart && Number.isFinite(originalStart.getTime()) ? originalStart.toISOString() : null;
+        const ends_at = originalEnd && Number.isFinite(originalEnd.getTime()) ? originalEnd.toISOString() : null;
+        const courts = typeof snapshot.courts === "string" ? snapshot.courts : "";
+        return starts_at || ends_at || courts ? [{ id, starts_at, ends_at, courts }] : [];
+      });
       const receipt = invoice.receipt as InvoiceReceipt | undefined;
       return {
         id: document.id,
@@ -730,6 +742,7 @@ export async function readState(viewer: Viewer | null = null) {
           const schedule = eventSchedulesById.get(eventId);
           return schedule ? [schedule] : [];
         }),
+        ...(originalEventSchedules.length ? { original_event_schedules: originalEventSchedules } : {}),
         memberName: String(member?.displayName ?? invoice.memberNameSnapshot ?? "未知使用者"),
         memberAccountName: member ? memberAccountName(member) : String(invoice.accountNameSnapshot ?? ""),
         type: String(invoice.type ?? ""),
