@@ -9,6 +9,8 @@ export type ManagedInvoice = {
   due_at?: string | null; created_at?: string | null; adjustments?: InvoiceAdjustment[];
   related_invoice_id?: string | null; replacement_of_id?: string | null; replaced_by_id?: string | null;
   void_reason?: string | null; cancellation_reason?: string | null; refundable_amount?: number;
+  receipt_method?: "CASH" | "BANK"; receipt_received_date?: string | null; receipt_amount?: number | null;
+  receipt_recorded_by?: string | null; receipt_recorded_by_name?: string | null; receipt_recorded_at?: string | null; receipt_note?: string | null;
 };
 export type BillingActivity = {
   id: string; startsAt?: string; endsAt?: string; courts: string; memberBilling?: string;
@@ -17,7 +19,9 @@ export type BillingActivity = {
 export const PRINCIPAL_TYPES = ["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "SINGLE_EVENT", "MEMBER_EXTRA"];
 export const isPrincipal = (invoice: Pick<ManagedInvoice, "type">) => PRINCIPAL_TYPES.includes(invoice.type);
 export const isOpen = (invoice: ManagedInvoice) => isPrincipal(invoice) && ["PENDING", "REPORTED"].includes(invoice.status);
-export const includesEvent = (invoice: ManagedInvoice, eventId: string) => invoice.event_id === eventId || invoice.event_ids?.includes(eventId) === true;
+export const includesEvent = (invoice: ManagedInvoice, eventId: string) =>
+  (invoice.event_id === eventId || invoice.event_ids?.includes(eventId) === true) &&
+  !invoice.adjustments?.some((entry) => entry.eventId === eventId && ["MEMBERSHIP_END_REDUCTION", "MEMBERSHIP_END_CREDIT"].includes(entry.kind));
 export function taipeiDay(value: string | Date) {
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(date);

@@ -20,7 +20,15 @@ import type {
 } from "@simplewebauthn/server";
 
 type Role = "admin" | "member";
-type Tab = "總覽" | "活動" | "公告" | "社員名單" | "費用管理" | "個人資訊";
+type Tab = "總覽" | "活動" | "公告" | "球友名單" | "費用管理" | "個人資訊";
+const sectionDescriptions: Record<Tab, string> = {
+  總覽: "查看下一場活動、出席狀態與費用。",
+  活動: "從月曆找場次，查看場地、名額與報名資訊。",
+  公告: "查看球友會的最新消息與重要通知。",
+  球友名單: "按社員身分查看球友，或搜尋姓名、帳號與部門。",
+  費用管理: "查看付款狀態、應繳費用與帳單紀錄。",
+  個人資訊: "管理顯示名稱、社員身分與帳號安全。",
+};
 const sidebarItems: { label: Exclude<Tab, "個人資訊">; icon: ReactNode }[] = [
   {
     label: "總覽",
@@ -35,7 +43,7 @@ const sidebarItems: { label: Exclude<Tab, "個人資訊">; icon: ReactNode }[] =
     icon: <><path d="M5 9.5h4l11-4v13l-11-4H5a2.5 2.5 0 0 1 0-5Zm4 0v5" /><path d="m5.5 14.5 1.25 4.6A1.9 1.9 0 0 0 8.6 20.5H10l-1.5-6" /></>,
   },
   {
-    label: "社員名單",
+    label: "球友名單",
     icon: <><circle cx="9" cy="8" r="3" /><circle cx="17.5" cy="9" r="2.5" /><path d="M3 20v-1a5 5 0 0 1 5-5h2a5 5 0 0 1 5 5v1m2-5h.5a3.5 3.5 0 0 1 3.5 3.5V20" /></>,
   },
   {
@@ -45,7 +53,7 @@ const sidebarItems: { label: Exclude<Tab, "個人資訊">; icon: ReactNode }[] =
 ];
 type ActivityManagerTab = "single" | "quarter";
 type BillingManagerTab = "quarterly" | "rates";
-type Person = { id: string; name: string; accountName?: string; department?: string; role: Role; member: boolean; membershipStatus?: string; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean };
+type Person = { id: string; name: string; accountName?: string; department?: string; role: Role; member: boolean; membershipStatus?: string; membershipEndingAt?: string | null; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean };
 type Booking = { memberId: string; name: string; accountName?: string; kind: "社員" | "非社員"; rank: "正取" | "候補"; transferred?: boolean };
 type NewsItem = { id: string; title: string; content: string; date: string; linkUrl?: string; pinned: boolean };
 type Invoice = ManagedInvoice;
@@ -60,16 +68,23 @@ type Viewer = {
   role: "ADMIN" | "MEMBER";
   primaryAdmin: boolean;
   membershipStatus: string;
+  membershipEndingAt?: string | null;
   creditBalance: number;
   accountType: "guest" | "recoverable" | "verified" | "unclaimed";
   hasRecoveryCode: boolean;
   hasPasskey: boolean;
 };
-type ActionResult = { creditBalance?: number; memberId?: string; adjustmentInvoiceId?: string; results?: { id: string; success: boolean; error?: string }[]; invoiceId?: string; planId?: string; recoveryCode?: string; claimCode?: string; recipientName?: string; invoiceCount?: number; eventCount?: number; totalAmount?: number; periodLabel?: string; createdDate?: string | null; targetDate?: string; status?: string };
+type GuestSettlementDecision = { memberId: string; decision: "BILL" | "SKIP" };
+type GuestSettlement = { memberId: string; status: "ISSUED" | "SKIPPED" | "LEGACY"; amount: number | null };
+type GuestSettlementReceipt = { issued: number; skipped: number };
+type QuarterInvoicePreviewRow = { memberId: string; name: string; eventCount: number; grossAmount: number; creditApplied: number; amount: number };
+type QuarterInvoicePreview = { periodLabel: string; rows: QuarterInvoicePreviewRow[]; totalAmount: number; previewKey: string };
+type ActionResult = Partial<GuestSettlementReceipt & QuarterInvoicePreview> & { creditBalance?: number; memberId?: string; adjustmentInvoiceId?: string; results?: { id: string; success: boolean; error?: string }[]; invoiceId?: string; planId?: string; recoveryCode?: string; claimCode?: string; recipientName?: string; invoiceCount?: number; eventCount?: number; totalAmount?: number; periodLabel?: string; createdDate?: string | null; targetDate?: string; status?: string; skippedDates?: string[]; recorded?: number; alreadyRecorded?: number };
 type DeviceAccount = { id: string; name: string; accountName: string; role: "ADMIN" | "MEMBER"; membershipStatus: string; primaryAdmin: boolean };
 type ClubEvent = {
   id: string;
   memberBilling?: string;
+  guestSettlements?: GuestSettlement[];
   startsAt?: string;
   endsAt?: string;
   date: string;
@@ -87,8 +102,8 @@ type ClubEvent = {
 
 type ApiState = {
   viewer: Viewer | null;
-  members: { id: string; name: string; accountName: string; department?: string; role: string; membershipStatus: string; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean }[];
-  events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; regular_count: number; standby_count: number; member_fee: number; guest_fee: number; member_billing?: string; bookings: { memberId: string; name: string; accountName?: string; kind: string; status: string; transferred?: boolean }[] }[];
+  members: { id: string; name: string; accountName: string; department?: string; role: string; membershipStatus: string; membershipEndingAt?: string | null; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean }[];
+  events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; regular_count: number; standby_count: number; member_fee: number; guest_fee: number; member_billing?: string; guest_settlements?: GuestSettlement[]; bookings: { memberId: string; name: string; accountName?: string; kind: string; status: string; transferred?: boolean }[] }[];
   announcements: { id: string; title: string; content: string; publishedAt: string; linkUrl?: string; pinned: boolean }[];
   invoices: Invoice[];
   quarterPlans: QuarterPlan[];
@@ -181,13 +196,13 @@ export default function Home() {
   const applyState = useCallback((state: ApiState) => {
     setViewer(state.viewer);
     setQuickAccounts(state.quickAccounts ?? []);
-    setMembers(state.members.map((member) => ({ id: member.id, name: member.name, accountName: member.accountName, department: member.department, role: member.role === "ADMIN" ? "admin" : "member", member: member.membershipStatus === "MEMBER" || member.membershipStatus === "EXITING", membershipStatus: member.membershipStatus, creditBalance: Number(member.creditBalance ?? 0), primaryAdmin: Boolean(member.primaryAdmin), canReceivePresidency: Boolean(member.canReceivePresidency) })));
+    setMembers(state.members.map((member) => ({ id: member.id, name: member.name, accountName: member.accountName, department: member.department, role: member.role === "ADMIN" ? "admin" : "member", member: member.membershipStatus === "MEMBER" || member.membershipStatus === "EXITING", membershipStatus: member.membershipStatus, membershipEndingAt: member.membershipEndingAt, creditBalance: Number(member.creditBalance ?? 0), primaryAdmin: Boolean(member.primaryAdmin), canReceivePresidency: Boolean(member.canReceivePresidency) })));
     setEvents(state.events.map((item) => {
       const startsAt = new Date(item.starts_at);
       const endsAt = new Date(item.ends_at);
       const date = `${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", month: "numeric" })} ${startsAt.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", day: "numeric" })}`;
       const time = `${startsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })} – ${endsAt.toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hour12: false })}`;
-      return { id: item.id, memberBilling: item.member_billing, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, regularBooked: item.regular_count, waitBooked: item.standby_count, memberFee: item.member_fee, guestFee: item.guest_fee, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, accountName: booking.accountName, transferred: booking.transferred, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
+      return { id: item.id, memberBilling: item.member_billing, guestSettlements: item.guest_settlements, startsAt: item.starts_at, endsAt: item.ends_at, date, weekday: startsAt.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" }), time, courts: item.courts, regular: item.regular_capacity, wait: item.standby_capacity, regularBooked: item.regular_count, waitBooked: item.standby_count, memberFee: item.member_fee, guestFee: item.guest_fee, bookings: item.bookings.map((booking) => ({ memberId: booking.memberId, name: booking.name, accountName: booking.accountName, transferred: booking.transferred, kind: booking.kind === "MEMBER" ? "社員" : "非社員", rank: booking.status === "REGULAR" ? "正取" : "候補" })) };
     }));
     setNews(state.announcements.map((item) => ({
       id: item.id,
@@ -258,7 +273,10 @@ export default function Home() {
   const event = events.find((item) => !item.endsAt || new Date(item.endsAt) > new Date());
   const headerDate = event?.startsAt ? new Intl.DateTimeFormat("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "long" }).format(new Date(event.startsAt)) : "台北時間 · UTC+8";
   const booking = event?.bookings.find((item) => item.memberId === viewer?.id);
-  const invoice = invoices.find((item) => item.member_id === viewer?.id && isPrincipal(item) && ["PENDING", "REPORTED", "CONFIRMED"].includes(item.status));
+  const personalInvoices = invoices.filter((item) => item.member_id === viewer?.id && isPrincipal(item));
+  const invoice = personalInvoices.find((item) => item.status === "PENDING")
+    ?? personalInvoices.find((item) => item.status === "REPORTED")
+    ?? personalInvoices.find((item) => item.status === "CONFIRMED");
   const createGuest = async (candidate: string) => {
     const clean = candidate.trim();
     if (!clean) return;
@@ -326,7 +344,7 @@ export default function Home() {
   };
   const logout = async () => { await execute("logout", {}); setTab("總覽"); setNotificationOpen(false); };
   const makeRecoveryCode = async (replaceExisting: boolean) => {
-    if (replaceExisting && !window.confirm("重新產生後，原本的復原碼會立即失效。確定要繼續嗎？")) return;
+    if (replaceExisting && !window.confirm("重新產生後，原本的復原碼會立即失效，新碼也只顯示一次。確定要繼續嗎？")) return;
     setRecoverySaving(true);
     try {
       const payload = await execute("createRecoveryCode", {});
@@ -512,14 +530,6 @@ export default function Home() {
     try { const payload = await execute(action, input); return payload?.actionResult ?? null; }
     finally { setBillingSaving(false); }
   };
-  const confirmInvoicePayment = async (invoiceId: string) => {
-    setBillingSaving(true);
-    try {
-      await execute("confirmPayment", { invoiceId });
-    } finally {
-      setBillingSaving(false);
-    }
-  };
   const remindInvoicePayment = async (invoiceId: string) => {
     setBillingSaving(true);
     try {
@@ -529,20 +539,23 @@ export default function Home() {
       setBillingSaving(false);
     }
   };
-  const createQuarterlyInvoices = async (form: FormEvent<HTMLFormElement>) => {
-    form.preventDefault();
-    const data = new FormData(form.currentTarget);
+  const previewQuarterlyInvoices = async (input: { planId: string; dueDate: string }): Promise<QuarterInvoicePreview | null> => {
+    const result = await manageInvoiceAction("previewQuarterlyInvoices", input);
+    return result && Array.isArray(result.rows) && typeof result.previewKey === "string"
+      && typeof result.periodLabel === "string" && typeof result.totalAmount === "number"
+      ? { rows: result.rows, previewKey: result.previewKey, periodLabel: result.periodLabel, totalAmount: result.totalAmount } : null;
+  };
+  const createQuarterlyInvoices = async (input: { planId: string; dueDate: string; previewKey: string }): Promise<boolean> => {
     setBillingSaving(true);
     try {
-      const payload = await execute("createQuarterlyInvoices", {
-        planId: String(data.get("planId")),
-        dueDate: String(data.get("dueDate")),
-      });
+      const payload = await execute("createQuarterlyInvoices", input);
       if (payload) {
         const result = payload.actionResult;
         window.alert(`已建立 ${result?.invoiceCount ?? 0} 筆社員帳單，共計 ${result?.eventCount ?? 0} 場活動、NT$${Number(result?.totalAmount ?? 0).toLocaleString("zh-TW")}。`);
         setBillingManagerOpen(false);
+        return true;
       }
+      return false;
     } finally {
       setBillingSaving(false);
     }
@@ -651,7 +664,8 @@ export default function Home() {
   };
   const openNotification = async (notification: ClubNotification) => {
     if (!notification.read) await markNotificationsRead([notification.id]);
-    if ((["總覽", "活動", "公告", "社員名單", "費用管理", "個人資訊"] as string[]).includes(notification.tab)) setTab(notification.tab as Tab);
+    const destination = notification.tab === "社員名單" ? "球友名單" : notification.tab;
+    if (Object.hasOwn(sectionDescriptions, destination)) setTab(destination as Tab);
   };
   const unreadNotifications = notifications.filter((notification) => !notification.read);
 
@@ -668,6 +682,7 @@ export default function Home() {
   const closeEventDetails = () => setEventDetails(null);
   return (
     <div className="app">
+      <a className="skip-to-content" href="#club-main">跳至主要內容</a>
       <aside className={`sidebar${sidebarCollapsed ? " collapsed" : ""}`}>
         <button
           type="button"
@@ -691,7 +706,7 @@ export default function Home() {
             <small>BADMINTON CLUB</small>
           </span>
         </div>
-        <nav>
+        <nav aria-label="球友會導覽">
           {sidebarItems.map(({ label, icon }) => (
             <button
               key={label}
@@ -723,17 +738,19 @@ export default function Home() {
               <strong title={user.name}>{user.name}</strong>
               <small>{clubIdentityLabel(user)}</small>
             </span>
+            <span className="profile-mobile-label" aria-hidden="true">帳號</span>
           </button>
         </div>
       </aside>
-      <main>
+      <main id="club-main" tabIndex={-1}>
         <header>
           <div className="page-heading">
-            <p>{headerDate}</p>
-            <h1>{tab === "總覽" ? "活動" : tab}</h1>
+            <p className="page-eyebrow">{headerDate}</p>
+            <h1>{tab}</h1>
+            <p className="page-description">{sectionDescriptions[tab]}</p>
           </div>
           <div className="header-actions">
-            {tab === "總覽" && <button type="button" className="link view-all-activities" onClick={() => setTab("活動")}>查看全部活動 →</button>}
+            {tab === "總覽" && event && <button type="button" className="link view-all-activities" onClick={() => setTab("活動")}>查看全部活動 →</button>}
             {isAdmin && (tab === "活動" || tab === "公告" || tab === "費用管理") && (
               <button
                 className="primary small"
@@ -781,7 +798,7 @@ export default function Home() {
           </div>
         )}
         {tab === "公告" && <News news={news} admin={isAdmin} saving={announcementSaving} edit={(announcement) => { setEditingAnnouncement(announcement); setAnnouncementOpen(true); }} remove={(announcement) => void deleteAnnouncement(announcement)} togglePinned={(announcement) => void toggleAnnouncementPinned(announcement)} />}
-        {tab === "社員名單" && <Members members={members} requests={membershipRequests} currentUser={user} admin={isAdmin} saving={membershipSaving || memberSaving || claimCodeSaving} requestMembership={() => void requestMembershipChange("JOIN")} reviewRequest={reviewMembershipRequest} manageMember={setEditingMember} />}
+        {tab === "球友名單" && <Members members={members} requests={membershipRequests} currentUser={user} admin={isAdmin} saving={membershipSaving || memberSaving || claimCodeSaving} requestMembership={() => void requestMembershipChange("JOIN")} reviewRequest={reviewMembershipRequest} manageMember={setEditingMember} />}
         {tab === "費用管理" && (
           <Billing
             admin={isAdmin}
@@ -791,7 +808,6 @@ export default function Home() {
             viewer={viewer}
             saving={billingSaving}
             reportPayment={reportInvoicePayment}
-            confirmPayment={confirmInvoicePayment}
             remindPayment={remindInvoicePayment}
             openRates={() => {
               setBillingManagerTab("rates");
@@ -844,6 +860,12 @@ export default function Home() {
           close={closeEventDetails}
           join={join}
           cancel={cancel}
+          publishGuestSettlement={async (decisions) => {
+            const payload = await execute("publishGuestEventBills", { eventId: selectedEvent.id, decisions: JSON.stringify(decisions) });
+            const result = payload?.actionResult;
+            return typeof result?.issued === "number" && typeof result.skipped === "number" ? { issued: result.issued, skipped: result.skipped } : null;
+          }}
+          refreshGuestSettlement={() => refresh()}
           transfer={() => { closeEventDetails(); setTransferEventId(selectedEvent.id); }}
           edit={() => { closeEventDetails(); setEditingEvent(selectedEvent); }}
           cancelEvent={() => { closeEventDetails(); void cancelClubEvent(selectedEvent.id); }}
@@ -879,6 +901,7 @@ export default function Home() {
           onClose={() => setManagerOpen(false)}
           createEvent={createEvent}
           plans={quarterPlans}
+          existingDates={events.flatMap((event) => event.startsAt ? [taipeiInputDate(event.startsAt)] : [])}
           confirmQuarter={confirmQuarter}
         />
       )}
@@ -899,7 +922,7 @@ export default function Home() {
           feeRates={feeRates}
           plans={quarterPlans}
           onClose={() => setBillingManagerOpen(false)}
-          createQuarterlyInvoices={createQuarterlyInvoices}
+          previewQuarterlyInvoices={previewQuarterlyInvoices} createQuarterlyInvoices={createQuarterlyInvoices}
           saveFeeRates={saveFeeRates}
         />
       )}
@@ -945,6 +968,7 @@ function ActivityManagerModal({
   onClose,
   createEvent,
   plans,
+  existingDates,
   confirmQuarter,
 }: {
   initialDate: string;
@@ -954,6 +978,7 @@ function ActivityManagerModal({
   onClose: () => void;
   createEvent: (form: FormEvent<HTMLFormElement>) => void;
   plans: QuarterPlan[];
+  existingDates: string[];
   confirmQuarter: (input: { planId: string; schedule: string }) => Promise<ActionResult | null>;
 }) {
   return (
@@ -988,11 +1013,11 @@ function ActivityManagerModal({
             <div className="time-pair">
               <label>
                 開始時間
-                <input name="start" type="time" defaultValue="19:00" required />
+                <input name="start" type="time" defaultValue="18:00" required />
               </label>
               <label>
                 結束時間
-                <input name="end" type="time" defaultValue="21:00" required />
+                <input name="end" type="time" defaultValue="20:00" required />
               </label>
             </div>
             <label>
@@ -1018,7 +1043,7 @@ function ActivityManagerModal({
           </form>
         )}
 
-        {tab === "quarter" && <QuarterPlanner plans={plans} saving={saving} confirmPlan={confirmQuarter} />}
+        {tab === "quarter" && <QuarterPlanner plans={plans} existingDates={existingDates} saving={saving} confirmPlan={confirmQuarter} />}
       </section>
     </div>
   );
@@ -1202,6 +1227,7 @@ function BillingManagerModal({
   feeRates,
   plans,
   onClose,
+  previewQuarterlyInvoices,
   createQuarterlyInvoices,
   saveFeeRates,
 }: {
@@ -1212,7 +1238,8 @@ function BillingManagerModal({
   feeRates: FeeRate[];
   plans: QuarterPlan[];
   onClose: () => void;
-  createQuarterlyInvoices: (form: FormEvent<HTMLFormElement>) => void;
+  previewQuarterlyInvoices: (input: { planId: string; dueDate: string }) => Promise<QuarterInvoicePreview | null>;
+  createQuarterlyInvoices: (input: { planId: string; dueDate: string; previewKey: string }) => Promise<boolean>;
   saveFeeRates: (form: FormEvent<HTMLFormElement>) => void;
 }) {
   const today = taipeiDateParts(new Date());
@@ -1223,6 +1250,35 @@ function BillingManagerModal({
   const billablePlans = plans.filter((plan) => plan.status === "CONFIRMED" && !plan.billed);
   const [selectedPlanId, setSelectedPlanId] = useState(billablePlans[0]?.id ?? "");
   const selectedPlan = billablePlans.find((plan) => plan.id === selectedPlanId);
+  const [dueDate, setDueDate] = useState(() => inputDate(due));
+  const [quarterPreview, setQuarterPreview] = useState<(QuarterInvoicePreview & { planId: string; dueDate: string }) | null>(null);
+  const [quarterError, setQuarterError] = useState("");
+  const matchingPreview = quarterPreview?.planId === selectedPlanId && quarterPreview.dueDate === dueDate ? quarterPreview : null;
+  const money = (amount: number) => "NT$ " + amount.toLocaleString("zh-TW");
+
+  const submitQuarter = async (form: FormEvent<HTMLFormElement>) => {
+    form.preventDefault();
+    if (saving || !selectedPlan || !dueDate) return;
+    setQuarterError("");
+    const input = { planId: selectedPlanId, dueDate };
+    try {
+      if (!matchingPreview) {
+        const result = await previewQuarterlyInvoices(input);
+        if (result) setQuarterPreview({ ...result, ...input });
+        else setQuarterError("無法產生預覽，請檢查季度與期限後重試。");
+        return;
+      }
+      if (!matchingPreview.rows.length) return;
+      const success = await createQuarterlyInvoices({ ...input, previewKey: matchingPreview.previewKey });
+      if (!success) {
+        setQuarterPreview(null);
+        setQuarterError("未完成開單，請重新預覽後再確認。");
+      }
+    } catch {
+      setQuarterPreview(null);
+      setQuarterError("無法核對帳單結果。請重新預覽並確認是否已開單。");
+    }
+  };
 
   return (
     <div className="modal-cover" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
@@ -1236,16 +1292,31 @@ function BillingManagerModal({
         </div>
 
         {tab === "quarterly" && (
-          <form className="manager-form" onSubmit={createQuarterlyInvoices}>
-
-            <label>已確認季度<select name="planId" value={selectedPlanId} onChange={(event) => setSelectedPlanId(event.target.value)} required>
+          <form className="manager-form" onSubmit={(event) => void submitQuarter(event)}>
+            <label>已確認季度<select name="planId" value={selectedPlanId} disabled={saving} onChange={(event) => { setSelectedPlanId(event.target.value); setQuarterPreview(null); setQuarterError(""); }} required>
               <option value="">選擇季度</option>
               {billablePlans.map((plan) => <option key={plan.id} value={plan.id}>{plan.label} · {plan.eventCount} 場</option>)}
             </select></label>
-            {selectedPlan && <div className="quarter-summary"><strong>{selectedPlan.startDate} ～ {selectedPlan.endDate}</strong><span>原始計費基準：{selectedPlan.eventCount} 場 · NT$ {Number(selectedPlan.grossAmount).toLocaleString("zh-TW")}／人</span></div>}
-            <label>繳費期限<input name="dueDate" type="date" defaultValue={inputDate(due)} required /></label>
-            <p className="form-note">依季度確認時保存的場次與費率開單，並抵扣帳戶餘額；確認後取消的場次會另列減收紀錄，不會改掉原始基準。若沒有可選季度，請先到活動管理確認季度規劃。</p>
-            <button className="primary" disabled={saving || !selectedPlan}>{saving ? "建立中…" : "依確認基準建立帳單"}</button>
+            {selectedPlan && <div className="quarter-summary"><strong>{selectedPlan.startDate} ～ {selectedPlan.endDate}</strong><span>季度原始基準：{selectedPlan.eventCount} 場 · {money(Number(selectedPlan.grossAmount))}（全季）</span></div>}
+            <label>繳費期限<input name="dueDate" type="date" min={inputDate(start)} value={dueDate} disabled={saving} onChange={(event) => { setDueDate(event.target.value); setQuarterPreview(null); setQuarterError(""); }} required /></label>
+            <p className="form-note">先核對每位社員的計費場次與餘額抵扣。預覽不會開單；確認後才正式建立帳單。</p>
+            {!selectedPlan && <p className="form-note">目前沒有可開單的季度。可先到活動管理確認季度規劃。</p>}
+            {matchingPreview && (
+              <section className="quarter-invoice-review" aria-labelledby="quarter-invoice-preview-title">
+                <strong id="quarter-invoice-preview-title">{matchingPreview.periodLabel} · 開單預覽</strong>
+                {matchingPreview.rows.length ? (
+                  <>
+                    <p className="guest-settlement-review" role="status">{matchingPreview.rows.length} 筆 · 抵扣後合計 {money(matchingPreview.totalAmount)}</p>
+                    <ul>{matchingPreview.rows.map((row) => <li key={row.memberId}>
+                      <span><strong>{row.name}</strong><small>{row.eventCount} 場 · 原始 {money(row.grossAmount)}{row.creditApplied > 0 && " · 抵扣 " + money(row.creditApplied)}</small></span>
+                      <strong>{money(row.amount)}</strong>
+                    </li>)}</ul>
+                  </>
+                ) : <p className="form-note" role="status">沒有符合計費條件的社員，無須開單。</p>}
+              </section>
+            )}
+            {quarterError && <p className="guest-settlement-error" role="alert">{quarterError}</p>}
+            <button className="primary guest-settlement-trigger" disabled={saving || !selectedPlan || Boolean(matchingPreview && !matchingPreview.rows.length)}>{saving ? "處理中…" : matchingPreview ? "確認開立社員帳單" : "預覽社員帳單"}</button>
           </form>
         )}
 
@@ -1254,7 +1325,7 @@ function BillingManagerModal({
             <form className="manager-form" onSubmit={saveFeeRates}>
               <div className="capacity-fields">
                 <label>社員每次費用（NT$）<input name="memberAmount" type="number" min="1" max="10000" defaultValue={currentFees.member} required /></label>
-                <label>非社員每次費用（NT$）<input name="guestAmount" type="number" min="1" max="10000" defaultValue={currentFees.guest} required /></label>
+                <label>非社員零打費（NT$）<input name="guestAmount" type="number" min="1" max="10000" defaultValue={currentFees.guest} required /></label>
               </div>
               <label>生效日期<input name="effectiveDate" type="date" defaultValue={inputDate(start)} required /></label>
               <p className="form-note">新費率只套用到生效日之後新建立的活動與三個月帳單，既有活動及帳單維持原金額。</p>
@@ -1366,8 +1437,8 @@ function Login({
           <input id="login-account-name" value={input} onChange={(e) => setInput(e.target.value)} placeholder="輸入固定的帳號名稱" maxLength={40} required autoComplete="username" />
           {mode === "recover" && (
             <>
-              <label>認領碼或復原碼</label>
-              <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="XXXX-XXXX-XXXX-XXXX" maxLength={19} required autoComplete="one-time-code" />
+              <label htmlFor="login-recovery-code">認領碼或復原碼</label>
+              <input id="login-recovery-code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="XXXX-XXXX-XXXX-XXXX" maxLength={19} required autoComplete="one-time-code" />
             </>
           )}
           <button className="primary" disabled={saving}>{saving ? "處理中…" : mode === "new" ? "建立這台裝置的帳號" : "取回帳號"}</button>
@@ -1380,7 +1451,7 @@ function Login({
         {saving && <LoadingScreen compact title="正在處理登入…" description="若出現裝置驗證視窗，請依提示完成。" />}
         <aside className="notice">
           <strong>測試版帳號提醒</strong>
-          <span>帳號名稱固定且不得重複（英文大小寫、全半形與多餘空白視為相同）；顯示名稱可自行修改，也可與他人相同。已有帳號請使用快速登入、Passkey 或復原碼。建議先在「個人資訊 → 帳號安全」設定至少一種復原方式。</span>
+          <span>帳號名稱固定且不得重複（英文大小寫、全半形與多餘空白視為相同）；顯示名稱可自行修改，也可與他人相同。已有帳號請使用快速登入、Passkey 或復原碼。建議先在「個人資訊 → 登入與安全」設定至少一種復原方式。</span>
         </aside>
         </section>
       </div>
@@ -1511,7 +1582,6 @@ function AccountProfile({
     verified: "已驗證帳號",
     unclaimed: "待認領帳號",
   };
-  const securityLabel = viewer.hasPasskey ? "Passkey 已啟用" : viewer.hasRecoveryCode ? "可使用復原碼" : "僅限此裝置";
   const shortId = viewer.id.length > 16 ? `${viewer.id.slice(0, 8)}…${viewer.id.slice(-4)}` : viewer.id;
   const [editingName, setEditingName] = useState(false);
   const editNameButton = useRef<HTMLButtonElement>(null);
@@ -1524,83 +1594,64 @@ function AccountProfile({
   const ownRequests = membershipRequests.filter((request) => request.memberId === viewer.id);
   const pendingRequest = ownRequests.find((request) => request.status === "PENDING");
   const successors = members.filter((member) => member.id !== viewer.id && member.canReceivePresidency);
-  const membershipStatusLabel = viewer.membershipStatus === "MEMBER" ? "社員" : viewer.membershipStatus === "EXITING" ? "社員（本期結束後退出）" : "非社員";
+  const exiting = viewer.membershipStatus === "EXITING";
+  const requestDate = (value?: string | null) => {
+    const date = new Date(value ?? "");
+    return Number.isFinite(date.getTime()) ? date.toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei" }) : null;
+  };
+  const endingDate = exiting ? requestDate(viewer.membershipEndingAt) : null;
   const requestStatus: Record<MembershipRequest["status"], string> = { PENDING: "待審核", APPROVED: "已核准", REJECTED: "未核准" };
-  const requestDate = (value: string | null) => value ? new Date(value).toLocaleDateString("zh-TW", { timeZone: "Asia/Taipei" }) : "—";
 
   return (
     <section className="account-page">
-      <article className="account-hero">
-        <div className="account-avatar" aria-hidden="true">{user.name.slice(0, 1)}</div>
-        <div className="account-hero-copy">
-          <p>MY PROFILE</p>
-          <h2>{user.name}</h2>
-          <span>{user.department && <>{user.department} · </>}{clubIdentityLabel(viewer)}</span>
-        </div>
-        <Badge tone={viewer.hasPasskey || viewer.hasRecoveryCode ? "green" : "orange"}>{securityLabel}</Badge>
-      </article>
-
-      <div className="account-panels">
-        <section className="account-card identity-card">
-          <div className="account-card-heading">
-            <div>
-              <p>基本資料</p>
-              <h3>帳號資訊</h3>
+      <section className="account-card identity-card" aria-labelledby="profile-identity-title">
+        <h2 id="profile-identity-title" className="account-card-title">個人資料</h2>
+        {editingName ? (
+          <form className="display-name-form" onSubmit={async (form) => { if (await saveDisplayName(form)) finishNameEdit(); }}>
+            <label htmlFor="profile-display-name">顯示名稱</label>
+            <input key={viewer.id + ":" + viewer.name} id="profile-display-name" name="displayName" defaultValue={viewer.name} maxLength={40} required autoComplete="nickname" autoFocus aria-describedby="profile-display-name-help" disabled={profileSaving} />
+            <small id="profile-display-name-help">最多 40 字，不會變更固定的帳號名稱。</small>
+            <div className="display-name-actions">
+              <button type="button" className="secondary" disabled={profileSaving} onClick={finishNameEdit}>取消</button>
+              <button type="submit" className="primary" disabled={profileSaving}>{profileSaving ? "儲存中…" : "儲存"}</button>
             </div>
-            <Badge tone="gray">帳號固定</Badge>
+          </form>
+        ) : (
+          <div className="account-hero">
+            <span className="account-avatar" aria-hidden="true">{Array.from(viewer.name)[0] ?? "球"}</span>
+            <div className="account-hero-copy">
+              <strong>{viewer.name}</strong>
+              <span>{clubIdentityLabel(viewer)}</span>
+            </div>
+            <button ref={editNameButton} type="button" className="link display-name-edit" aria-label="修改顯示名稱" onClick={() => setEditingName(true)}>改顯示名稱</button>
           </div>
-          <div className="display-name-field">
-            {editingName ? (
-              <form className="display-name-form" onSubmit={async (form) => { if (await saveDisplayName(form)) finishNameEdit(); }}>
-                <label htmlFor="profile-display-name">顯示名稱</label>
-                <input key={viewer.id + ":" + viewer.name} id="profile-display-name" name="displayName" defaultValue={viewer.name} maxLength={40} required autoComplete="nickname" autoFocus aria-describedby="profile-display-name-help" disabled={profileSaving} />
-                <div className="display-name-actions">
-                  <button type="button" className="secondary" disabled={profileSaving} onClick={finishNameEdit}>取消</button>
-                  <button type="submit" className="primary" disabled={profileSaving}>{profileSaving ? "儲存中…" : "儲存"}</button>
-                </div>
-                <small id="profile-display-name-help">最多 40 字；儲存後才會更新顯示名稱，帳號名稱不會變更。</small>
-              </form>
-            ) : (
-              <div className="display-name-view">
-                <span>顯示名稱</span>
-                <div>
-                  <strong>{viewer.name}</strong>
-                  <button ref={editNameButton} type="button" className="link display-name-edit" aria-label="修改顯示名稱" onClick={() => setEditingName(true)}>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6L16 3Z" /><path d="m14 5 5 5" /></svg>
-                    修改
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+        )}
+        <dl className="account-details">
+          <div><dt>帳號名稱 <span>（固定）</span></dt><dd><code>{viewer.accountName ?? viewer.name}</code></dd></div>
+          <div><dt>部門</dt><dd>{user.department || "未填寫"}</dd></div>
+          <div><dt>帳戶餘額</dt><dd>NT$ {viewer.creditBalance.toLocaleString("zh-TW")}</dd></div>
+        </dl>
+        <details className="account-disclosure">
+          <summary>更多帳號資訊</summary>
           <dl className="account-details">
-            <div><dt>帳號名稱</dt><dd><code>{viewer.accountName ?? viewer.name}</code></dd></div>
-            <div><dt>部門</dt><dd>{user.department || "未填寫"}</dd></div>
-            <div><dt>社團身分</dt><dd>{clubIdentityLabel(viewer)}</dd></div>
             <div><dt>帳號類型</dt><dd>{accountTypeLabels[viewer.accountType]}</dd></div>
-            <div><dt>帳戶餘額</dt><dd>NT$ {viewer.creditBalance.toLocaleString("zh-TW")}</dd></div>
             <div><dt>帳號識別碼</dt><dd><code title={viewer.id}>{shortId}</code></dd></div>
           </dl>
-          <p className="account-note">帳號名稱固定不變，用於取回帳號與名額轉讓；修改顯示名稱不會改變帳號。部門由幹部管理。如需入社或退社，可在「加入或退出申請」區塊提出申請。</p>
-        </section>
+          <p className="account-note">帳號名稱用於取回帳號與名額轉讓。部門由幹部管理。</p>
+        </details>
+      </section>
 
-        <section className="account-card membership-card">
-          <div className="account-card-heading">
-            <div>
-              <p>社員身分</p>
-              <h3>加入或退出申請</h3>
-            </div>
-            <Badge tone={viewer.primaryAdmin ? "blue" : user.member ? "green" : "gray"}>{viewer.primaryAdmin ? clubIdentityLabel(viewer) : membershipStatusLabel}</Badge>
-          </div>
+      <section className="account-card membership-card" aria-labelledby="profile-membership-title">
+          <h2 id="profile-membership-title" className="account-card-title">我的會籍</h2>
           <div className="membership-action">
             <div>
-              <strong>{viewer.primaryAdmin ? "社長須先轉交權限才能退社" : pendingRequest ? `${pendingRequest.kind === "JOIN" ? "加入" : "退出"}申請審核中` : viewer.membershipStatus === "EXITING" ? "會籍將於本期結束" : user.member ? "目前為有效社員" : "目前為非社員"}</strong>
-              <span>{viewer.primaryAdmin ? "社團必須保留一位社長。轉交後你將成為一般社員，原有活動與帳單不變，再依一般流程申請退出。" : pendingRequest ? "幹部完成審核前，身分與計費方式都不會變更。" : user.member ? "退出原則上不退當期費用，核准後仍可使用至本期結束。" : "加入核准後立即生效；若當期已開始，依剩餘活動場次建立費用。"}</span>
+              <strong>{viewer.primaryAdmin ? "社長須先轉交權限才能退社" : pendingRequest ? `${pendingRequest.kind === "JOIN" ? "加入" : "退出"}申請審核中` : exiting ? "會籍即將結束" : user.member ? "目前為社員" : "目前為非社員"}</strong>
+              {exiting ? <span>{endingDate ? `社員身分有效至 ${endingDate}。` : "社員身分有效至本期結束。"}</span> : pendingRequest ? <span>審核前，身分與計費方式不變。</span> : null}
             </div>
             {viewer.primaryAdmin ? (
               <button type="button" className="secondary" disabled={presidencySaving} aria-expanded={transferOpen} aria-controls="presidency-transfer-form" onClick={() => setTransferOpen((open) => !open)}>轉交社長權限</button>
-            ) : viewer.membershipStatus === "EXITING" ? (
-              <button className="secondary" disabled>已排定退出</button>
+            ) : exiting ? (
+              <Badge tone="orange">已排定退出</Badge>
             ) : (
               <button className={user.member ? "secondary" : "primary small"} disabled={membershipSaving || Boolean(pendingRequest)} onClick={() => requestMembershipChange(user.member ? "EXIT" : "JOIN")}>
                 {membershipSaving ? "送出中…" : pendingRequest ? "等待審核" : user.member ? "申請退出社員" : "申請加入社員"}
@@ -1619,38 +1670,47 @@ function AccountProfile({
                       {successors.map((member) => <option key={member.id} value={member.id}>{member.name}{member.department ? " · " + member.department : ""} · {member.accountName ? "帳號：" + member.accountName : member.id.slice(0, 8)}</option>)}
                     </select>
                   </label>
-                  <p className="form-note">確認後立即生效；接任者成為社長，你將失去幹部權限。系統會保留轉交紀錄，並通知雙方。</p>
+                  <p className="form-note">轉交後立即生效，你將成為一般社員。原有活動與帳單不變。</p>
                   <button className="primary" disabled={presidencySaving || !successors.some((member) => member.id === successorId)}>{presidencySaving ? "轉交中…" : "確認轉交社長權限"}</button>
                 </>
               )}
             </form>
           )}
           {ownRequests.length > 0 && (
-            <div className="membership-history">
-              {ownRequests.slice(0, 4).map((request) => (
-                <div key={request.id}>
-                  <span>{requestDate(request.requestedAt)} · {request.kind === "JOIN" ? "加入社員" : "退出社員"}</span>
-                  <Badge tone={request.status === "APPROVED" ? "green" : request.status === "PENDING" ? "orange" : "gray"}>{requestStatus[request.status]}</Badge>
-                </div>
-              ))}
-            </div>
+            <details className="account-disclosure">
+              <summary>申請紀錄</summary>
+              <ul className="membership-history">
+                {ownRequests.slice(0, 4).map((request) => (
+                  <li key={request.id}>
+                    <span>{requestDate(request.requestedAt) ?? "日期未記錄"} · {request.kind === "JOIN" ? "加入社員" : "退出社員"}</span>
+                    <Badge tone={request.status === "APPROVED" ? "green" : request.status === "PENDING" ? "orange" : "gray"}>{requestStatus[request.status]}</Badge>
+                  </li>
+                ))}
+              </ul>
+            </details>
           )}
-        </section>
-      </div>
+      </section>
 
-      <section className="account-card security-card">
-        <div className="account-card-heading">
-          <div>
-            <p>帳號安全</p>
-            <h3>登入與復原方式</h3>
-          </div>
-        </div>
+      <section className="account-card security-card" aria-labelledby="profile-security-title">
+        <h2 id="profile-security-title" className="account-card-title">登入與安全</h2>
+        {!viewer.hasRecoveryCode && !viewer.hasPasskey && (
+          <p className="recovery-reminder">還沒設定取回帳號的方式。建議先建立 Passkey 或復原碼，以免換裝置後無法登入。</p>
+        )}
 
         <article className="security-method">
-          <div className="security-icon" aria-hidden="true">#</div>
           <div className="security-copy">
-            <div><strong>復原碼</strong><Badge tone={viewer.hasRecoveryCode ? "green" : "orange"}>{viewer.hasRecoveryCode ? "已設定" : "尚未設定"}</Badge></div>
-            <span>{viewer.hasRecoveryCode ? "系統只保存不可逆的驗證資料，因此無法再次顯示原本的復原碼。" : "換裝置或清除網站資料時，可用固定的帳號名稱與復原碼取回帳號。"}</span>
+            <div><strong>Passkey</strong><Badge tone={viewer.hasPasskey ? "green" : "gray"}>{viewer.hasPasskey ? "已啟用" : "未設定"}</Badge></div>
+            <p>用指紋、臉部辨識或裝置 PIN 登入。</p>
+          </div>
+          <button className={viewer.hasPasskey ? "secondary" : "primary small"} disabled={passkeySaving} onClick={registerPasskey}>
+            {passkeySaving ? "處理中…" : viewer.hasPasskey ? "新增 Passkey" : "建立 Passkey"}
+          </button>
+        </article>
+
+        <article className="security-method">
+          <div className="security-copy">
+            <div><strong>復原碼</strong><Badge tone={viewer.hasRecoveryCode ? "green" : "gray"}>{viewer.hasRecoveryCode ? "已設定" : "未設定"}</Badge></div>
+            <p>搭配固定的帳號名稱，可在換裝置時取回帳號。</p>
           </div>
           <button className="secondary" disabled={recoverySaving} onClick={createRecoveryCode}>
             {recoverySaving ? "產生中…" : viewer.hasRecoveryCode ? "重新產生復原碼" : "建立復原碼"}
@@ -1658,38 +1718,16 @@ function AccountProfile({
         </article>
 
         <article className="security-method">
-          <div className="security-icon" aria-hidden="true">✓</div>
-          <div className="security-copy">
-            <div><strong>Passkey</strong><Badge tone={viewer.hasPasskey ? "green" : "gray"}>{viewer.hasPasskey ? "已啟用" : "未設定"}</Badge></div>
-              <span>可用指紋、臉部辨識或裝置 PIN 登入。重裝 App 後，只要裝置仍能取用 Passkey，就能登入同一帳號。</span>
-          </div>
-          <button className={viewer.hasPasskey ? "secondary" : "primary small"} disabled={passkeySaving} onClick={registerPasskey}>
-            {passkeySaving ? "處理中…" : viewer.hasPasskey ? "新增另一個 Passkey" : "建立 Passkey"}
-          </button>
-        </article>
-
-        <article className="security-method">
-          <div className="security-icon" aria-hidden="true">◇</div>
           <div className="security-copy">
             <div><strong>此裝置快速登入</strong><Badge tone="blue">已記住</Badge></div>
-            <span>登出後仍可在這台裝置的登入頁選擇此帳號；清除網站資料後會失效。</span>
+            <p>登出後仍可在這台裝置選擇此帳號。</p>
           </div>
         </article>
-
-        <aside className="recovery-reminder">
-          <strong>重新產生前請注意</strong>
-          <span>建立新復原碼後，舊碼會立即失效；新碼也只顯示一次，請當下複製保存。</span>
-        </aside>
       </section>
 
-      <section className="account-card account-session">
-        <div>
-          <p>目前工作階段</p>
-          <h3>要離開這個帳號嗎？</h3>
-          <span>登出不會刪除這台裝置保存的快速登入帳號，也不會刪除雲端資料。</span>
-        </div>
-        <button className="secondary" onClick={logout}>登出</button>
-      </section>
+      <footer className="account-session">
+        <button type="button" className="secondary" onClick={logout}>登出</button>
+      </footer>
     </section>
   );
 }
@@ -1713,33 +1751,20 @@ function Overview({
   showEventDetails: (eventId: string) => void;
   showBilling: () => void;
 }) {
-  if (!event) {
-    return (
-      <div className="dashboard overview-dashboard">
-        <section className="overview-empty">
-          <b>◷</b>
-          <h3>目前沒有已排程的活動</h3>
-          <span>幹部建立下一場活動後，日期、場地與報名狀態會顯示在這裡。</span>
-          <button className="primary" onClick={showEvents}>查看活動</button>
-        </section>
-      </div>
-    );
-  }
-
-  const regular = event.bookings.filter((entry) => entry.rank === "正取").length;
-  const wait = event.bookings.filter((entry) => entry.rank === "候補").length;
-  const displayedRegularCapacity = Math.max(event.regular, regular);
-  const nextEventDate = event.startsAt ? taipeiDateParts(new Date(event.startsAt)) : null;
+  const regular = event?.bookings.filter((entry) => entry.rank === "正取").length ?? 0;
+  const wait = event?.bookings.filter((entry) => entry.rank === "候補").length ?? 0;
+  const displayedRegularCapacity = Math.max(event?.regular ?? 0, regular);
+  const nextEventDate = event?.startsAt ? taipeiDateParts(new Date(event.startsAt)) : null;
   const invoiceState: { label: string; tone: "green" | "orange" | "blue" } = invoice?.status === "CONFIRMED"
     ? { label: "已確認", tone: "green" }
     : invoice?.status === "REPORTED"
       ? { label: "已回報轉帳", tone: "blue" }
       : { label: "待轉帳", tone: "orange" };
-  const invoiceLabel = !invoice ? "費用概況" : invoice.type === "SINGLE_EVENT" ? "本次活動費" : "三個月社員費";
+  const invoiceLabel = !invoice ? "費用概況" : ({ SINGLE_EVENT: "零打單次費", MEMBER_EXTRA: "社員加場費", MEMBERSHIP_PRORATED: "中途入社社費", QUARTERLY_MEMBER: "季度社員費" }[invoice.type] ?? "待辦費用");
 
   return (
     <div className="dashboard overview-dashboard">
-      <section className="next-event-card">
+      {event ? <section className="next-event-card" aria-labelledby="next-event-title">
         <div className="next-event-main">
           <div className="overview-date">
             <strong>{nextEventDate?.day ?? event.date}</strong>
@@ -1747,7 +1772,8 @@ function Overview({
             <small>{event.weekday}</small>
           </div>
           <div className="next-event-detail">
-            <h3>{event.time}</h3>
+            <span className="next-event-kicker">下一場活動</span>
+            <h2 id="next-event-title">{event.time}</h2>
             <p>⌖ {event.courts}</p>
           </div>
           <div className="attendance-summary" role="group" aria-label="本場參加人數">
@@ -1768,15 +1794,20 @@ function Overview({
           </div>
           <div className="next-event-actions">
             {!booking && <button type="button" className="primary small" onClick={join}>{user.member ? "恢復參加" : "我要報名"}</button>}
-            <button type="button" className="secondary" aria-haspopup="dialog" onClick={() => showEventDetails(event.id)}>查看活動詳情</button>
+            <button type="button" className={booking ? "primary small" : "secondary"} aria-haspopup="dialog" onClick={() => showEventDetails(event.id)}>查看活動詳情</button>
           </div>
         </div>
-      </section>
+      </section> : <section className="overview-empty" aria-labelledby="next-event-title">
+        <b aria-hidden="true">◷</b>
+        <h2 id="next-event-title">目前沒有已排程的活動</h2>
+        <span>幹部建立下一場活動後，日期、場地與報名狀態會顯示在這裡。</span>
+        <button type="button" className="secondary" onClick={showEvents}>查看活動月曆</button>
+      </section>}
 
-      <section className="payment-summary">
+      <section className="payment-summary" aria-labelledby="overview-fees-title">
         <div className="payment-summary-content">
           <div className="payment-summary-heading">
-            <p>{invoiceLabel}</p>
+            <h2 id="overview-fees-title">{invoiceLabel}</h2>
             {invoice && <Badge tone={invoiceState.tone}>{invoiceState.label}</Badge>}
           </div>
           <strong>{invoice ? `NT$ ${invoice.amount.toLocaleString("zh-TW")}` : "無待處理費用"}</strong>
@@ -1970,7 +2001,7 @@ function ActivityCalendar({ list, invoices, viewerId, openEvent, createOnDate }:
   );
 }
 
-function EventDetailsDialog({ event, viewerId, user, isAdmin, close, join, cancel, transfer, edit, cancelEvent }: {
+function EventDetailsDialog({ event, viewerId, user, isAdmin, close, join, cancel, transfer, edit, cancelEvent, publishGuestSettlement, refreshGuestSettlement }: {
   event: ClubEvent;
   viewerId: string;
   user: Person;
@@ -1981,11 +2012,14 @@ function EventDetailsDialog({ event, viewerId, user, isAdmin, close, join, cance
   transfer: () => void;
   edit: () => void;
   cancelEvent: () => void;
+  publishGuestSettlement: (decisions: GuestSettlementDecision[]) => Promise<GuestSettlementReceipt | null>;
+  refreshGuestSettlement: () => Promise<void>;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const settingsRef = useRef<HTMLDetailsElement>(null);
   const attendanceRef = useRef<HTMLDivElement>(null);
   const [attendanceOpen, setAttendanceOpen] = useState(false);
+  const [guestSettlementOpen, setGuestSettlementOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -2008,6 +2042,12 @@ function EventDetailsDialog({ event, viewerId, user, isAdmin, close, join, cance
   const started = Boolean(event.startsAt && new Date(event.startsAt).getTime() <= now);
   const ended = Boolean(event.endsAt && new Date(event.endsAt).getTime() <= now);
   const canManage = isAdmin && !ended;
+  const publishGuestDecisions = async (decisions: GuestSettlementDecision[]) => {
+    if (saving) return null;
+    setSaving(true);
+    try { return await publishGuestSettlement(decisions); }
+    finally { setSaving(false); }
+  };
   const canChangeAttendance = Boolean(entry && !started);
   const attendanceStatus = <>
     <strong>我的狀態</strong>
@@ -2079,9 +2119,15 @@ function EventDetailsDialog({ event, viewerId, user, isAdmin, close, join, cance
         <div><dt>正取</dt><dd>{event.regularBooked} / {Math.max(event.regular, event.regularBooked)} 人</dd></div>
         <div><dt>候補</dt><dd>{event.waitBooked} / {event.wait} 人</dd></div>
         <div><dt>社員單次費</dt><dd>NT$ {event.memberFee.toLocaleString("zh-TW")}（三個月預收）</dd></div>
-        <div><dt>非社員單次費</dt><dd>NT$ {event.guestFee.toLocaleString("zh-TW")}</dd></div>
+        <div><dt>非社員零打費</dt><dd>NT$ {event.guestFee.toLocaleString("zh-TW")}</dd></div>
       </dl>
-      <p className="form-note">社員預設參加並保證正取；非社員正取滿額後列入候補，候補也可到場。</p>
+      <p className="form-note">有效社員預設參加並保證正取；非社員正取滿額後列入候補。活動結束後由幹部核對零打費用，未補上的候補不收費。</p>
+      {isAdmin && <div>
+        <button type="button" className="secondary guest-settlement-trigger" aria-expanded={guestSettlementOpen} disabled={saving} onClick={() => setGuestSettlementOpen((open) => !open)}>
+          {guestSettlementOpen ? "收合零打結算" : "結算零打"}
+        </button>
+        {guestSettlementOpen && <GuestSettlementPanel event={event} ended={ended} busy={saving} publish={publishGuestDecisions} refresh={refreshGuestSettlement} />}
+      </div>}
       <div className="event-dialog-status" ref={attendanceRef} tabIndex={-1}>
         {canChangeAttendance ? (
           <button
@@ -2123,6 +2169,86 @@ function EventDetailsDialog({ event, viewerId, user, isAdmin, close, join, cance
     </dialog>
   );
 }
+
+function GuestSettlementPanel({
+  event,
+  ended,
+  busy,
+  publish,
+  refresh,
+}: {
+  event: ClubEvent;
+  ended: boolean;
+  busy: boolean;
+  publish: (decisions: GuestSettlementDecision[]) => Promise<{ issued: number; skipped: number } | null>;
+  refresh: () => Promise<void>;
+}) {
+  const [decisions, setDecisions] = useState<Partial<Record<string, GuestSettlementDecision["decision"]>>>({});
+  const [review, setReview] = useState(false);
+  const [error, setError] = useState("");
+  const [receipt, setReceipt] = useState("");
+  const settled = new Map(event.guestSettlements?.map((settlement) => [settlement.memberId, settlement]) ?? []);
+  const eligible = event.bookings.filter((booking) => booking.kind === "非社員" && !booking.transferred && (booking.rank === "正取" || settled.has(booking.memberId)));
+  const open = eligible.filter((booking) => !settled.has(booking.memberId));
+  const pendingDecisions = open.flatMap(({ memberId }) => { const decision = decisions[memberId]; return decision ? [{ memberId, decision }] : []; });
+  const billCount = pendingDecisions.filter(({ decision }) => decision === "BILL").length;
+  const ready = ended && open.length > 0 && open.length === pendingDecisions.length;
+  const money = (amount: number) => "NT$ " + amount.toLocaleString("zh-TW");
+  const submit = async (form: FormEvent<HTMLFormElement>) => {
+    form.preventDefault();
+    if (!ready || busy) return;
+    if (!review) { setReview(true); return; }
+    setError("");
+    setReceipt("");
+    try {
+      const result = await publish(pendingDecisions);
+      if (!result) { setError("未完成結算，請重新整理名單後再確認。"); setReview(false); return; }
+      setReceipt("已開出 " + result.issued + " 筆零打帳單，" + result.skipped + " 人不收費。");
+      setDecisions({});
+      setReview(false);
+    } catch {
+      setError("暫時無法核對結算結果。請先重新整理名單，不要重複開單。");
+      setReview(false);
+    }
+  };
+  return (
+    <section className="guest-settlement" aria-labelledby="guest-settlement-title">
+      <div className="guest-settlement-heading">
+        <div><h3 id="guest-settlement-title">零打結算</h3><p>本場零打：{money(event.guestFee)}／人</p></div>
+        <Badge tone={ended && open.length ? "orange" : "gray"}>{!ended ? "草稿 · 尚未開單" : open.length ? "待結算" : settled.size ? "已結算" : "無待結算人員"}</Badge>
+      </div>
+      <p className="form-note">{ended ? "請核對到場，再逐人確認是否收費。正取未到不會自動開單；未補上的候補不列入。已有帳單和私人轉讓不重複收費。" : "現在只能查看預估名單。活動結束後，由幹部核對實際到場再開單；報名不等於應繳。"}</p>
+      {!eligible.length ? <p className="guest-settlement-empty">目前沒有可結算的零打名單。</p> : (
+        <form className="guest-settlement-form" onSubmit={(event) => void submit(event)}>
+          <ul className="guest-settlement-list">{eligible.map((booking) => {
+            const result = settled.get(booking.memberId);
+            const stateText = result?.status === "LEGACY" ? "已有舊帳單" : result?.status === "ISSUED" ? "已開單" : result?.status === "SKIPPED" ? "不收費" : "";
+            return <li key={booking.memberId}>
+              <span><strong>{booking.name}</strong>{booking.accountName && <small>帳號：{booking.accountName}</small>}</span>
+              {result ? <span>{stateText}{result.amount !== null && result.status !== "SKIPPED" ? " · " + money(result.amount) : ""}</span> : ended ? (
+                <select aria-label={booking.name + "零打結算"} disabled={busy || review} value={decisions[booking.memberId] ?? ""} onChange={(change) => { const value = change.target.value; setDecisions((current) => ({ ...current, [booking.memberId]: value === "BILL" || value === "SKIP" ? value : undefined })); }}>
+                  <option value="">待判定</option><option value="BILL">確認收費，開單</option><option value="SKIP">不收費，不開單</option>
+                </select>
+              ) : <span>待核對</span>}
+            </li>;
+          })}</ul>
+          {ended && open.length > 0 && (
+            <>
+              {review && <p className="guest-settlement-review" role="status">將開出 {billCount} 筆、{open.length - billCount} 人不收費；原始合計 {money(event.guestFee * billCount)}，實際金額依可用餘額抵扣。</p>}
+              <div className="guest-settlement-actions">
+                {review && <button type="button" className="secondary" disabled={busy} onClick={() => setReview(false)}>返回修改</button>}
+                <button className="primary" disabled={!ready || busy}>{busy ? "結算中…" : review ? "確認發布零打帳單" : "檢查結算內容"}</button>
+              </div>
+            </>
+          )}
+        </form>
+      )}
+      {receipt && <p className="guest-settlement-review" role="status">{receipt}</p>}
+      {error && <div className="guest-settlement-error" role="alert">{error} <button type="button" className="link" onClick={() => { setReview(false); setDecisions({}); void refresh(); }}>重新整理名單</button></div>}
+    </section>
+  );
+}
+
 function News({
   news,
   admin,
@@ -2185,10 +2311,13 @@ function Members({
   manageMember: (person: Person) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [group, setGroup] = useState<"member" | "guest">("member");
   const reviewDialog = useRef<HTMLDialogElement>(null);
   const reviewTrigger = useRef<HTMLButtonElement>(null);
   const normalizedQuery = query.trim().toLocaleLowerCase("zh-Hant");
-  const visibleMembers = members.filter((person) => !normalizedQuery || person.name.toLocaleLowerCase("zh-Hant").includes(normalizedQuery) || person.accountName?.toLocaleLowerCase("zh-Hant").includes(normalizedQuery) || person.department?.toLocaleLowerCase("zh-Hant").includes(normalizedQuery));
+  const memberCount = members.filter((person) => person.member).length;
+  const activeLabel = group === "member" ? "社員" : "非社員";
+  const visibleMembers = members.filter((person) => person.member === (group === "member") && (!normalizedQuery || [person.name, person.accountName, person.department].some((value) => value?.toLocaleLowerCase("zh-Hant").includes(normalizedQuery))));
   const pendingRequests = requests.filter((request) => request.status === "PENDING");
   const myPendingRequest = pendingRequests.find((request) => request.memberId === currentUser.id);
   return (
@@ -2206,13 +2335,12 @@ function Members({
           </button>
         </section>
       )}
-      <section className="table">
-        <header className="members-header">
+      <section className="roster" aria-labelledby="roster-title">
+        <header className="roster-header">
           <div>
-            <p>社員名單</p>
-            <h3>一起上場的夥伴</h3>
+            <h2 id="roster-title">一起上場的球友</h2>
+            <p>查看現任社員或尚未入社的球友。</p>
           </div>
-          <div className="members-header-actions">
             {admin && (
               <button
                 ref={reviewTrigger}
@@ -2227,28 +2355,41 @@ function Members({
                 <Badge tone={pendingRequests.length > 0 ? "orange" : "gray"}>{pendingRequests.length}</Badge>
               </button>
             )}
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋顯示名稱、帳號或部門" aria-label="搜尋顯示名稱、帳號或部門" />
-          </div>
         </header>
-        <div className="row head">
-          <span>顯示名稱／帳號</span>
-          <span>部門</span>
-          <span>身分</span>
-          {admin && <span>管理</span>}
-        </div>
-        {visibleMembers.length === 0 ? <div className="membership-request-empty">找不到符合的使用者</div> : visibleMembers.map((person) => (
-          <div className="row" key={person.id}>
-            <strong className="member-name-cell">
-              <i>{person.name[0]}</i>
-              <span className="member-name-copy"><span>{person.name}</span>{person.accountName && <small className="account-name">帳號：{person.accountName}</small>}</span>
-            </strong>
-            <span>{person.department ?? "—"}</span>
-            <span>
-              <Badge tone={person.role === "admin" ? "blue" : person.member ? "green" : "gray"}>{clubIdentityLabel(person)}</Badge>
-            </span>
-            {admin && <span className="member-row-actions"><button type="button" className="link" disabled={saving} onClick={() => manageMember(person)}>編輯</button></span>}
+        <div className="roster-controls">
+          <div className="roster-switch" role="group" aria-label="依會籍切換名單">
+            <button type="button" aria-pressed={group === "member"} onClick={() => setGroup("member")}>社員 <span>{memberCount}</span></button>
+            <button type="button" aria-pressed={group === "guest"} onClick={() => setGroup("guest")}>非社員 <span>{members.length - memberCount}</span></button>
           </div>
-        ))}
+          <label className="roster-search">
+            <span>搜尋{activeLabel}</span>
+            <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="姓名、帳號或部門" />
+          </label>
+        </div>
+        <div className="roster-results">
+          <h3>{activeLabel}名單</h3>
+          <span role="status">{visibleMembers.length} 位</span>
+        </div>
+        {visibleMembers.length === 0 ? (
+          <div className="roster-empty">{normalizedQuery ? `找不到符合「${query.trim()}」的${activeLabel}` : `目前沒有${activeLabel}`}</div>
+        ) : (
+          <ul className="roster-grid" aria-label={`${activeLabel}名單`} role="list">
+            {visibleMembers.map((person) => (
+              <li className="roster-card" key={person.id}>
+                <span className="roster-avatar" aria-hidden="true">{Array.from(person.name)[0] ?? "球"}</span>
+                <div className="roster-person">
+                  <strong>{person.name}{person.id === currentUser.id && <small>（你）</small>}</strong>
+                  {person.department && <span>{person.department}</span>}
+                  {person.accountName && <small>帳號：{person.accountName}</small>}
+                </div>
+                <div className="roster-card-actions">
+                  <Badge tone={person.role === "admin" ? "blue" : person.member ? "green" : "gray"}>{person.membershipStatus === "EXITING" ? person.membershipEndingAt ? `會籍至 ${taipeiInputDate(person.membershipEndingAt)}` : "本期後退出" : clubIdentityLabel(person)}</Badge>
+                  {admin && <button type="button" className="link" disabled={saving} aria-label={`編輯 ${person.name}`} onClick={() => manageMember(person)}>編輯</button>}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
       {admin && (
         <dialog

@@ -19,6 +19,7 @@ export type QuarterPlan = QuarterRules & {
   eventAmounts?: number[];
   eventCount?: number;
   grossAmount?: number;
+  skippedDates?: string[];
   confirmedAt?: string | null;
   billed?: boolean;
 };
@@ -62,12 +63,7 @@ export function validateQuarterSchedule(rules: QuarterRules, activities: Suggest
   validateQuarterRules(rules);
   if (!Array.isArray(activities) || activities.length > 32) throw new Error("每季最多 32 場活動");
   if (!activities.length) throw new Error("至少保留一場活動才能確認季度");
-  const dates = new Set<string>();
-  for (const activity of activities) {
-    validateActivity(activity, rules);
-    if (dates.has(activity.date)) throw new Error("建議活動有重複日期：" + activity.date);
-    dates.add(activity.date);
-  }
+  for (const activity of activities) validateActivity(activity, rules);
 }
 export type InvoiceAmounts = {
   grossAmount?: number; creditApplied?: number; amount?: number;
