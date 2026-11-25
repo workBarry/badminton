@@ -15,7 +15,7 @@ import { memberAccountName, readMemberName, reserveMemberName, validatedAccountN
 import { createClaimCodeRecord, type Viewer } from "@/lib/device-auth";
 import { manageInvoice, voidInvoiceBatch } from "@/lib/invoice-management";
 import { fetchOfficialClosures } from "@/lib/official-closures";
-import { validateQuarterSchedule, effectiveInvoiceAmounts, reduceUnpaidInvoice, validCalendarDate, type QuarterRules, type SuggestedActivity } from "@/lib/quarter-planning";
+import { validateQuarterSchedule, validateQuarterDateRange, effectiveInvoiceAmounts, reduceUnpaidInvoice, validCalendarDate, type QuarterBillingPeriod, type QuarterRules, type SuggestedActivity } from "@/lib/quarter-planning";
 
 type StoredDate = Timestamp | Date | string | null | undefined;
 type InvoiceReceipt = {
@@ -71,6 +71,28 @@ function bookingPriority(booking: DocumentData) {
   return booking.kindSnapshot === "MEMBER" ? 0 : 1;
 }
 
+function isBadmintonEvent(event: DocumentData) {
+  return event.eventKind !== "OTHER";
+}
+
+function isQuarterEligibleEvent(event: DocumentData) {
+  return isBadmintonEvent(event) && event.status !== "CANCELLED"
+    && (event.memberBilling == null || event.memberBilling === "NORMAL");
+}
+
+function quarterPeriodForDate(periods: FirebaseFirestore.QueryDocumentSnapshot[], date: string, statuses: string[]) {
+  return periods.find((period) => {
+    const data = period.data();
+    return statuses.includes(String(data.status)) && String(data.startDate) <= date && String(data.endDate) >= date;
+  });
+}
+
+function addQuarterChargeCoverage(coverage: Set<string>, data: DocumentData) {
+  if (!["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "MEMBER_EXTRA"].includes(data.type)) return;
+  if (data.eventId) coverage.add(String(data.eventId));
+  if (Array.isArray(data.eventIds)) for (const eventId of data.eventIds) coverage.add(String(eventId));
+}
+
 function memberAt(member: DocumentData, at: Date) {
   if (isClubPresident(member)) return true;
   const memberSince = dateValue(member.memberSince);
@@ -112,11 +134,11 @@ async function ensureMemberFutureBookings(memberId: string) {
   for (const eventDocument of eventSnapshot.docs) {
     const eventData = eventDocument.data();
     const startsAt = dateValue(eventData.startsAt);
-    if (eventData.status !== "SCHEDULED" || !startsAt || startsAt <= now || !memberAt(member, startsAt)) continue;
+    if (!isBadmintonEvent(eventData) || eventData.status !== "SCHEDULED" || !startsAt || startsAt <= now || !memberAt(member, startsAt)) continue;
     const bookingRef = eventDocument.ref.collection("bookings").doc(memberId);
     await db.runTransaction(async (transaction) => {
       const [freshEvent, booking] = await transaction.getAll(eventDocument.ref, bookingRef);
-      if (!freshEvent.exists || freshEvent.data()?.status !== "SCHEDULED") return;
+      if (!freshEvent.exists || freshEvent.data()?.status !== "SCHEDULED" || !isBadmintonEvent(freshEvent.data()!)) return;
       const freshStartsAt = dateValue(freshEvent.data()?.startsAt);
       if (!freshStartsAt || freshStartsAt <= now || !memberAt(member, freshStartsAt)) return;
       if (booking.exists) {
@@ -146,7 +168,7 @@ async function backfillDefaultMemberBookings() {
   const events = eventSnapshot.docs.filter((document) => {
     const event = document.data();
     const startsAt = dateValue(event.startsAt);
-    return event.status === "SCHEDULED"
+    return isBadmintonEvent(event) && event.status === "SCHEDULED"
       && Boolean(startsAt && startsAt > now)
       && Number(event.memberDefaultsVersion ?? 0) < MEMBER_DEFAULTS_VERSION;
   });
@@ -265,6 +287,7 @@ type EventCancellationSummary = {
   cancelledBookings: number;
   voidedInvoices: number;
   creditedInvoices: number;
+  eventId?: string; eventDate?: string; courts?: string; reducedAmount?: number; creditedAmount?: number; pendingCashRefundAmount?: number; pendingCreditAmount?: number; previewKey?: string;
 };
 
 type GuestSettlement = {
@@ -339,6 +362,57 @@ function cancelSingleEventInvoice(transaction: Transaction, db: Firestore, invoi
   return { voided: Number(data.status === "PENDING"), credited: Number(data.status === "CONFIRMED") };
 }
 
+
+type CancellationBillEffect = { id: string; memberId: string; status: string; amount: number; wallet: number; cash: number; charge: number; single: boolean };
+const CREDIT_RESERVED = ["CONFIRMED", "AWAITING_PAYMENT_CONFIRMATION", "AWAITING_OFFLINE_REFUND"];
+const creditValue = (data: DocumentData) => Math.max(0, -Number(data.amount ?? 0));
+function cancellationBillEffect(eventId: string, invoice: DocumentSnapshot, related: DocumentData[]): CancellationBillEffect | null {
+  const data = invoice.data()!;
+  if (!memberChargesForEvent([data], eventId) || !data.memberId) return null;
+  const single = data.type === "SINGLE_EVENT";
+  const ids = Array.isArray(data.eventIds) ? data.eventIds.map(String) : [String(data.eventId ?? "")];
+  const index = ids.indexOf(eventId);
+  if (index < 0 || (data.adjustments ?? []).some((entry: DocumentData) => entry.creditInvoiceId === "credit-" + eventId + "-" + invoice.id)) return null;
+  const effective = effectiveInvoiceAmounts(data);
+  const originalLineAmount = data.eventAmounts?.[index] ?? data.unitAmount ?? data.eventSnapshots?.[index]?.memberFeeSnapshot;
+  if (!single && ids.length > 1 && originalLineAmount == null) throw new Error("舊帳單缺少原始場次金額，請先核對，避免退錯款");
+  const nominal = single || originalLineAmount == null ? effective.grossAmount : Number(originalLineAmount);
+  if (![nominal, effective.grossAmount, effective.amount, effective.creditApplied].every((amount) => Number.isSafeInteger(amount) && amount >= 0)) throw new Error("活動帳單金額不正確，請先核對");
+  const prior = related.filter((entry) => entry.type === "CREDIT" && CREDIT_RESERVED.includes(String(entry.status)));
+  const previous = prior.reduce((sum, entry) => sum + creditValue(entry), 0);
+  const charge = Math.max(0, Math.min(nominal, effective.grossAmount - previous));
+  const result = { id: invoice.id, memberId: String(data.memberId), status: String(data.status), charge, single, amount: 0, wallet: 0, cash: 0 };
+  if (charge === 0) return null;
+  if (data.status === "PENDING") {
+    const reduced = reduceUnpaidInvoice(data, charge);
+    return { ...result, amount: effective.amount - reduced.adjustedAmount, wallet: reduced.restoredCredit };
+  }
+  const walletUsed = prior.reduce((sum, entry) => sum + Math.max(0, Number(entry.refundWalletAmount ?? entry.balanceRefund ?? creditValue(entry))), 0);
+  const cashUsed = prior.reduce((sum, entry) => sum + Math.max(0, Number(entry.refundCashAmount ?? entry.cashRefund ?? 0)), 0);
+  const cashLimit = Math.max(0, Number(data.receipt?.amount ?? effective.amount) - cashUsed);
+  const wallet = Math.min(charge, Math.max(0, effective.creditApplied - walletUsed));
+  const cash = Math.min(charge - wallet, cashLimit);
+  if (wallet + cash !== charge) throw new Error("活動退款與原付款金額不符，請先核對帳單");
+  return { ...result, wallet, cash };
+}
+function cancellationQuote(eventId: string, event: DocumentData, bookingIds: string[], effects: CancellationBillEffect[]) {
+  const totals = {
+    eventId, eventDate: taipeiDate(event.startsAt), courts: String(event.courts ?? ""),
+    cancelledBookings: bookingIds.length,
+    voidedInvoices: effects.filter((entry) => entry.single && entry.status === "PENDING").length,
+    creditedInvoices: effects.filter((entry) => entry.status !== "PENDING").length,
+    reducedAmount: effects.reduce((sum, entry) => sum + entry.amount, 0),
+    creditedAmount: effects.reduce((sum, entry) => sum + (entry.status === "REPORTED" ? 0 : entry.wallet), 0),
+    pendingCashRefundAmount: effects.reduce((sum, entry) => sum + (entry.status === "CONFIRMED" ? entry.cash : 0), 0),
+    pendingCreditAmount: effects.reduce((sum, entry) => sum + (entry.status === "REPORTED" ? entry.charge : 0), 0),
+  };
+  const previewKey = createHash("sha256").update(JSON.stringify([
+    totals, iso(event.startsAt), iso(event.endsAt), String(event.status ?? ""),
+    bookingIds.sort(), [...effects].sort((a, b) => a.id.localeCompare(b.id)),
+  ])).digest("hex");
+  return { ...totals, previewKey };
+}
+
 async function cancelEventInTransaction(
   transaction: Transaction,
   db: Firestore,
@@ -346,16 +420,18 @@ async function cancelEventInTransaction(
   reason: string,
   now: Date,
   actor: Viewer,
+  options: { preview: boolean; previewKey?: string; note: string },
 ): Promise<EventCancellationSummary> {
-  const eventSnapshot = await transaction.get(eventRef);
+  const [eventSnapshot, manager] = await transaction.getAll(eventRef, db.collection("members").doc(actor.id));
+  if (manager.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
   if (!eventSnapshot.exists) throw new Error("找不到活動");
   const event = eventSnapshot.data()!;
   const eventDateRef = db.collection("eventDates").doc(taipeiDate(event.startsAt));
 
   if (event.status === "CANCELLED") {
-    const dateSnapshot = await transaction.get(eventDateRef);
-    if (dateSnapshot.data()?.eventId === eventRef.id) transaction.delete(eventDateRef);
-    return { cancelledBookings: 0, voidedInvoices: 0, creditedInvoices: 0 };
+    if (options.preview) throw new Error("活動已取消");
+    if (event.cancellationQuote?.previewKey === options.previewKey && String(event.cancellationNote ?? "") === options.note) return event.cancellationQuote;
+    throw new Error("活動已取消，原預覽已失效");
   }
 
   const endsAt = dateValue(event.endsAt);
@@ -370,13 +446,22 @@ async function cancelEventInTransaction(
   const activeBookings = bookingSnapshot.docs.filter((document) => ["REGULAR", "STANDBY"].includes(String(document.data().status)));
   const invoices = [...new Map([...directInvoiceSnapshot.docs, ...quarterlyInvoiceSnapshot.docs].map((document) => [document.id, document])).values()];
 
+  const candidates = invoices.filter((invoice) => memberChargesForEvent([invoice.data()], eventRef.id));
+  const related = await Promise.all(candidates.map((invoice) => transaction.get(db.collection("invoices").where("relatedInvoiceId", "==", invoice.id))));
+  const effects = candidates.flatMap((invoice, index) => {
+    const effect = cancellationBillEffect(eventRef.id, invoice, related[index].docs.map((entry) => entry.data()));
+    return effect ? [effect] : [];
+  });
+  const quote = cancellationQuote(eventRef.id, event, activeBookings.map((entry) => entry.id + ":" + String(entry.data().status)), effects);
+  if (options.preview) return quote;
+  if (quote.previewKey !== options.previewKey) throw new Error("活動或帳務已變更，請重新預覽取消影響");
+  const effectsById = new Map(effects.map((entry) => [entry.id, entry]));
   const linkedPeriods = await transaction.get(db.collection("billingPeriods").where("eventIds", "array-contains", eventRef.id));
-  const adjustment = { eventId: eventRef.id, eventDate: taipeiDate(event.startsAt), reason: "活動取消", actorId: actor.id, actorName: actor.name, createdAt: now.toISOString() };
+  const adjustment = { eventId: eventRef.id, eventDate: taipeiDate(event.startsAt), reason: options.note || "活動取消", actorId: actor.id, actorName: actor.name, createdAt: now.toISOString() };
+  if (3 + linkedPeriods.size + activeBookings.length * 2 + effects.length * 5 > 440) throw new Error("本場帳務影響過多，請先分批核對再取消");
   for (const period of linkedPeriods.docs) transaction.update(period.ref, { eventChanges: FieldValue.arrayUnion({ ...adjustment, kind: "CANCELLED" }), updatedAt: now });
   const creditsByMember = new Map<string, number>();
   const balanceCredits: { memberId: string; amount: number; reason: string; sourceKey: string; invoiceId: string; relatedInvoiceId?: string }[] = [];
-  let voidedInvoices = 0;
-  let creditedInvoices = 0;
 
   for (const booking of activeBookings) {
     transaction.update(booking.ref, {
@@ -390,7 +475,7 @@ async function cancelEventInTransaction(
       const notificationRef = db.collection("notifications").doc();
       transaction.create(notificationRef, notificationData({
         title: "活動已取消",
-        message: `${taipeiDate(event.startsAt)} ${String(event.courts ?? "羽球活動")} 已取消`,
+        message: `${taipeiDate(event.startsAt)} ${String(event.courts ?? "羽球活動")} 已取消` + (options.note ? "；原因：" + options.note : ""),
         type: "EVENT",
         tab: "活動",
         recipientId,
@@ -398,43 +483,56 @@ async function cancelEventInTransaction(
     }
   }
 
-  for (const invoice of invoices) {
+  for (const invoice of candidates) {
     const invoiceData = invoice.data();
-    if (!["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "SINGLE_EVENT", "MEMBER_EXTRA"].includes(invoiceData.type)) continue;
-    const memberId = String(invoiceData.memberId ?? "");
-
-    if (["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "MEMBER_EXTRA"].includes(String(invoiceData.type))) {
-      const eventIds = Array.isArray(invoiceData.eventIds) ? invoiceData.eventIds.map(String) : invoiceData.eventId ? [String(invoiceData.eventId)] : [];
-      const eventIndex = eventIds.indexOf(eventRef.id);
-      if (eventIndex < 0 || !memberChargesForEvent([invoiceData], eventRef.id)) continue;
-      if (Array.isArray(invoiceData.adjustments) && invoiceData.adjustments.some((entry: DocumentData) => entry.creditInvoiceId === "credit-" + eventRef.id + "-" + invoice.id)) continue;
-      const eventCharge = Number(invoiceData.eventAmounts?.[eventIndex] ?? invoiceData.unitAmount ?? event.memberFeeSnapshot ?? 150);
-      if (invoiceData.status === "PENDING") {
+    const memberId = String(invoiceData.memberId);
+    const effect = effectsById.get(invoice.id);
+    if (!effect) continue;
+    if (effect.status === "PENDING") {
+      if (effect.single) {
         const before = effectiveInvoiceAmounts(invoiceData);
-        const reduced = reduceUnpaidInvoice(invoiceData, eventCharge);
-        const { restoredCredit, ...amounts } = reduced;
+        transaction.update(invoice.ref, {
+          status: "VOID", cancellationReason: "EVENT_CANCELLED", voidReason: adjustment.reason, voidedAt: now, voidedBy: actor.id,
+          adjustedGrossAmount: 0, adjustedAmount: 0, adjustedCreditApplied: 0,
+          adjustments: FieldValue.arrayUnion({ ...adjustment, kind: "REDUCTION", amount: -effect.charge, beforeAmount: before.amount, afterAmount: 0, restoredCredit: effect.wallet }),
+          updatedAt: now,
+        });
+        if (effect.wallet > 0) {
+          creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + effect.wallet);
+          balanceCredits.push({ memberId, amount: effect.wallet, reason: "取消活動費恢復餘額抵扣", sourceKey: "invoice:" + invoice.id + ":cancel", invoiceId: invoice.id });
+        }
+      } else {
+        const before = effectiveInvoiceAmounts(invoiceData);
+        const { restoredCredit, ...reduced } = reduceUnpaidInvoice(invoiceData, effect.charge);
         if (restoredCredit > 0) {
           creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + restoredCredit);
-          balanceCredits.push({ memberId, amount: restoredCredit, reason: "活動取消恢復帳單抵扣", sourceKey: `invoice:${invoice.id}:reduction:${eventRef.id}`, invoiceId: invoice.id });
+          balanceCredits.push({ memberId, amount: restoredCredit, reason: "活動取消恢復帳單抵扣", sourceKey: "invoice:" + invoice.id + ":reduction:" + eventRef.id, invoiceId: invoice.id });
         }
-        transaction.update(invoice.ref, { ...amounts, status: reduced.adjustedAmount === 0 ? "CONFIRMED" : "PENDING", confirmedAt: reduced.adjustedAmount === 0 ? now : null, adjustments: FieldValue.arrayUnion({ ...adjustment, kind: "REDUCTION", amount: -eventCharge, beforeAmount: before.amount, afterAmount: reduced.adjustedAmount, restoredCredit }), updatedAt: now });
-      } else {
-        // A reported transfer is not settled money: wait for administrator confirmation before making this credit spendable.
-        const creditRef = db.collection("invoices").doc("credit-" + eventRef.id + "-" + invoice.id);
-        const settled = invoiceData.status === "CONFIRMED";
-        if (settled) {
-          creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + eventCharge);
-          balanceCredits.push({ memberId, amount: eventCharge, reason: "活動取消退回活動費", sourceKey: `invoice:${creditRef.id}:credit`, invoiceId: creditRef.id, relatedInvoiceId: invoice.id });
-        }
-        creditedInvoices += 1;
-        transaction.create(creditRef, { id: creditRef.id, memberId, memberNameSnapshot: invoiceData.memberNameSnapshot, eventId: eventRef.id, relatedInvoiceId: invoice.id, type: "CREDIT", grossAmount: -eventCharge, creditApplied: 0, amount: -eventCharge, status: settled ? "CONFIRMED" : "AWAITING_PAYMENT_CONFIRMATION", periodLabel: "活動取消退回餘額", confirmedAt: settled ? now : null, note: settled ? "活動取消，已退回帳戶餘額" : "待原帳單收款確認後退回餘額", createdAt: now, updatedAt: now });
-        transaction.update(invoice.ref, { adjustments: FieldValue.arrayUnion({ ...adjustment, kind: settled ? "CREDIT" : "CREDIT_PENDING", amount: -eventCharge, creditInvoiceId: creditRef.id }), updatedAt: now });
+        transaction.update(invoice.ref, { ...reduced, status: reduced.adjustedAmount === 0 ? "CONFIRMED" : "PENDING", confirmedAt: reduced.adjustedAmount === 0 ? now : null, adjustments: FieldValue.arrayUnion({ ...adjustment, kind: "REDUCTION", amount: -effect.charge, beforeAmount: before.amount, afterAmount: reduced.adjustedAmount, restoredCredit }), updatedAt: now });
       }
-      continue;
+    } else {
+      const creditRef = db.collection("invoices").doc("credit-" + eventRef.id + "-" + invoice.id);
+      const awaitingPayment = effect.status === "REPORTED";
+      const status = awaitingPayment ? "AWAITING_PAYMENT_CONFIRMATION" : effect.cash > 0 ? "AWAITING_OFFLINE_REFUND" : "CONFIRMED";
+      transaction.create(creditRef, {
+        id: creditRef.id, memberId, memberNameSnapshot: String(invoiceData.memberNameSnapshot ?? "未知使用者"),
+        eventId: eventRef.id, relatedInvoiceId: invoice.id, type: "CREDIT", eventCancellationRefund: true,
+        periodId: invoiceData.periodId ?? invoiceData.relatedPeriodId ?? null,
+        grossAmount: -effect.charge, creditApplied: 0, amount: -effect.charge,
+        refundWalletAmount: effect.wallet, refundCashAmount: effect.cash,
+        originalReceiptMethod: invoiceData.receipt?.method ?? null, status, periodLabel: "活動取消退款",
+        confirmedAt: status === "CONFIRMED" ? now : null, createdAt: now, updatedAt: now,
+      });
+      transaction.update(invoice.ref, { adjustments: FieldValue.arrayUnion({ ...adjustment, kind: status === "CONFIRMED" ? "CREDIT" : "CREDIT_PENDING", amount: -effect.charge, creditInvoiceId: creditRef.id }), updatedAt: now });
+      if (!awaitingPayment && effect.wallet > 0) {
+        creditsByMember.set(memberId, (creditsByMember.get(memberId) ?? 0) + effect.wallet);
+        balanceCredits.push({ memberId, amount: effect.wallet, reason: "活動取消退回原抵扣的帳戶餘額", sourceKey: "invoice:" + creditRef.id + ":credit", invoiceId: creditRef.id, relatedInvoiceId: invoice.id });
+      }
+      if (!awaitingPayment && effect.cash > 0) transaction.create(db.collection("notifications").doc(), notificationData({
+        title: "活動取消退款待處理", message: adjustment.eventDate + " 已取消，款項 NT$" + effect.cash + " 待幹部於站外退款。",
+        type: "PAYMENT", tab: "費用管理", recipientId: memberId,
+      }));
     }
-    const cancelled = cancelSingleEventInvoice(transaction, db, invoice, eventRef.id, "EVENT_CANCELLED", now, actor);
-    voidedInvoices += cancelled.voided;
-    creditedInvoices += cancelled.credited;
   }
 
   for (const [memberId, amount] of creditsByMember) {
@@ -452,10 +550,12 @@ async function cancelEventInTransaction(
     standbyCount: 0,
     cancelledAt: now,
     cancellationReason: reason,
+    cancellationQuote: quote,
+    cancellationNote: options.note,
     updatedAt: now,
   });
   if (dateSnapshot.data()?.eventId === eventRef.id) transaction.delete(eventDateRef);
-  return { cancelledBookings: activeBookings.length, voidedInvoices, creditedInvoices };
+  return quote;
 }
 
 export async function readState(viewer: Viewer | null = null) {
@@ -539,11 +639,26 @@ export async function readState(viewer: Viewer | null = null) {
   }
 
   const legacyByEvent = isAdmin ? legacyGuestBills(invoiceSnapshot?.docs ?? []) : new Map<string, Map<string, number | null>>();
+  const periodByEvent = new Map<string, DocumentData>();
+  for (const period of periodSnapshot?.docs ?? []) {
+    const data = period.data();
+    if (Array.isArray(data.eventIds)) for (const eventId of data.eventIds) periodByEvent.set(String(eventId), data);
+  }
+  const coveredQuarterEvents = new Set(periodByEvent.keys());
+  if (isAdmin) for (const invoice of invoiceSnapshot?.docs ?? []) addQuarterChargeCoverage(coveredQuarterEvents, invoice.data());
   const events = eventSnapshot.docs
     .map((document) => {
       const event = document.data();
       const guestSettlements = isAdmin ? storedGuestSettlements(event) : [];
       const settledGuestIds = new Set(guestSettlements.map((entry) => entry.memberId));
+      const period = periodByEvent.get(document.id);
+      const memberBillingLabel = event.memberBilling === "FREE" ? "免費活動"
+        : event.memberBilling === "NO_CHARGE" ? "不另收社員費"
+        : event.memberBilling === "EXTRA" ? "另收社員加場費"
+        : period?.status === "PLANNED" ? "納入季度社費草稿"
+        : period?.status === "GENERATING" ? "季度社費開單中"
+        : period?.status === "ACTIVE" ? "季度社費場次"
+        : "尚未納入季度社費";
       return {
         id: document.id,
         starts_at: iso(event.startsAt),
@@ -555,11 +670,14 @@ export async function readState(viewer: Viewer | null = null) {
         standby_count: Number(event.standbyCount ?? 0),
         member_fee: Number(event.memberFeeSnapshot ?? 150),
         member_billing: event.memberBilling ?? null,
+        member_billing_label: memberBillingLabel,
+        event_kind: isBadmintonEvent(event) ? "BADMINTON" : "OTHER",
         guest_fee: Number(event.guestFeeSnapshot ?? 180),
         status: String(event.status ?? "SCHEDULED"),
+        cancellation_reason: event.cancellationNote ?? event.cancellationReason ?? null,
         created_at: iso(event.createdAt),
         bookings: (bookingsByEvent.get(document.id) ?? []).sort((a, b) => String(a.confirmedAt).localeCompare(String(b.confirmedAt))),
-        ...(isAdmin ? { guest_settlements: [...guestSettlements, ...[...(legacyByEvent.get(document.id) ?? [])]
+        ...(isAdmin ? { quarter_eligible: isQuarterEligibleEvent(event) && !coveredQuarterEvents.has(document.id), guest_settlements: [...guestSettlements, ...[...(legacyByEvent.get(document.id) ?? [])]
           .filter(([memberId]) => !settledGuestIds.has(memberId))
           .map(([memberId, amount]): GuestSettlement => ({ memberId, status: "LEGACY", amount }))] } : {}),
       };
@@ -588,6 +706,7 @@ export async function readState(viewer: Viewer | null = null) {
       ends_at: iso(event.endsAt),
       courts: String(event.courts ?? ""),
       status: String(event.status ?? "SCHEDULED"),
+      cancellation_reason: event.cancellationNote ?? event.cancellationReason ?? null,
     }];
   }));
 
@@ -596,7 +715,7 @@ export async function readState(viewer: Viewer | null = null) {
       const invoice = document.data();
       const member = membersById.get(String(invoice.memberId));
       const period = periodSnapshot?.docs.find((entry) => entry.id === (invoice.periodId ?? invoice.relatedPeriodId))?.data();
-      const refundTotal = (invoiceSnapshot?.docs ?? []).filter((entry) => entry.data().relatedInvoiceId === document.id && entry.data().type === "CREDIT" && ["CONFIRMED", "AWAITING_PAYMENT_CONFIRMATION"].includes(entry.data().status)).reduce((sum, entry) => sum + Math.max(0, -Number(entry.data().amount)), 0);
+      const refundTotal = (invoiceSnapshot?.docs ?? []).filter((entry) => entry.data().relatedInvoiceId === document.id && entry.data().type === "CREDIT" && CREDIT_RESERVED.includes(entry.data().status)).reduce((sum, entry) => sum + Math.max(0, -Number(entry.data().amount)), 0);
       const directEventId = invoice.eventId ? String(invoice.eventId) : null;
       const eventIds = Array.isArray(invoice.eventIds) ? invoice.eventIds.map(String) : directEventId ? [directEventId] : [];
       const receipt = invoice.receipt as InvoiceReceipt | undefined;
@@ -605,6 +724,7 @@ export async function readState(viewer: Viewer | null = null) {
         member_id: String(invoice.memberId ?? ""),
         event_id: directEventId,
         event_ids: eventIds,
+        original_event_amounts: eventIds.length ? eventIds.map((_, index) => Number(invoice.eventAmounts?.[index] ?? invoice.unitAmount ?? Math.floor(Number(invoice.grossAmount ?? invoice.amount ?? 0) / eventIds.length))) : [Number(invoice.grossAmount ?? invoice.amount ?? 0)],
         event_amounts: eventIds.length ? eventIds.map((id, index) => eventSchedulesById.get(id)?.status === "CANCELLED" || membershipChargeRemoved(invoice, id) ? 0 : Number(invoice.eventAmounts?.[index] ?? invoice.unitAmount ?? Math.floor(effectiveInvoiceAmounts(invoice).grossAmount / eventIds.length))) : [effectiveInvoiceAmounts(invoice).grossAmount],
         event_schedules: eventIds.flatMap((eventId) => {
           const schedule = eventSchedulesById.get(eventId);
@@ -635,6 +755,18 @@ export async function readState(viewer: Viewer | null = null) {
         due_at: iso(invoice.dueAt),
         reported_at: iso(invoice.reportedAt),
         confirmed_at: iso(invoice.confirmedAt),
+        ...(invoice.eventCancellationRefund ? {
+          pending_refund_amount: invoice.status === "AWAITING_OFFLINE_REFUND" ? Number(invoice.refundCashAmount ?? 0) : 0,
+          refund_wallet_amount: invoice.status === "AWAITING_PAYMENT_CONFIRMATION" ? 0 : Number(invoice.refundWalletAmount ?? 0),
+          original_receipt_method: invoice.originalReceiptMethod ?? null,
+          refund_method: invoice.offlineRefundReceipt?.method ?? null,
+          refund_completed_date: invoice.offlineRefundReceipt?.refundedDate ?? null,
+          refund_completed_amount: Number(invoice.offlineRefundReceipt?.amount ?? 0),
+          ...(isAdmin && invoice.offlineRefundReceipt ? {
+            refund_recorded_by_name: invoice.offlineRefundReceipt.recordedByName,
+            refund_note: invoice.offlineRefundReceipt.note,
+          } : {}),
+        } : {}),
         ...(receipt ? {
           receipt_method: receipt.method,
           receipt_received_date: receipt.receivedDate,
@@ -703,7 +835,17 @@ export async function readState(viewer: Viewer | null = null) {
     const plan = doc.data();
     return { ...plan, id: doc.id, confirmedAt: iso(plan.confirmedAt), createdAt: iso(plan.createdAt), updatedAt: iso(plan.updatedAt), billed: periodSnapshot?.docs.some((period) => period.data().planId === doc.id && period.data().status === "ACTIVE") ?? false };
   }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
-  return { viewer, members, events, announcements, invoices, quarterPlans, feeRates, membershipRequests, notifications, currentFees: { member: currentMemberFee, guest: currentGuestFee } };
+  const quarterBillingPeriods = isAdmin
+    ? (periodSnapshot?.docs ?? []).flatMap((doc): QuarterBillingPeriod[] => {
+      const period = doc.data();
+      if (!doc.id.startsWith("quarter-") || !["PLANNED", "GENERATING", "ACTIVE"].includes(String(period.status))) return [];
+      const eventIds = Array.isArray(period.eventIds) ? period.eventIds.map(String) : [];
+      return [{ id: doc.id.slice("quarter-".length), label: String(period.label ?? "季度社費"), startDate: String(period.startDate ?? ""),
+        endDate: String(period.endDate ?? ""), status: period.status as QuarterBillingPeriod["status"], eventIds,
+        eventCount: Number(period.eventCount ?? eventIds.length), grossAmount: Number(period.grossAmount ?? 0),
+        ...(period.origin === "BILLING_MANAGER" && period.status === "PLANNED" ? { revision: String(period.confirmationKey) } : {}) }];
+    }).sort((a, b) => b.startDate.localeCompare(a.startDate) || b.id.localeCompare(a.id)) : [];
+  return { viewer, members, events, announcements, invoices, quarterPlans, quarterBillingPeriods, feeRates, membershipRequests, notifications, currentFees: { member: currentMemberFee, guest: currentGuestFee } };
 }
 
 async function join(input: Record<string, string>, actor: Viewer) {
@@ -729,7 +871,8 @@ async function join(input: Record<string, string>, actor: Viewer) {
     const standbyCount = Number(event.standbyCount ?? 0);
     const regularCapacity = Number(event.regularCapacity ?? 10);
     const standbyCapacity = Number(event.standbyCapacity ?? 4);
-    const status = kind === "MEMBER"
+    const reservedMember = kind === "MEMBER" && isBadmintonEvent(event);
+    const status = reservedMember
       ? "REGULAR"
       : regularCount < regularCapacity
         ? "REGULAR"
@@ -747,7 +890,7 @@ async function join(input: Record<string, string>, actor: Viewer) {
       kindSnapshot: kind,
       status,
       confirmedAt: now,
-      attendanceSource: kind === "MEMBER" ? "MEMBER_REJOIN" : "SELF_REGISTERED",
+      attendanceSource: reservedMember ? "MEMBER_REJOIN" : "SELF_REGISTERED",
       cancelledAt: null,
       transferredFromMemberId: null,
       updatedAt: now,
@@ -784,6 +927,7 @@ async function publishGuestEventBills(input: Record<string, string>, actor: View
     if (currentActor.data()?.role !== "ADMIN") throw new Error("只有幹部可以結算零打");
     const event = eventSnapshot.data();
     if (!eventSnapshot.exists || event?.status !== "SCHEDULED") throw new Error("沒有可結算的活動");
+    if (event.memberBilling === "FREE" || !isBadmintonEvent(event)) throw new Error("本場活動免費，不需要結算零打");
     const endsAt = dateValue(event.endsAt);
     if (!endsAt || !Number.isFinite(endsAt.getTime()) || endsAt > now) throw new Error("活動結束後才能發布零打帳單");
     const grossAmount = Number(event.guestFeeSnapshot ?? 180);
@@ -1032,26 +1176,40 @@ function validatedEventInput(input: Record<string, string>) {
 
 async function createEvent(input: Record<string, string>, actor: Viewer) {
   const values = validatedEventInput(input);
-  if (!["NO_CHARGE", "EXTRA"].includes(input.memberBilling)) throw new Error("請選擇加場的社員收費方式");
-  if (!input.billingReason?.trim() || input.billingReason.length > 200) throw new Error("請填寫加場收費或免收原因（最多 200 字）");
+  const eventKind = input.eventKind || "BADMINTON";
+  if (eventKind !== "BADMINTON" && eventKind !== "OTHER") throw new Error("活動類型不正確");
+  const badminton = eventKind === "BADMINTON";
+  const requested = input.memberBilling || (badminton ? "NORMAL" : "FREE");
+  if (requested === "EXTRA") throw new Error("活動建立不會開單；請建立後另行預覽與確認社員加場費");
+  if (!["NORMAL", "NO_CHARGE", "FREE"].includes(requested) || (!badminton && requested !== "FREE")) throw new Error("請選擇符合活動類型的收費方式");
+  const requestedReason = input.billingReason?.trim() ?? "";
+  if (requestedReason.length > 200 || (requested === "NO_CHARGE" && !requestedReason)) throw new Error("請填寫不另收社員費的原因（最多 200 字）");
   if (values.startsAt <= new Date()) throw new Error("不能新增已開始的活動");
   const db = getAdminFirestore();
-  const [memberFeeSnapshot, guestFeeSnapshot, memberSnapshot] = await Promise.all([
+  const [memberRate, guestRate, memberSnapshot] = await Promise.all([
     activeFee(db, "MEMBER_VISIT", values.startsAt),
     activeFee(db, "GUEST_VISIT", values.startsAt),
     db.collection("members").get(),
   ]);
-  const defaultMembers = memberSnapshot.docs.filter((document) => memberAt(document.data(), values.startsAt));
+  const defaultMembers = badminton ? memberSnapshot.docs.filter((document) => memberAt(document.data(), values.startsAt)) : [];
   const eventRef = db.collection("events").doc();
   const eventDateRef = db.collection("eventDates").doc(values.date);
   const notificationRef = input.notify === "false" ? null : db.collection("notifications").doc();
   const now = new Date();
-  await db.runTransaction(async (transaction) => {
-
-    const dateSnapshot = await transaction.get(eventDateRef);
-    const periods = await transaction.get(db.collection("billingPeriods"));
-    const period = periods.docs.find((entry) => entry.data().startDate <= values.date && entry.data().endDate >= values.date);
-    if (dateSnapshot.exists) throw new Error("這一天已有活動，請直接編輯既有活動");
+  const memberBilling = await db.runTransaction(async (transaction) => {
+    const [manager, dateSnapshot, periods, nearbyEvents] = await Promise.all([
+      transaction.get(db.collection("members").doc(actor.id)),
+      badminton ? transaction.get(eventDateRef) : null,
+      badminton ? transaction.get(db.collection("billingPeriods")) : null,
+      badminton ? transaction.get(db.collection("events").where("startsAt", ">=", billingBoundary(values.date)).where("startsAt", "<=", billingBoundary(values.date, true))) : null,
+    ]);
+    if (manager.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
+    const lockedPeriod = quarterPeriodForDate(periods?.docs ?? [], values.date, ["GENERATING", "ACTIVE"]);
+    const memberBilling = lockedPeriod && requested === "NORMAL" ? "NO_CHARGE" : requested;
+    const billingReason = memberBilling !== requested ? "季度社費已開立或處理中，本場不另收社員費" : requestedReason;
+    const memberFeeSnapshot = memberBilling === "NO_CHARGE" || memberBilling === "FREE" ? 0 : memberRate;
+    const guestFeeSnapshot = memberBilling === "FREE" ? 0 : guestRate;
+    if (dateSnapshot?.exists || nearbyEvents?.docs.some((doc) => isBadmintonEvent(doc.data()) && doc.data().status !== "CANCELLED")) throw new Error("這一天已有羽球活動，請直接編輯既有活動");
     transaction.create(eventRef, {
       id: eventRef.id,
       startsAt: values.startsAt,
@@ -1060,19 +1218,20 @@ async function createEvent(input: Record<string, string>, actor: Viewer) {
       regularCapacity: values.regularCapacity,
       standbyCapacity: values.standbyCapacity,
       memberFeeSnapshot,
+      memberListRateSnapshot: memberRate,
       guestFeeSnapshot,
       regularCount: defaultMembers.length,
       standbyCount: 0,
       memberDefaultsVersion: MEMBER_DEFAULTS_VERSION,
       source: "MANUAL",
-      memberBilling: input.memberBilling,
-      billingReason: input.billingReason.trim(),
-      relatedPeriodId: period?.id ?? null,
+      eventKind,
+      memberBilling,
+      billingReason: billingReason || null,
       status: "SCHEDULED",
       createdAt: now,
       updatedAt: now,
     });
-    transaction.create(eventDateRef, { eventId: eventRef.id, date: values.date, createdAt: now });
+    if (badminton) transaction.create(eventDateRef, { eventId: eventRef.id, date: values.date, createdAt: now });
     for (const memberDocument of defaultMembers) {
       transaction.create(
         eventRef.collection("bookings").doc(memberDocument.id),
@@ -1080,17 +1239,10 @@ async function createEvent(input: Record<string, string>, actor: Viewer) {
       );
     }
 
-    if (period) transaction.update(period.ref, { eventChanges: FieldValue.arrayUnion({ kind: "ADDED", eventId: eventRef.id, eventDate: values.date, memberBilling: input.memberBilling, reason: input.billingReason.trim(), actorId: actor.id, actorName: actor.name, createdAt: now.toISOString() }), updatedAt: now });
-    if (input.memberBilling === "EXTRA") {
-      for (const member of defaultMembers) {
-        const invoiceRef = db.collection("invoices").doc("extra-" + eventRef.id + "-" + member.id);
-        transaction.create(invoiceRef, { id: invoiceRef.id, memberId: member.id, memberNameSnapshot: String(member.data().displayName), eventId: eventRef.id, eventIds: [eventRef.id], eventAmounts: [memberFeeSnapshot], type: "MEMBER_EXTRA", grossAmount: memberFeeSnapshot, creditApplied: 0, amount: memberFeeSnapshot, relatedPeriodId: period?.id ?? null, periodLabel: values.date + " 社員加場補收", status: "PENDING", dueAt: values.startsAt, adjustments: [{ kind: "EXTRA", reason: input.billingReason.trim(), eventDate: values.date, amount: memberFeeSnapshot, actorId: actor.id, actorName: actor.name, createdAt: now.toISOString() }], createdAt: now, updatedAt: now });
-        transaction.create(db.collection("notifications").doc(), notificationData({ title: "社員加場補收", message: values.date + " 加場，另收 NT$" + memberFeeSnapshot + "；原季度帳單不變", type: "PAYMENT", tab: "費用管理", recipientId: member.id }));
-      }
-    }
-    if (notificationRef) transaction.create(notificationRef, notificationData({ title: "新活動已排程", message: `${values.date} ${values.courts}；社員已預設正取，非社員可依剩餘名額報名`, type: "EVENT", tab: "活動" }));
+    if (notificationRef) transaction.create(notificationRef, notificationData({ title: "新活動已排程", message: `${values.date} ${values.courts}；${badminton ? "社員已預設正取，非社員可依剩餘名額報名" : "免費活動，請自行報名"}`, type: "EVENT", tab: "活動" }));
+    return memberBilling;
   });
-  return { eventId: eventRef.id, date: values.date };
+  return { eventId: eventRef.id, date: values.date, memberBilling };
 }
 
 async function updateEvent(input: Record<string, string>, actor: Viewer) {
@@ -1102,15 +1254,16 @@ async function updateEvent(input: Record<string, string>, actor: Viewer) {
     const eventSnapshot = await transaction.get(eventRef);
     if (!eventSnapshot.exists || eventSnapshot.data()?.status !== "SCHEDULED") throw new Error("找不到可編輯的活動");
     const event = eventSnapshot.data()!;
+    const badminton = isBadmintonEvent(event);
     if (event.guestSettledAt) throw new Error("零打已結算，不能再編輯本場；帳單變更請在費用管理處理");
     const oldDate = taipeiDate(event.startsAt);
     const oldDateRef = db.collection("eventDates").doc(oldDate);
     const newDateRef = db.collection("eventDates").doc(values.date);
     const [newDateSnapshot, bookingSnapshot] = await Promise.all([
-      transaction.get(newDateRef),
+      badminton ? transaction.get(newDateRef) : null,
       transaction.get(eventRef.collection("bookings")),
     ]);
-    if (newDateSnapshot.exists && newDateSnapshot.data()?.eventId !== input.eventId) throw new Error("這一天已有其他活動");
+    if (newDateSnapshot?.exists && newDateSnapshot.data()?.eventId !== input.eventId) throw new Error("這一天已有其他羽球活動");
 
     const regularCount = Number(event.regularCount ?? 0);
     const standbyCount = Number(event.standbyCount ?? 0);
@@ -1130,8 +1283,10 @@ async function updateEvent(input: Record<string, string>, actor: Viewer) {
       changes: FieldValue.arrayUnion({ reason: "調整活動時間／場地／容量，計費基準不變", before: { startsAt: iso(event.startsAt), endsAt: iso(event.endsAt), courts: event.courts }, after: { startsAt: values.startsAt.toISOString(), endsAt: values.endsAt.toISOString(), courts: values.courts }, actorId: actor.id, actorName: actor.name, createdAt: now.toISOString() }),
       updatedAt: now,
     });
-    if (oldDate !== values.date) transaction.delete(oldDateRef);
-    transaction.set(newDateRef, { eventId: input.eventId, date: values.date, updatedAt: now }, { merge: true });
+    if (badminton) {
+      if (oldDate !== values.date) transaction.delete(oldDateRef);
+      transaction.set(newDateRef, { eventId: input.eventId, date: values.date, updatedAt: now }, { merge: true });
+    }
     for (const booking of bookingSnapshot.docs.filter((document) => ["REGULAR", "STANDBY"].includes(String(document.data().status)))) {
       const recipientId = String(booking.data().memberId ?? booking.id);
       const notificationRef = db.collection("notifications").doc();
@@ -1140,11 +1295,16 @@ async function updateEvent(input: Record<string, string>, actor: Viewer) {
   });
 }
 
-async function cancelEvent(eventId: string, actor: Viewer) {
-  if (!eventId) throw new Error("缺少活動識別碼");
+async function cancelEvent(input: Record<string, string>, actor: Viewer, preview = false) {
+  const { eventId, previewKey } = input;
+  if (!eventId || eventId.includes("/") || eventId.length > 200) throw new Error("缺少有效的活動識別碼");
+  const rawNote = input.reason ?? input.note ?? "";
+  if (typeof rawNote !== "string" || rawNote.trim().length > 200) throw new Error("活動取消原因最多 200 字");
+  if ((!preview && !previewKey) || (previewKey && !/^[0-9a-f]{64}$/.test(previewKey))) throw new Error("請重新預覽取消影響後再確認");
+  if (!preview && !rawNote.trim()) throw new Error("請填寫活動取消原因");
   const db = getAdminFirestore();
   const eventRef = db.collection("events").doc(eventId);
-  return db.runTransaction((transaction) => cancelEventInTransaction(transaction, db, eventRef, "ADMIN_CANCELLED", new Date(), actor));
+  return db.runTransaction((transaction) => cancelEventInTransaction(transaction, db, eventRef, "ADMIN_CANCELLED", new Date(), actor, { preview, previewKey, note: rawNote.trim() }));
 }
 
 
@@ -1211,7 +1371,7 @@ async function confirmQuarterPlan(input: Record<string, string>, actor: Viewer) 
     // Imported activities are also protected if an old record is missing its date index.
     for (const doc of nearbyEvents.docs) {
       const event = doc.data();
-      if (event.status === "CANCELLED") continue;
+      if (event.status === "CANCELLED" || !isBadmintonEvent(event)) continue;
       const date = taipeiDate(event.startsAt);
       if (activitiesByDate.has(date)) occupied.add(date);
     }
@@ -1227,7 +1387,6 @@ async function confirmQuarterPlan(input: Record<string, string>, actor: Viewer) 
       transaction.get(db.collection("members")),
       transaction.get(db.collection("feeRates")),
     ]);
-    if (periods.docs.some((doc) => String(doc.data().startDate) <= plan.endDate && String(doc.data().endDate) >= plan.startDate)) throw new Error("此季度與既有計費期間重疊，請調整日期範圍");
     const rateFor = (kind: string, startsAt: Date) => {
       const rate = rates.docs.map((doc) => doc.data()).filter((rate) => rate.kind === kind && (!dateValue(rate.effectiveFrom) || dateValue(rate.effectiveFrom)! <= startsAt) && (!dateValue(rate.effectiveTo) || dateValue(rate.effectiveTo)! > startsAt))
         .sort((a, b) => (dateValue(b.effectiveFrom)?.getTime() ?? 0) - (dateValue(a.effectiveFrom)?.getTime() ?? 0))[0];
@@ -1238,20 +1397,82 @@ async function confirmQuarterPlan(input: Record<string, string>, actor: Viewer) 
       const endsAt = new Date(entry.date + "T" + entry.endTime + ":00+08:00");
       const eventRef = db.collection("events").doc("quarter-" + planRef.id + "-" + index);
       const defaultMembers = members.docs.filter((member) => memberAt(member.data(), startsAt));
-      const memberFeeSnapshot = rateFor("MEMBER_VISIT", startsAt);
-      transaction.create(eventRef, { id: eventRef.id, startsAt, endsAt, courts: entry.courts, regularCapacity: entry.regularCapacity, standbyCapacity: entry.standbyCapacity, memberFeeSnapshot, guestFeeSnapshot: rateFor("GUEST_VISIT", startsAt), regularCount: defaultMembers.length, standbyCount: 0, memberDefaultsVersion: MEMBER_DEFAULTS_VERSION, source: "QUARTER_PLAN", quarterPlanId: planRef.id, status: "SCHEDULED", createdAt: now, updatedAt: now });
+      const memberBilling = quarterPeriodForDate(periods.docs, entry.date, ["GENERATING", "ACTIVE"]) ? "NO_CHARGE" : "NORMAL";
+      const memberListRateSnapshot = rateFor("MEMBER_VISIT", startsAt);
+      const memberFeeSnapshot = memberBilling === "NO_CHARGE" ? 0 : memberListRateSnapshot;
+      transaction.create(eventRef, { id: eventRef.id, startsAt, endsAt, courts: entry.courts, regularCapacity: entry.regularCapacity, standbyCapacity: entry.standbyCapacity, memberFeeSnapshot, memberListRateSnapshot, guestFeeSnapshot: rateFor("GUEST_VISIT", startsAt), regularCount: defaultMembers.length, standbyCount: 0, memberDefaultsVersion: MEMBER_DEFAULTS_VERSION, source: "QUARTER_PLAN", quarterPlanId: planRef.id, eventKind: "BADMINTON", memberBilling, status: "SCHEDULED", createdAt: now, updatedAt: now });
       transaction.create(db.collection("eventDates").doc(entry.date), { eventId: eventRef.id, date: entry.date, createdAt: now });
       for (const member of defaultMembers) transaction.create(eventRef.collection("bookings").doc(member.id), defaultMemberBooking(eventRef.id, member.id, member.data(), now));
-      return { id: eventRef.id, startsAt, endsAt, courts: entry.courts, memberFeeSnapshot };
+      return eventRef.id;
     });
-    const eventIds = snapshots.map((event) => event.id);
-    const eventAmounts = snapshots.map((event) => event.memberFeeSnapshot);
+    const eventIds = snapshots;
+    transaction.create(planRef, { id: planRef.id, ...plan, activities: newActivities, skippedDates, status: "CONFIRMED", confirmationKey, eventIds, eventCount: eventIds.length, grossAmount: 0, confirmedBy: actor.id, confirmedAt: now, createdAt: now, updatedAt: now });
+    transaction.create(db.collection("notifications").doc(), notificationData({ title: "一批羽球活動已排程", message: plan.label + " 新增 " + eventIds.length + " 場；社員已預設參加。這次排程未建立帳單", type: "EVENT", tab: "活動" }));
+    return { planId: planRef.id, eventCount: eventIds.length, totalAmount: 0, skippedDates };
+  });
+}
+
+async function createQuarterBillingPeriod(input: Record<string, string>, actor: Viewer) {
+  if (!/^[a-zA-Z0-9-]{1,100}$/.test(input.periodId ?? "")) throw new Error("季度社費期間識別碼不正確");
+  const label = typeof input.label === "string" ? input.label.trim() : "";
+  if (!label || label.length > 60) throw new Error("請填寫季度社費名稱（最多 60 字）");
+  validateQuarterDateRange(input.startDate, input.endDate);
+  let raw: unknown;
+  try { raw = JSON.parse(input.eventIds ?? ""); } catch { throw new Error("請選擇要納入季度社費的活動"); }
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 32 || raw.some((id) => typeof id !== "string" || !id || id.length > 200 || id.includes("/"))) {
+    throw new Error("每期請選擇 1 至 32 場活動");
+  }
+  const selectedIds = [...new Set<string>(raw)].sort();
+  const confirmationKey = createHash("sha256").update(JSON.stringify([label, input.startDate, input.endDate, selectedIds])).digest("hex");
+  const db = getAdminFirestore();
+  const periodRef = db.collection("billingPeriods").doc("quarter-" + input.periodId);
+  const now = new Date();
+  return db.runTransaction(async (transaction) => {
+    const [manager, existingPeriod] = await transaction.getAll(db.collection("members").doc(actor.id), periodRef);
+    if (manager.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
+    const existing = existingPeriod.data();
+    if (existing) {
+      if (existing.origin === "BILLING_MANAGER" && existing.confirmationKey === confirmationKey)
+        return { periodId: input.periodId, eventCount: Number(existing.eventCount), totalAmount: Number(existing.grossAmount), skippedEventIds: existing.skippedEventIds ?? [] };
+      if (existing.origin !== "BILLING_MANAGER" || existing.status !== "PLANNED") throw new Error("這個季度社費期間不能編輯");
+      if (!input.expectedRevision || existing.confirmationKey !== input.expectedRevision) throw new Error("季度社費草稿已變更，請重新開啟後再編輯");
+    } else if (input.expectedRevision) throw new Error("找不到可編輯的季度社費草稿");
+    const [periods, events, invoices] = await Promise.all([
+      transaction.get(db.collection("billingPeriods")),
+      transaction.getAll(...selectedIds.map((id) => db.collection("events").doc(id))),
+      transaction.get(db.collection("invoices")),
+    ]);
+    if (periods.docs.some((doc) => {
+      const period = doc.data();
+      return doc.id !== periodRef.id && ["PLANNED", "GENERATING", "ACTIVE"].includes(String(period.status)) && String(period.startDate) <= input.endDate && String(period.endDate) >= input.startDate;
+    })) throw new Error("季度社費期間不能重疊，請先調整起訖日期");
+    const covered = new Set<string>();
+    for (const doc of periods.docs) if (doc.id !== periodRef.id && Array.isArray(doc.data().eventIds)) for (const id of doc.data().eventIds) covered.add(String(id));
+    for (const invoice of invoices.docs) addQuarterChargeCoverage(covered, invoice.data());
+    const eventSnapshots = events.flatMap((doc) => {
+      const data = doc.data();
+      const startsAt = dateValue(data?.startsAt);
+      if (!data || !startsAt || !Number.isFinite(startsAt.getTime()) || covered.has(doc.id) || !isQuarterEligibleEvent(data)) return [];
+      const date = taipeiDate(startsAt);
+      if (date < input.startDate || date > input.endDate) return [];
+      const memberFeeSnapshot = Number(data.memberFeeSnapshot ?? 150);
+      if (!Number.isSafeInteger(memberFeeSnapshot) || memberFeeSnapshot < 0) throw new Error("活動缺少有效的社員費率，請先核對");
+      return [{ id: doc.id, startsAt, endsAt: dateValue(data.endsAt), courts: String(data.courts ?? ""), memberFeeSnapshot }];
+    }).sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime() || a.id.localeCompare(b.id));
+    if (!eventSnapshots.length) throw new Error("沒有可納入季度社費的活動，請重新選擇");
+    const eventIds = eventSnapshots.map((event) => event.id);
+    const selected = new Set(eventIds);
+    const skippedEventIds = selectedIds.filter((id) => !selected.has(id));
+    const eventAmounts = eventSnapshots.map((event) => event.memberFeeSnapshot);
     const grossAmount = eventAmounts.reduce((sum, amount) => sum + amount, 0);
-    const periodId = "quarter-" + planRef.id;
-    transaction.create(db.collection("billingPeriods").doc(periodId), { id: periodId, planId: planRef.id, type: "QUARTERLY_MEMBER", label: plan.label, startDate: plan.startDate, endDate: plan.endDate, eventIds, eventAmounts, eventSnapshots: snapshots, eventCount: eventIds.length, grossAmount, status: "PLANNED", confirmedBy: actor.id, confirmedAt: now, createdAt: now, updatedAt: now });
-    transaction.create(planRef, { id: planRef.id, ...plan, activities: newActivities, skippedDates, status: "CONFIRMED", confirmationKey, eventIds, eventAmounts, eventCount: eventIds.length, grossAmount, periodId, confirmedBy: actor.id, confirmedAt: now, createdAt: now, updatedAt: now });
-    transaction.create(db.collection("notifications").doc(), notificationData({ title: "季度活動已確認", message: plan.label + " 新增 " + eventIds.length + " 場；社員已預設參加，季度計費基準只包含新場次", type: "EVENT", tab: "活動" }));
-    return { planId: planRef.id, eventCount: eventIds.length, totalAmount: grossAmount, skippedDates };
+    const values = {
+      confirmationKey,
+      label, startDate: input.startDate, endDate: input.endDate, eventIds, eventAmounts, eventSnapshots, skippedEventIds,
+      eventCount: eventIds.length, grossAmount, confirmedBy: actor.id, confirmedAt: now, updatedAt: now,
+    };
+    if (existing) transaction.update(periodRef, values);
+    else transaction.create(periodRef, { ...values, id: periodRef.id, type: "QUARTERLY_MEMBER", origin: "BILLING_MANAGER", status: "PLANNED", createdAt: now });
+    return { periodId: input.periodId, eventCount: eventIds.length, totalAmount: grossAmount, skippedEventIds };
   });
 }
 
@@ -1272,6 +1493,92 @@ function memberChargesForEvent(invoices: DocumentData[], eventId: string) {
     ["SINGLE_EVENT", "QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "MEMBER_EXTRA"].includes(String(invoice.type)) &&
     (invoice.eventId === eventId || (Array.isArray(invoice.eventIds) && invoice.eventIds.includes(eventId))) &&
     !membershipChargeRemoved(invoice, eventId));
+}
+
+async function memberExtraQuote(transaction: Transaction, db: Firestore, event: DocumentSnapshot, now: Date) {
+  const data = event.data();
+  const startsAt = dateValue(data?.startsAt);
+  if (!data || !isBadmintonEvent(data) || data.status !== "SCHEDULED" || !startsAt || !Number.isFinite(startsAt.getTime()) || startsAt <= now
+    || ![undefined, null, "NORMAL", "NO_CHARGE"].includes(data.memberBilling)) throw new Error("這場活動不能另開社員加場費");
+  const fee = Number(data.memberListRateSnapshot ?? data.memberFeeSnapshot ?? 150);
+  if (!Number.isSafeInteger(fee) || fee <= 0 || fee > 10_000) throw new Error("這場活動沒有有效的社員費率，請先核對");
+  const [bookings, periods, direct, grouped] = await Promise.all([
+    transaction.get(event.ref.collection("bookings")),
+    transaction.get(db.collection("billingPeriods").where("eventIds", "array-contains", event.id)),
+    transaction.get(db.collection("invoices").where("eventId", "==", event.id)),
+    transaction.get(db.collection("invoices").where("eventIds", "array-contains", event.id)),
+  ]);
+  const covered = new Set<string>();
+  const invoices = [...new Map([...direct.docs, ...grouped.docs].map((doc) => [doc.id, doc.data()])).values()];
+  for (const invoice of invoices) addQuarterChargeCoverage(covered, invoice);
+  if (periods.docs.length || covered.has(event.id)) throw new Error("本場已納入季度社費或已另開帳單，不能重複收費");
+  const memberIds = [...new Set(bookings.docs.filter((doc) => {
+    const booking = doc.data();
+    return booking.status === "REGULAR" && booking.kindSnapshot === "MEMBER" && !booking.transferredFromMemberId;
+  }).map((doc) => String(doc.data().memberId ?? doc.id)))];
+  if (memberIds.length > 100) throw new Error("本場社員超過 100 位，無法在同一批安全開立加場費");
+  const members = memberIds.length ? await transaction.getAll(...memberIds.map((id) => db.collection("members").doc(id))) : [];
+  const rows = members.flatMap((member) => {
+    const data = member.data();
+    if (!data || !memberAt(data, startsAt) || memberChargesForEvent(invoices.filter((invoice) => invoice.memberId === member.id), event.id)) return [];
+    const creditApplied = Math.min(Math.max(0, Number(data.creditBalance ?? 0)), fee);
+    return [{ memberId: member.id, name: String(data.displayName ?? ""), eventCount: 1, eventIds: [event.id], grossAmount: fee, creditApplied, amount: fee - creditApplied }];
+  }).sort((a, b) => a.memberId.localeCompare(b.memberId));
+  const previewKey = createHash("sha256").update(JSON.stringify([event.id, startsAt.toISOString(), rows])).digest("hex");
+  return { startsAt, fee, periodLabel: `${taipeiDate(startsAt)} 社員加場費`, rows, totalAmount: rows.reduce((sum, row) => sum + row.amount, 0), previewKey };
+}
+
+async function previewMemberExtraBills(input: Record<string, string>, actor: Viewer) {
+  if (!input.eventId || input.eventId.includes("/") || input.eventId.length > 200) throw new Error("活動識別碼不正確");
+  const db = getAdminFirestore();
+  return db.runTransaction(async (transaction) => {
+    const [manager, event] = await transaction.getAll(db.collection("members").doc(actor.id), db.collection("events").doc(input.eventId));
+    if (manager.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
+    const { periodLabel, rows, totalAmount, previewKey } = await memberExtraQuote(transaction, db, event, new Date());
+    return { periodLabel, rows, totalAmount, previewKey };
+  });
+}
+
+async function publishMemberExtraBills(input: Record<string, string>, actor: Viewer) {
+  if (!input.eventId || input.eventId.includes("/") || input.eventId.length > 200) throw new Error("活動識別碼不正確");
+  const reason = typeof input.reason === "string" ? input.reason.trim() : "";
+  if (!reason || reason.length > 200) throw new Error("請填寫另收加場費原因（最多 200 字）");
+  if (!/^[a-f0-9]{64}$/.test(input.previewKey ?? "")) throw new Error("請先預覽並確認社員加場帳單");
+  const db = getAdminFirestore();
+  const now = new Date();
+  return db.runTransaction(async (transaction) => {
+    const [manager, event] = await transaction.getAll(db.collection("members").doc(actor.id), db.collection("events").doc(input.eventId));
+    if (manager.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
+    const prior = event.data()?.memberExtraBilling;
+    if (prior) {
+      if (prior.previewKey === input.previewKey && prior.reason === reason) return { invoiceCount: Number(prior.invoiceCount), totalAmount: Number(prior.totalAmount) };
+      throw new Error("本場已另開社員加場費，請勿重複開單");
+    }
+    const quote = await memberExtraQuote(transaction, db, event, now);
+    if (quote.previewKey !== input.previewKey) throw new Error("名單、費率或餘額已變更，請重新預覽");
+    if (!quote.rows.length) throw new Error("本場沒有可開單的社員");
+    for (const row of quote.rows) {
+      const invoiceRef = db.collection("invoices").doc(`extra-${event.id}-${row.memberId}`);
+      transaction.create(invoiceRef, {
+        id: invoiceRef.id, memberId: row.memberId, memberNameSnapshot: row.name,
+        eventId: event.id, eventIds: [event.id], eventAmounts: [quote.fee], type: "MEMBER_EXTRA",
+        grossAmount: row.grossAmount, creditApplied: row.creditApplied, amount: row.amount,
+        periodLabel: quote.periodLabel, dueAt: quote.startsAt, status: row.amount === 0 ? "CONFIRMED" : "PENDING",
+        reportedAt: null, confirmedAt: row.amount === 0 ? now : null,
+        adjustments: [{ kind: "EXTRA", reason, eventDate: taipeiDate(quote.startsAt), amount: quote.fee, actorId: actor.id, actorName: actor.name, createdAt: now.toISOString() }],
+        createdAt: now, updatedAt: now,
+      });
+      if (row.creditApplied > 0) {
+        transaction.update(db.collection("members").doc(row.memberId), { creditBalance: FieldValue.increment(-row.creditApplied), updatedAt: now });
+        recordBalanceMovement(transaction, db, { memberId: row.memberId, amount: -row.creditApplied, reason: "社員加場費抵扣", sourceKey: `invoice:${invoiceRef.id}:apply`, invoiceId: invoiceRef.id, eventId: event.id, actorId: actor.id, actorName: actor.name, createdAt: now });
+      }
+      transaction.create(db.collection("notifications").doc(), notificationData({ title: "已另開社員加場費", message: `${quote.periodLabel}應付 NT$${row.amount}；原季度帳單不變`, type: "PAYMENT", tab: "費用管理", recipientId: row.memberId }));
+    }
+    const result = { invoiceCount: quote.rows.length, totalAmount: quote.totalAmount };
+    transaction.update(event.ref, { memberBilling: "EXTRA", memberFeeSnapshot: quote.fee, billingReason: reason,
+      memberExtraBilling: { ...result, previewKey: quote.previewKey, reason, actorId: actor.id, issuedAt: now }, updatedAt: now });
+    return result;
+  });
 }
 
 function periodEvents(period: DocumentData, events: (DocumentSnapshot | undefined)[]) {
@@ -1335,11 +1642,13 @@ async function createQuarterlyInvoices(input: Record<string, string>, actor: Vie
   const now = new Date();
   if (dueAt < now) throw new Error("繳費期限不能是過去日期");
   await db.runTransaction(async (transaction) => {
-    const period = await transaction.get(periodRef);
+    const [period, manager] = await transaction.getAll(periodRef, db.collection("members").doc(actor.id));
+    if (manager.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
     if (!period.exists || !["PLANNED", "GENERATING", "ACTIVE"].includes(String(period.data()?.status))) throw new Error("請先確認季度活動");
     if (period.data()?.status === "ACTIVE") throw new Error("這個季度的社員帳單已經建立");
-    if (period.data()?.status === "GENERATING") return;
     const basis = period.data()!;
+    if (basis.origin === "BILLING_MANAGER" && !/^[a-f0-9]{64}$/.test(input.previewKey ?? "")) throw new Error("請先預覽並確認社員帳單");
+    if (period.data()?.status === "GENERATING") return;
     const [members, invoices, events] = await Promise.all([
       transaction.get(db.collection("members")),
       transaction.get(db.collection("invoices")),
@@ -1441,36 +1750,56 @@ async function pendingInvoiceCredits(transaction: Transaction, db: Firestore, in
   return credits.docs.filter((doc) => doc.data().status === "AWAITING_PAYMENT_CONFIRMATION");
 }
 
+
 function applyInvoiceConfirmation(transaction: Transaction, db: Firestore, invoice: DocumentSnapshot, pending: FirebaseFirestore.QueryDocumentSnapshot[], now: Date, actor: Viewer, receipt?: InvoiceReceipt) {
   const data = invoice.data()!;
   const memberId = String(data.memberId);
-  const amount = pending.reduce((sum, doc) => sum - Number(doc.data().amount), 0);
+  const releases = pending.map((credit) => {
+    const linked = credit.data();
+    const total = creditValue(linked);
+    const wallet = linked.eventCancellationRefund ? Number(linked.refundWalletAmount) : total;
+    const cash = linked.eventCancellationRefund ? Number(linked.refundCashAmount) : 0;
+    if (![wallet, cash].every((amount) => Number.isSafeInteger(amount) && amount >= 0) || wallet + cash !== total) throw new Error("待處理的退款金額不正確，請先核對");
+    return { credit, linked, wallet, cash };
+  });
+  const wallet = releases.reduce((sum, entry) => sum + entry.wallet, 0);
+  const cash = releases.reduce((sum, entry) => sum + entry.cash, 0);
   transaction.update(invoice.ref, {
     status: "CONFIRMED", confirmedAt: now, confirmedBy: actor.id, updatedAt: now,
     ...(receipt ? { receipt } : {}),
-    ...(pending.length ? { adjustments: FieldValue.arrayUnion({ kind: "CREDIT_RELEASED", reason: "收款確認，取消活動費退回帳戶餘額", amount: -amount, actorId: actor.id, actorName: actor.name, createdAt: now.toISOString() }) } : {}),
+    ...(pending.length ? { adjustments: FieldValue.arrayUnion({ kind: "CREDIT_RELEASED", reason: "收款確認，活動取消退款進入後續處理", amount: -(wallet + cash), walletRefund: wallet, pendingOfflineRefund: cash, actorId: actor.id, actorName: actor.name, createdAt: now.toISOString() }) } : {}),
   });
-  for (const credit of pending) transaction.update(credit.ref, { status: "CONFIRMED", confirmedAt: now, updatedAt: now });
-  if (amount > 0) {
-    transaction.update(db.collection("members").doc(memberId), { creditBalance: FieldValue.increment(amount), updatedAt: now });
-    for (const credit of pending) recordBalanceMovement(transaction, db, { memberId, amount: -Number(credit.data().amount), reason: "收款確認釋放活動退款", sourceKey: `invoice:${credit.id}:credit`, invoiceId: credit.id, relatedInvoiceId: invoice.id, eventId: credit.data().eventId ? String(credit.data().eventId) : null, actorId: actor.id, actorName: actor.name, createdAt: now });
+  for (const { credit, linked, wallet: walletPart, cash: cashPart } of releases) {
+    transaction.update(credit.ref, {
+      status: cashPart > 0 ? "AWAITING_OFFLINE_REFUND" : "CONFIRMED", confirmedAt: cashPart > 0 ? null : now, updatedAt: now,
+      ...(linked.eventCancellationRefund ? { originalReceiptMethod: receipt?.method ?? linked.originalReceiptMethod ?? null } : {}),
+    });
+    if (walletPart > 0) recordBalanceMovement(transaction, db, { memberId, amount: walletPart, reason: "收款確認釋放活動退款", sourceKey: "invoice:" + credit.id + ":credit", invoiceId: credit.id, relatedInvoiceId: invoice.id, eventId: linked.eventId ? String(linked.eventId) : null, actorId: actor.id, actorName: actor.name, createdAt: now });
   }
+  if (wallet > 0) transaction.update(db.collection("members").doc(memberId), { creditBalance: FieldValue.increment(wallet), updatedAt: now });
   const receiptMessage = receipt
-    ? `${receipt.receivedDate} 已登記${receipt.method === "CASH" ? "現金" : "轉帳"}收款 NT$${receipt.amount}`
+    ? receipt.receivedDate + " 已登記" + (receipt.method === "CASH" ? "現金" : "轉帳") + "收款 NT$" + receipt.amount
     : "NT$" + effectiveInvoiceAmounts(data).amount + " 已確認收款";
-  transaction.create(db.collection("notifications").doc(), notificationData({ title: "款項已確認", message: receiptMessage + (amount > 0 ? "；取消活動費 NT$" + amount + " 已退回帳戶餘額" : ""), type: "PAYMENT", tab: "費用管理", recipientId: memberId }));
+  transaction.create(db.collection("notifications").doc(), notificationData({
+    title: "款項已確認",
+    message: receiptMessage + (wallet > 0 ? "；已退回帳戶餘額 NT$" + wallet : "") + (cash > 0 ? "；站外待退款 NT$" + cash : ""),
+    type: "PAYMENT", tab: "費用管理", recipientId: memberId,
+  }));
 }
 
-async function confirmPayment(invoiceId: string, actor: Viewer) {
-  if (!invoiceId) throw new Error("缺少帳單識別碼");
+async function confirmPayment(input: Record<string, string>, actor: Viewer) {
+  const { invoiceId, expectedStatus, expectedAmount } = input;
+  if (!invoiceId || invoiceId.includes("/") || invoiceId.length > 600) throw new Error("缺少有效的帳單識別碼");
   const db = getAdminFirestore();
   const invoiceRef = db.collection("invoices").doc(invoiceId);
   await db.runTransaction(async (transaction) => {
-    const invoice = await transaction.get(invoiceRef);
+    const [invoice, manager] = await transaction.getAll(invoiceRef, db.collection("members").doc(actor.id));
+    if (manager.data()?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
     if (!invoice.exists) throw new Error("找不到帳單");
     const data = invoice.data()!;
     if (data.status === "CONFIRMED") return;
     if (!["PENDING", "REPORTED"].includes(data.status)) throw new Error("這筆帳單目前無法確認收款");
+    if ((expectedStatus !== undefined && expectedStatus !== data.status) || (expectedAmount !== undefined && (!/^\d+$/.test(expectedAmount) || Number(expectedAmount) !== effectiveInvoiceAmounts(data).amount))) throw new Error("帳單狀態或金額已變更，請重新整理");
     const pending = await pendingInvoiceCredits(transaction, db, invoiceId);
     applyInvoiceConfirmation(transaction, db, invoice, pending, new Date(), actor);
   });
@@ -1532,6 +1861,68 @@ async function recordInvoiceReceipts(input: Record<string, string>, actor: Viewe
     if (toRecord.length) transaction.create(db.collection("auditLogs").doc(), {
       action: "RECORD_INVOICE_RECEIPTS", actorId: actor.id, actorNameSnapshot: recordedByName,
       method, receivedDate, note, totalAmount, invoices: toRecord.map(({ invoice, receipt }) => ({ id: invoice.id, amount: receipt.amount })), createdAt: now,
+    });
+    return { recorded: toRecord.length, alreadyRecorded, totalAmount };
+  });
+}
+
+
+async function recordEventRefunds(input: Record<string, string>, actor: Viewer) {
+  const { eventId, method, refundedDate } = input;
+  if (!eventId || eventId.length > 200 || eventId.includes("/")) throw new Error("請選擇已取消的活動");
+  if (method !== "CASH" && method !== "BANK") throw new Error("請選擇實際退款方式");
+  if (input.offlineRefunded !== "true") throw new Error("請先確認站外退款已完成");
+  const now = new Date();
+  if (typeof refundedDate !== "string" || !validCalendarDate(refundedDate) || refundedDate > taipeiDate(now)) throw new Error("實際退款日期不能晚於今天");
+  if (input.note !== undefined && typeof input.note !== "string") throw new Error("退款備註格式不正確");
+  const note = input.note?.trim() || null;
+  if (note && note.length > 200) throw new Error("退款備註最多 200 字");
+  let raw: unknown;
+  try { raw = JSON.parse(input.refunds ?? ""); } catch { throw new Error("退款清單格式不正確"); }
+  if (!Array.isArray(raw) || !raw.length || raw.length > 20) throw new Error("每次請選擇 1 至 20 筆退款");
+  const entries = new Map<string, number>();
+  for (const item of raw) {
+    if (!item || typeof item.id !== "string" || !item.id || item.id.length > 600 || item.id.includes("/") || entries.has(item.id) ||
+      !Number.isSafeInteger(item.amount) || item.amount <= 0) throw new Error("退款金額或清單格式不正確");
+    entries.set(item.id, item.amount);
+  }
+  const db = getAdminFirestore();
+  return db.runTransaction(async (transaction) => {
+    const refs = [...entries.keys()].map((id) => db.collection("invoices").doc(id));
+    const [manager, event, ...credits] = await transaction.getAll(db.collection("members").doc(actor.id), db.collection("events").doc(eventId), ...refs);
+    const managerData = manager.data();
+    if (managerData?.role !== "ADMIN") throw new Error("幹部權限已變更，請重新整理");
+    if (event.data()?.status !== "CANCELLED") throw new Error("只能登記已取消活動的退款");
+    const recordedByName = String(managerData.displayName ?? actor.name);
+    let alreadyRecorded = 0;
+    let totalAmount = 0;
+    const toRecord: { credit: DocumentSnapshot; amount: number; memberId: string }[] = [];
+    for (const credit of credits) {
+      const data = credit.data();
+      const amount = entries.get(credit.id)!;
+      if (!data?.eventCancellationRefund || data.type !== "CREDIT" || data.eventId !== eventId || !data.memberId || Number(data.refundCashAmount) !== amount) throw new Error("退款活動或待退款金額已變更，請重新整理");
+      const receipt = data.offlineRefundReceipt;
+      if (data.status === "CONFIRMED" && receipt?.amount === amount && receipt.method === method && receipt.refundedDate === refundedDate && receipt.note === note) {
+        alreadyRecorded++;
+        continue;
+      }
+      if (data.status !== "AWAITING_OFFLINE_REFUND" || receipt) throw new Error("退款已處理或尚未確認收款，請重新整理");
+      totalAmount += amount;
+      toRecord.push({ credit, amount, memberId: String(data.memberId) });
+    }
+    for (const { credit, amount, memberId } of toRecord) {
+      transaction.update(credit.ref, {
+        status: "CONFIRMED", confirmedAt: now, updatedAt: now,
+        offlineRefundReceipt: { method, refundedDate, amount, note, recordedBy: actor.id, recordedByName, recordedAt: now },
+      });
+      transaction.create(db.collection("notifications").doc(), notificationData({
+        title: "活動退款已登記", message: refundedDate + " 已登記" + (method === "CASH" ? "現金" : "轉帳") + "退款 NT$" + amount + "。",
+        type: "PAYMENT", tab: "費用管理", recipientId: memberId,
+      }));
+    }
+    if (toRecord.length) transaction.create(db.collection("auditLogs").doc(), {
+      action: "RECORD_EVENT_REFUNDS", eventId, method, refundedDate, note, totalAmount, actorId: actor.id,
+      actorNameSnapshot: recordedByName, refunds: toRecord.map(({ credit, amount }) => ({ id: credit.id, amount })), createdAt: now,
     });
     return { recorded: toRecord.length, alreadyRecorded, totalAmount };
   });
@@ -2086,11 +2477,15 @@ export async function mutate(action: string, input: Record<string, string>, acto
   if (["voidInvoice", "reissueInvoice", "refundInvoice", "rejectPaymentReport"].includes(action)) return manageInvoice(action, input, actor);
   if (action === "voidInvoiceBatch") return voidInvoiceBatch(input, actor);
   if (action === "reviewMembershipRequest") return reviewMembershipRequest(input.requestId, input.decision, actor);
-  if (action === "confirmPayment") return confirmPayment(input.invoiceId, actor);
+  if (action === "confirmPayment") return confirmPayment(input, actor);
   if (action === "recordInvoiceReceipts") return recordInvoiceReceipts(input, actor);
+  if (action === "recordEventRefunds") return recordEventRefunds(input, actor);
   if (action === "publishGuestEventBills") return publishGuestEventBills(input, actor);
   if (action === "remindPayment") return remindPayment(input.invoiceId, actor);
   if (action === "previewQuarterlyInvoices") return previewQuarterlyInvoices(input, actor);
+  if (action === "createQuarterBillingPeriod") return createQuarterBillingPeriod(input, actor);
+  if (action === "previewMemberExtraBills") return previewMemberExtraBills(input, actor);
+  if (action === "publishMemberExtraBills") return publishMemberExtraBills(input, actor);
   if (action === "createQuarterlyInvoices") return createQuarterlyInvoices(input, actor);
   if (action === "setFeeRates") return setFeeRates(input);
   if (action === "updateMember") return updateMember(input, actor);
@@ -2101,7 +2496,8 @@ export async function mutate(action: string, input: Record<string, string>, acto
   if (action === "setAnnouncementPinned") return setAnnouncementPinned(input.announcementId, input.pinned);
   if (action === "createEvent") return createEvent(input, actor);
   if (action === "updateEvent") return updateEvent(input, actor);
-  if (action === "cancelEvent") return cancelEvent(input.eventId, actor);
+  if (action === "previewCancelEvent") return cancelEvent(input, actor, true);
+  if (action === "cancelEvent") return cancelEvent(input, actor);
   if (action === "confirmQuarterPlan") return confirmQuarterPlan(input, actor);
   if (action === "promoteStandby") return promoteStandby(input.eventId);
   throw new Error("不支援的操作");

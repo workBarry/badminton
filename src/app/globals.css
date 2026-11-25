@@ -3371,3 +3371,11 @@ dialog.event-dialog {
   .guest-settlement-list select, .guest-settlement-actions button { width: 100%; white-space: normal; }
   .guest-settlement-actions { flex-direction: column; align-items: stretch; }
 }
+
+.event-cancel-review {
+  padding: .85rem;
+  border: 1px solid var(--line, #dce4eb);
+  border-radius: .75rem;
+  margin-block: .75rem;
+}
+.event-cancel-review .event-dialog-actions { flex-wrap: wrap; }

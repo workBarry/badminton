@@ -67,6 +67,12 @@ test("voiding a bill restores applied credit once, keeps history and does not ca
  assert.equal(s.db.data("events/quarter-test-plan-0/bookings/member").status,"REGULAR");
  assert.equal(old.adjustments.at(-1).actorName,admin.name);
 });
+async function cancelEventWithPreview(s, eventId) {
+  const existing = s.db.data("events/" + eventId)?.cancellationQuote;
+  const quote = existing ?? await s.mutate("previewCancelEvent", { eventId });
+  return s.mutate("cancelEvent", { eventId, previewKey: quote.previewKey, reason: "測試活動取消" });
+}
+
 test("reissue is atomic, recalculates credit, links bills and preserves quarter baseline", async () => {
  const s=setup(100); await s.confirm(); await s.bill();
  const input=managementInput(s,undefined,{eventAmounts:JSON.stringify(Array(10).fill(100)),dueDate:s.rules.endDate});
@@ -78,7 +84,7 @@ test("reissue is atomic, recalculates credit, links bills and preserves quarter 
  assert.equal(fresh.amount,900); assert.equal(fresh.creditApplied,100);
  assert.equal(fresh.replacementOfId,"quarter-test-plan-member");
  assert.equal(s.db.data("billingPeriods/quarter-test-plan").grossAmount,1500);
- await s.mutate("cancelEvent",{eventId:"quarter-test-plan-0"});
+ await cancelEventWithPreview(s, "quarter-test-plan-0");
  assert.equal(planning.effectiveInvoiceAmounts(s.db.data("invoices/"+result.invoiceId)).amount,800);
  assert.equal(s.db.data("members/member").creditBalance,0);
 });
@@ -92,7 +98,7 @@ test("reopening a previously voided invoice must not restore credit twice", asyn
 test("reissue rejects cancelled-event charges and stale invoice totals without writes", async () => {
  const s=setup(); await s.confirm(); await s.bill();
  const stale=managementInput(s);
- await s.mutate("cancelEvent",{eventId:"quarter-test-plan-0"});
+ await cancelEventWithPreview(s, "quarter-test-plan-0");
  await assert.rejects(s.mutate("voidInvoice",stale),/已變更/);
  await assert.rejects(s.mutate("reissueInvoice",managementInput(s,undefined,{eventAmounts:JSON.stringify(Array(10).fill(150)),dueDate:s.rules.endDate})),/取消/);
  assert.equal(s.db.data(s.invoicePath).status,"PENDING");
@@ -100,14 +106,17 @@ test("reissue rejects cancelled-event charges and stale invoice totals without w
 test("refund subtracts prior credits and is not repeated by retries or subsequent cancellation", async () => {
  const s=setup(100); await s.confirm(); await s.bill();
  await s.mutate("confirmPayment",{invoiceId:"quarter-test-plan-member"});
- await s.mutate("cancelEvent",{eventId:"quarter-test-plan-0"});
+ await cancelEventWithPreview(s, "quarter-test-plan-0");
  const input=managementInput(s,undefined,{refundMode:"BALANCE",expectedRefundable:"1350"});
  await s.mutate("refundInvoice",input); await s.mutate("refundInvoice",input);
- assert.equal(s.db.data("members/member").creditBalance,1500);
+ assert.equal(s.db.data("members/member").creditBalance,1450);
  assert.equal(s.db.data(s.invoicePath).status,"REFUNDED");
  assert.equal(s.db.data(s.invoicePath).amount,1400);
- await s.mutate("cancelEvent",{eventId:"quarter-test-plan-1"});
- assert.equal(s.db.data("members/member").creditBalance,1500);
+ const pending = s.db.data("invoices/credit-quarter-test-plan-0-quarter-test-plan-member");
+ assert.equal(pending.status, "AWAITING_OFFLINE_REFUND");
+ assert.equal(pending.refundCashAmount, 50);
+ await cancelEventWithPreview(s, "quarter-test-plan-1");
+ assert.equal(s.db.data("members/member").creditBalance,1450);
 });
 test("offline refund requires acknowledgment and restores original applied balance separately", async () => {
  const s=setup(100); await s.confirm(); await s.bill();
@@ -122,7 +131,7 @@ test("reported transfers cannot be voided; reject after checking reverses pendin
  const s=setup(); await s.confirm(); await s.bill();
  await s.mutate("reportPayment",{invoiceId:"quarter-test-plan-member"},member);
  await assert.rejects(s.mutate("voidInvoice",managementInput(s)),/未繳/);
- await s.mutate("cancelEvent",{eventId:"quarter-test-plan-0"});
+ await cancelEventWithPreview(s, "quarter-test-plan-0");
  await s.mutate("rejectPaymentReport",managementInput(s,undefined,{checkedNotReceived:"true"}));
  assert.equal(s.db.data(s.invoicePath).status,"PENDING");
  assert.equal(planning.effectiveInvoiceAmounts(s.db.data(s.invoicePath)).amount,1350);
@@ -305,10 +314,26 @@ function setup(balance = 0, fetchOfficialClosures = async () => []) {
   const activities = planning.suggestActivities(rules).slice(0, 10);
   const mutate = (action, input = {}, actor = admin) => backend.mutate(action, input, actor);
   const readState = (actor) => backend.readState(actor);
-  const confirm = (schedule = { rules, activities }, planId = "test-plan", actor = admin) => mutate("confirmQuarterPlan", { planId, schedule: JSON.stringify(schedule) }, actor);
-  const bill = () => mutate("createQuarterlyInvoices", { planId: "test-plan", dueDate: year + "-01-15" });
+  const schedule = (proposal = { rules, activities }, planId = "test-plan", actor = admin) => mutate("confirmQuarterPlan", { planId, schedule: JSON.stringify(proposal) }, actor);
+  const createPeriod = (eventIds, overrides = {}, actor = admin) => mutate("createQuarterBillingPeriod", {
+    periodId: "test-plan", label: rules.label, startDate: rules.startDate, endDate: rules.endDate, eventIds: JSON.stringify(eventIds), ...overrides,
+  }, actor);
+  // Invoice-focused fixtures explicitly perform both actions; schedule tests
+  // use schedule() alone to prove that booking events cannot create periods.
+  const confirm = async (proposal = { rules, activities }, planId = "test-plan", actor = admin) => {
+    const result = await schedule(proposal, planId, actor);
+    const plan = db.data("quarterPlans/" + planId);
+    if (plan?.eventIds?.length) await createPeriod(plan.eventIds, { periodId: planId, label: proposal.rules.label, startDate: proposal.rules.startDate, endDate: proposal.rules.endDate }, actor);
+    return result;
+  };
+  const bill = async () => {
+    const input = { planId: "test-plan", dueDate: year + "-01-15" };
+    if (db.data("billingPeriods/quarter-test-plan")?.status === "ACTIVE") return mutate("createQuarterlyInvoices", input);
+    const quote = await mutate("previewQuarterlyInvoices", input);
+    return mutate("createQuarterlyInvoices", { ...input, previewKey: quote.previewKey });
+  };
   const invoicePath = "invoices/quarter-test-plan-member";
-  return { db, mutate, readState, rules, activities, confirm, bill, invoicePath };
+  return { db, mutate, readState, rules, activities, schedule, confirm, createPeriod, bill, invoicePath };
 }
 
 function receiptRequest(invoices, overrides = {}) {
@@ -458,7 +483,8 @@ test("cancelled legacy guest charges never release unconfirmed funds", async () 
     s.db.seed("events/" + eventId, { startsAt, endsAt: new Date(+startsAt + 3_600_000), status: "SCHEDULED", regularCount: 1, standbyCount: 0 });
     s.db.seed("events/" + eventId + "/bookings/" + guest.id, { eventId, memberId: guest.id, kindSnapshot: "GUEST", status: "REGULAR" });
     s.db.seed("invoices/" + invoiceId, { eventId, memberId: guest.id, memberNameSnapshot: guest.name, type: "SINGLE_EVENT", status: "REPORTED", grossAmount: 180, creditApplied: 20, amount: 160 });
-    await s.mutate(mode, { eventId }, mode === "cancel" ? guest : admin);
+    if (mode === "cancel") await s.mutate(mode, { eventId }, guest);
+    else await cancelEventWithPreview(s, eventId);
     assert.equal(s.db.data("members/" + guest.id).creditBalance, 5);
     assert.equal(s.db.data("invoices/" + invoiceId).status, "REPORTED");
     assert.equal(s.db.data(`invoices/credit-${eventId}-${invoiceId}`).status, "AWAITING_PAYMENT_CONFIRMATION");
@@ -468,7 +494,9 @@ test("cancelled legacy guest charges never release unconfirmed funds", async () 
     } else {
       await s.mutate("confirmPayment", { invoiceId });
       await s.mutate("confirmPayment", { invoiceId });
-      assert.equal(s.db.data("members/" + guest.id).creditBalance, 185);
+      assert.equal(s.db.data("members/" + guest.id).creditBalance, 25);
+      assert.equal(s.db.data("invoices/credit-" + eventId + "-" + invoiceId).status, "AWAITING_OFFLINE_REFUND");
+      assert.equal(s.db.data("invoices/credit-" + eventId + "-" + invoiceId).refundCashAmount, 160);
     }
   }
 });
@@ -486,7 +514,7 @@ test("a later event cancellation leaves previously settled guest credit unchange
   await s.mutate("cancel", { eventId }, guest);
   await s.mutate("confirmPayment", { invoiceId });
   assert.equal(s.db.data("members/" + guest.id).creditBalance, 180);
-  await s.mutate("cancelEvent", { eventId });
+  await cancelEventWithPreview(s, eventId);
   assert.equal(s.db.data("events/" + eventId).status, "CANCELLED");
   assert.equal(s.db.data("members/" + guest.id).creditBalance, 180);
   assert.equal(s.db.entries("balanceMovements/").length, 1);
@@ -517,16 +545,16 @@ test("direct confirmation publishes one schedule and accepts an equivalent retry
   const s = setup();
   assert.equal(s.db.entries("quarterPlans/").length, 0);
   assert.equal(s.db.entries("events/").length, 0);
-  const confirmed = await s.confirm();
+  const confirmed = await s.schedule();
   const after = s.db.entries("");
-  assert.deepEqual(confirmed, { planId: "test-plan", eventCount: 10, totalAmount: 1500, skippedDates: [] });
-  assert.deepEqual(await s.confirm({ activities: s.activities.toReversed(), rules: s.rules }), confirmed);
-  await assert.rejects(s.confirm({ rules: s.rules, activities: s.activities.slice(1) }));
+  assert.deepEqual(confirmed, { planId: "test-plan", eventCount: 10, totalAmount: 0, skippedDates: [] });
+  assert.deepEqual(await s.schedule({ activities: s.activities.toReversed(), rules: s.rules }), confirmed);
+  await assert.rejects(s.schedule({ rules: s.rules, activities: s.activities.slice(1) }));
   assert.deepEqual(s.db.entries(""), after);
   assert.equal(s.db.data("quarterPlans/test-plan").status, "CONFIRMED");
   assert.equal(s.db.entries("events/").filter(([key]) => key.split("/").length === 2).length, 10);
-  assert.equal(s.db.data("billingPeriods/quarter-test-plan").eventCount, 10);
-  assert.equal(s.db.data("billingPeriods/quarter-test-plan").grossAmount, 1500);
+  assert.deepEqual(s.db.entries("billingPeriods/"), []);
+  assert.deepEqual(s.db.entries("invoices/"), []);
 });
 test("legacy drafts cannot be published and the draft save action no longer exists", async () => {
   const s = setup();
@@ -631,8 +659,8 @@ test("quarter confirmation only creates and bills new Taipei activity dates", as
   // A separately created booking reserve arrives after the suggested list was built.
   s.db.beforeNextTransaction = () => s.db.seed("eventDates/" + indexedDate, { eventId: "existing" });
   const input = { rules: s.rules, activities: [...s.activities, { ...s.activities[0], courts: "第二筆重複" }] };
-  const result = await s.confirm(input);
-  assert.deepEqual(result, { planId: "test-plan", eventCount: 8, totalAmount: 1200, skippedDates: [repeatedDate, indexedDate, legacyDate].sort() });
+  const result = await s.schedule(input);
+  assert.deepEqual(result, { planId: "test-plan", eventCount: 8, totalAmount: 0, skippedDates: [repeatedDate, indexedDate, legacyDate].sort() });
   const plan = s.db.data("quarterPlans/test-plan");
   assert.equal(plan.activities.filter((event) => event.date === repeatedDate).length, 1);
   assert.equal(plan.activities.find((event) => event.date === repeatedDate).courts, s.activities[0].courts);
@@ -640,7 +668,9 @@ test("quarter confirmation only creates and bills new Taipei activity dates", as
   assert.equal(s.db.data("events/legacy-without-index").courts, "既有場地");
   assert.equal(s.db.data("eventDates/" + indexedDate).eventId, "existing");
   assert.equal(s.db.data("eventDates/" + legacyDate), undefined);
-  assert.deepEqual(await s.confirm(input), result);
+  assert.deepEqual(await s.schedule(input), result);
+  assert.deepEqual(s.db.entries("billingPeriods/"), []);
+  await s.createPeriod(plan.eventIds);
   const period = s.db.data("billingPeriods/quarter-test-plan");
   assert.equal(period.eventCount, 8);
   assert.equal(period.grossAmount, 1200);
@@ -651,19 +681,64 @@ test("quarter confirmation only creates and bills new Taipei activity dates", as
 });
 test("a duplicate-only quarter does not create another plan, period or notification", async () => {
   const s = setup();
-  await s.confirm();
+  await s.schedule();
   const before = s.db.entries("");
-  assert.deepEqual(await s.confirm(undefined, "all-duplicates"), {
+  assert.deepEqual(await s.schedule(undefined, "all-duplicates"), {
     planId: "all-duplicates", eventCount: 0, totalAmount: 0, skippedDates: s.activities.map((event) => event.date).sort(),
   });
   assert.deepEqual(s.db.entries(""), before);
 });
-test("quarter confirmation still blocks a new overlapping charge period", async () => {
+test("overlapping planning only creates events; overlapping charge periods are rejected independently", async () => {
   const s = setup();
   await s.confirm({ rules: s.rules, activities: s.activities.slice(0, 1) });
+  const adjacent = await s.schedule(undefined, "overlapping-activities");
+  assert.equal(adjacent.eventCount, 9);
+  assert.equal(s.db.entries("billingPeriods/").length, 1);
+  assert.deepEqual(s.db.entries("invoices/"), []);
   const before = s.db.entries("");
-  await assert.rejects(s.confirm(undefined, "overlapping-period"), /計費期間重疊/);
+  await assert.rejects(s.createPeriod(["quarter-overlapping-activities-0"], { periodId: "overlapping-period" }), /期間不能重疊/);
   assert.deepEqual(s.db.entries(""), before);
+});
+test("quarter fee drafts select only explicit eligible existing events and can be revised before opening", async () => {
+  const s = setup();
+  await s.schedule({ rules: s.rules, activities: s.activities.slice(0, 1) });
+  const standalone = (date, overrides = {}) => s.mutate("createEvent", {
+    startsAt: date + "T18:00:00+08:00", endsAt: date + "T20:00:00+08:00", courts: "行政樓", ...overrides,
+  });
+  const normal = await standalone(s.rules.endDate);
+  const other = await standalone(s.rules.endDate, { eventKind: "OTHER", memberBilling: "FREE" });
+  assert.equal(s.db.data("eventDates/" + s.rules.endDate).eventId, normal.eventId);
+  assert.equal(s.db.data("events/" + other.eventId).guestFeeSnapshot, 0);
+  assert.equal(s.db.data("events/" + other.eventId).memberFeeSnapshot, 0);
+  assert.equal(s.db.data("events/" + other.eventId + "/bookings/member"), undefined);
+  await assert.rejects(standalone(s.rules.endDate), /已有羽球活動/);
+  await assert.rejects(s.mutate("previewMemberExtraBills", { eventId: other.eventId }), /不能另開/);
+  assert.deepEqual(s.db.entries("invoices/"), []);
+  assert.deepEqual(s.db.entries("billingPeriods/"), []);
+  const selected = await s.createPeriod([normal.eventId, other.eventId]);
+  assert.equal(selected.eventCount, 1);
+  assert.deepEqual(selected.skippedEventIds, [other.eventId]);
+  assert.deepEqual(s.db.data("billingPeriods/quarter-test-plan").eventIds, [normal.eventId]);
+  const loaded = await s.readState(admin);
+  const draft = loaded.quarterBillingPeriods[0];
+  assert.equal(draft.status, "PLANNED");
+  assert.ok(draft.revision);
+  assert.equal(loaded.events.find((event) => event.id === normal.eventId).member_billing_label, "納入季度社費草稿");
+  assert.equal(loaded.events.find((event) => event.id === other.eventId).quarter_eligible, false);
+  const additions = await s.schedule({ rules: s.rules, activities: s.activities.slice(1, 2) }, "before-billing-add");
+  assert.equal(additions.eventCount, 1);
+  const newlyCreated = "quarter-before-billing-add-0";
+  assert.equal(s.db.data("events/" + newlyCreated).memberBilling, "NORMAL");
+  const revised = await s.createPeriod([normal.eventId, newlyCreated], { expectedRevision: draft.revision });
+  assert.equal(revised.eventCount, 2);
+  await assert.rejects(s.createPeriod(["quarter-test-plan-0"], { expectedRevision: draft.revision }), /草稿已變更/);
+  assert.deepEqual(s.db.entries("invoices/"), []);
+  await assert.rejects(s.mutate("createQuarterlyInvoices", { planId: "test-plan", dueDate: s.rules.endDate }), /先預覽/);
+  await s.bill();
+  assert.deepEqual(new Set(s.db.data(s.invoicePath).eventIds), new Set([normal.eventId, newlyCreated]));
+  await assert.rejects(s.createPeriod(["quarter-test-plan-0"], { expectedRevision: draft.revision }), /不能編輯/);
+  const updated = await s.readState(admin);
+  assert.equal(updated.events.find((event) => event.id === normal.eventId).member_billing_label, "季度社費場次");
 });
 test("non-admin cannot confirm a quarter or generate invoices", async () => {
   const s = setup();
@@ -672,7 +747,7 @@ test("non-admin cannot confirm a quarter or generate invoices", async () => {
 });
 test("cancel before billing preserves ten-event baseline and adds visible reduction; no duplicate bills", async () => {
   const s = setup(); await s.confirm();
-  await s.mutate("cancelEvent", { eventId: "quarter-test-plan-0" });
+  await cancelEventWithPreview(s, "quarter-test-plan-0");
   await s.bill();
   const invoice = s.db.data(s.invoicePath);
   assert.equal(invoice.eventIds.length, 10);
@@ -685,8 +760,8 @@ test("cancel before billing preserves ten-event baseline and adds visible reduct
 });
 test("cancel unpaid bill records delta, preserves baseline and is idempotent", async () => {
   const s = setup(1450); await s.confirm(); await s.bill();
-  await s.mutate("cancelEvent", { eventId: "quarter-test-plan-0" });
-  await s.mutate("cancelEvent", { eventId: "quarter-test-plan-0" });
+  await cancelEventWithPreview(s, "quarter-test-plan-0");
+  await cancelEventWithPreview(s, "quarter-test-plan-0");
   const invoice = s.db.data(s.invoicePath);
   assert.equal(invoice.grossAmount, 1500);
   assert.equal(invoice.eventIds.length, 10);
@@ -697,21 +772,24 @@ test("cancel unpaid bill records delta, preserves baseline and is idempotent", a
 test("reported transfer cancellation does not release credit until administrator confirms; repeat confirmation does not refund twice", async () => {
   const s = setup(); await s.confirm(); await s.bill();
   await s.mutate("reportPayment", { invoiceId: "quarter-test-plan-member" }, member);
-  await s.mutate("cancelEvent", { eventId: "quarter-test-plan-0" });
+  await cancelEventWithPreview(s, "quarter-test-plan-0");
   assert.equal(s.db.data("members/member").creditBalance, 0);
   assert.equal(s.db.data(s.invoicePath).amount, 1500);
   await s.mutate("confirmPayment", { invoiceId: "quarter-test-plan-member" });
   await s.mutate("confirmPayment", { invoiceId: "quarter-test-plan-member" });
-  assert.equal(s.db.data("members/member").creditBalance, 150);
+  assert.equal(s.db.data("members/member").creditBalance, 0);
+  assert.equal(s.db.data("invoices/credit-quarter-test-plan-0-quarter-test-plan-member").refundCashAmount, 150);
+  assert.equal(s.db.data("invoices/credit-quarter-test-plan-0-quarter-test-plan-member").status, "AWAITING_OFFLINE_REFUND");
   assert.equal(s.db.data(s.invoicePath).eventIds.length, 10);
 });
-test("confirmed payment cancellation credits account and keeps paid invoice immutable", async () => {
+test("confirmed external payment cancellation queues offline refunds without rewriting paid amount", async () => {
   const s = setup(); await s.confirm(); await s.bill();
   await s.mutate("confirmPayment", { invoiceId: "quarter-test-plan-member" });
-  await s.mutate("cancelEvent", { eventId: "quarter-test-plan-0" });
-  assert.equal(s.db.data("members/member").creditBalance, 150);
+  await cancelEventWithPreview(s, "quarter-test-plan-0");
+  assert.equal(s.db.data("members/member").creditBalance, 0);
   assert.equal(s.db.data(s.invoicePath).amount, 1500);
-  assert.equal(s.db.data(s.invoicePath).adjustments[0].kind, "CREDIT");
+  assert.equal(s.db.data(s.invoicePath).adjustments[0].kind, "CREDIT_PENDING");
+  assert.equal(s.db.data("invoices/credit-quarter-test-plan-0-quarter-test-plan-member").refundCashAmount, 150);
 });
 test("fee changes after confirmation do not reprice the quarter", async () => {
   const s = setup(); await s.confirm();
@@ -719,10 +797,28 @@ test("fee changes after confirmation do not reprice the quarter", async () => {
   await s.bill();
   assert.equal(s.db.data(s.invoicePath).grossAmount, 1500);
 });
-test("extra activity creates separate invoice and never increases quarterly baseline", async () => {
+test("explicit add-on preview and publish create a separate invoice and never increase quarterly baseline", async () => {
   const s = setup(); await s.confirm(); await s.bill();
   const date = s.rules.endDate;
-  await s.mutate("createEvent", { startsAt: date + "T19:00:00+08:00", endsAt: date + "T21:00:00+08:00", courts: "B", regularCapacity: "10", standbyCapacity: "4", memberBilling: "EXTRA", billingReason: "加租場地" });
+  const eventInput = { startsAt: date + "T18:00:00+08:00", endsAt: date + "T20:00:00+08:00", courts: "B", regularCapacity: "10", standbyCapacity: "4" };
+  await assert.rejects(s.mutate("createEvent", { ...eventInput, memberBilling: "EXTRA", billingReason: "加租場地" }), /建立不會開單/);
+  const event = await s.mutate("createEvent", eventInput);
+  assert.equal(event.memberBilling, "NO_CHARGE");
+  const activity = s.db.data("events/" + event.eventId);
+  assert.equal(activity.memberFeeSnapshot, 0);
+  assert.equal(activity.guestFeeSnapshot, 180);
+  assert.equal(s.db.entries("invoices/").length, 1);
+  const before = s.db.entries("");
+  await assert.rejects(s.mutate("previewMemberExtraBills", { eventId: "quarter-test-plan-0" }), /已納入季度社費/);
+  const quote = await s.mutate("previewMemberExtraBills", { eventId: event.eventId });
+  assert.equal(quote.totalAmount, 150);
+  assert.deepEqual(s.db.entries(""), before);
+  const publish = { eventId: event.eventId, previewKey: quote.previewKey, reason: "加租場地" };
+  const result = await s.mutate("publishMemberExtraBills", publish);
+  assert.deepEqual(result, { invoiceCount: 1, totalAmount: 150 });
+  const after = s.db.entries("");
+  assert.deepEqual(await s.mutate("publishMemberExtraBills", publish), result);
+  assert.deepEqual(s.db.entries(""), after);
   assert.equal(s.db.data(s.invoicePath).eventIds.length, 10);
   assert.equal(s.db.data(s.invoicePath).amount, 1500);
   const extras = s.db.entries("invoices/").filter(([, value]) => value.type === "MEMBER_EXTRA");

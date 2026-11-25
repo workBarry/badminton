@@ -35,8 +35,10 @@ export async function manageInvoice(action: string, input: Record<string, string
 
     if (action === "rejectPaymentReport") {
       if (data.status !== "REPORTED" || input.checkedNotReceived !== "true") throw new Error("請先確認尚未收到此筆轉帳");
-      const pendingCredits = related.docs.filter((doc) => doc.data().status === "AWAITING_PAYMENT_CONFIRMATION");
-      const reduction = pendingCredits.reduce((sum, doc) => sum - Number(doc.data().amount), 0);
+      const pendingCredits = related.docs.filter((doc) => doc.data().type === "CREDIT" && doc.data().status === "AWAITING_PAYMENT_CONFIRMATION");
+      const reductions = pendingCredits.map((doc) => -Number(doc.data().amount));
+      const reduction = reductions.reduce((sum, value) => sum + value, 0);
+      if (reductions.some((value) => !Number.isSafeInteger(value) || value <= 0) || reduction > effective.grossAmount) throw new Error("待退回的活動費金額不正確，請先核對");
       const reduced = reduceUnpaidInvoice(data, reduction);
       const { restoredCredit, ...amounts } = reduced;
       for (const credit of pendingCredits) transaction.update(credit.ref, { status: "VOID", voidReason: "轉帳未入帳，改由原單減收", updatedAt: now });
@@ -45,12 +47,12 @@ export async function manageInvoice(action: string, input: Record<string, string
         transaction.update(memberRef, { creditBalance: FieldValue.increment(restoredCredit), updatedAt: now });
         recordBalanceMovement(transaction, db, { memberId: memberRef.id, amount: restoredCredit, reason: "駁回轉帳恢復餘額抵扣：" + reason, sourceKey: `invoice:${ref.id}:report-rejected:${now.toISOString()}`, invoiceId: ref.id, eventId: data.eventId ?? null, actorId: actor.id, actorName: actor.name, createdAt: now });
       }
-      notify("幹部核對未入帳，帳單已退回待繳；原因：" + reason);
+      notify((reduced.adjustedAmount === 0 ? "幹部核對未入帳，取消場次減收後無須付款；原因：" : "幹部核對未入帳，帳單已退回待繳；原因：") + reason);
       return { status: "REPORT_REJECTED", invoiceId: ref.id };
     }
     if (action === "refundInvoice") {
       if (data.status !== "CONFIRMED") throw new Error("只有已確認收款的帳單可以退款");
-      const refunded = related.docs.filter((doc) => doc.data().type === "CREDIT" && ["CONFIRMED", "AWAITING_PAYMENT_CONFIRMATION"].includes(doc.data().status)).reduce((sum, doc) => sum + Math.max(0, -Number(doc.data().amount)), 0);
+      const refunded = related.docs.filter((doc) => doc.data().type === "CREDIT" && ["CONFIRMED", "AWAITING_PAYMENT_CONFIRMATION", "AWAITING_OFFLINE_REFUND"].includes(doc.data().status)).reduce((sum, doc) => sum + Math.max(0, -Number(doc.data().amount)), 0);
       const remaining = Math.max(0, effective.grossAmount - refunded);
       if (remaining <= 0) throw new Error("此帳單已無可退金額");
       if (Number(input.expectedRefundable) !== remaining) throw new Error("可退金額已變更，請重新開啟帳單");

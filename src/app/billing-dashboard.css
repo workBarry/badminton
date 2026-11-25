@@ -106,3 +106,35 @@
  .billing-section-tools { align-items: stretch; }
  .billing-section-tools label { flex: 1 1 140px; }
 }
+
+.billing-event-line {
+  display: grid;
+  gap: .35rem;
+  padding: .65rem 0;
+  border-top: 1px solid var(--line, #dce4eb);
+}
+.billing-event-line > div {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .35rem 1rem;
+}
+.billing-event-line .link { justify-self: start; }
+.billing-refund-item { min-width: 0; }
+.billing-refund-item > .billing-actions {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .5rem;
+  padding: .65rem .8rem;
+}
+.billing-queue-detail {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding-inline: .15rem;
+}
+.billing-queue-detail summary {
+  cursor: pointer;
+  color: var(--primary, #174e41);
+  font-size: .85rem;
+}

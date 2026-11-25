@@ -23,6 +23,31 @@ export type QuarterPlan = QuarterRules & {
   confirmedAt?: string | null;
   billed?: boolean;
 };
+export type QuarterBillingPeriod = {
+  id: string;
+  label: string;
+  startDate: string;
+  endDate: string;
+  status: "PLANNED" | "GENERATING" | "ACTIVE";
+  eventIds: string[];
+  eventCount: number;
+  grossAmount: number;
+  revision?: string;
+};
+export type QuarterPeriodInput = {
+  periodId: string;
+  label: string;
+  startDate: string;
+  endDate: string;
+  eventIds: string;
+  expectedRevision?: string;
+};
+export type QuarterPeriodResult = {
+  periodId: string;
+  eventCount: number;
+  totalAmount: number;
+  skippedEventIds?: string[];
+};
 
 export function validCalendarDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
