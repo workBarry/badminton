@@ -716,9 +716,13 @@ export default function Home() {
   };
   const reviewMembershipRequest = async (request: MembershipRequest, decision: "APPROVE" | "REJECT") => {
     const decisionText = decision === "APPROVE" ? "核准" : "拒絕";
-    const billingNote = request.kind === "JOIN" && decision === "APPROVE"
-      ? "\n只會調整尚未開始且未回報付款的場次；待確認和已收款的帳單不變。" : "";
-    if (!(await askSiteConfirmation({ title: `${decisionText}申請？`, message: `${request.memberName}申請${request.kind === "JOIN" ? "入社" : "退社"}。${billingNote}`, action: decisionText, danger: decision === "REJECT" }))) return;
+    if (membershipSaving) return;
+    if (decision === "REJECT" && !(await askSiteConfirmation({
+      title: "拒絕申請？",
+      message: `${request.memberName}申請${request.kind === "JOIN" ? "入社" : "退社"}。`,
+      action: "拒絕",
+      danger: true,
+    }))) return;
     setMembershipSaving(true);
     try {
       const result = await execute("reviewMembershipRequest", { requestId: request.id, decision });
@@ -2037,7 +2041,17 @@ function Overview({
   const regular = event?.bookings.filter((entry) => entry.rank === "正取").length ?? 0;
   const wait = event?.bookings.filter((entry) => entry.rank === "候補").length ?? 0;
   const displayedRegularCapacity = Math.max(event?.regular ?? 0, regular);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const nextEventDate = event?.startsAt ? taipeiDateParts(new Date(event.startsAt)) : null;
+  const nextEventDay = taipeiInputDate(event?.startsAt);
+  const relativeDay = !nextEventDay ? null
+    : nextEventDay === taipeiInputDate(new Date(now).toISOString()) ? "今日"
+    : nextEventDay === taipeiInputDate(new Date(now + 86_400_000).toISOString()) ? "明日"
+    : null;
   const invoiceState: { label: string; tone: "green" | "orange" | "blue" } = invoice?.status === "CONFIRMED"
     ? { label: "已確認", tone: "green" }
     : invoice?.status === "REPORTED"
@@ -2056,7 +2070,10 @@ function Overview({
             <small>{event.weekday}</small>
           </div>
           <div className="next-event-detail">
-            <span className="next-event-kicker">下一場活動</span>
+            <div className="next-event-kicker">
+              <span>下一場活動</span>
+              {relativeDay && <Badge tone={relativeDay === "今日" ? "green" : "blue"}>{relativeDay}</Badge>}
+            </div>
             <h2 id="next-event-title">{event.time}</h2>
             <p>⌖ {event.courts}</p>
           </div>
@@ -2328,7 +2345,7 @@ function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterM
         : linked?.status === "ACTIVE" ? "已納入季費"
         : entry.memberBilling === "NO_CHARGE" ? "本場不另收"
         : linked?.status === "PLANNED" ? "季費草稿"
-        : memberBills.length ? "已開單" : "無應收帳單";
+        : memberBills.length ? "已開單" : "無";
       const guestFallback = guestBills.length || entry.guestSettlements?.some((item) => item.status !== "SKIPPED") ? "有帳務紀錄"
         : entry.guestSettlements?.length ? "免收" : "無應收名單";
       const nonBillable = entry.billingPaused ? "不再開單" : entry.status === "CANCELLED" || entry.status === "ARCHIVED" ? "不適用" : "免費";

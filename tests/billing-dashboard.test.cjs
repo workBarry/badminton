@@ -124,6 +124,8 @@ test("活動收費模式可從月曆直接選季費，單場帳務只有一個�
   assert.doesNotMatch(renderCard(true, { ...event, memberBilling: "FREE" }), /calendar-checked-mark/);
   assert.doesNotMatch(renderCard(true), /社員加場費|開零打帳單|加到季費帳單/);
   assert.match(renderCard(true), /<dt>社員<\/dt><dd>未開單<\/dd>.*<dt>非社員<\/dt><dd>未開單<\/dd>/);
+  const tabletop = { ...event, courts: "桌遊", eventKind: "OTHER", memberBilling: "NORMAL", memberFee: 150, quarterEligible: false };
+  assert.match(renderCard(true, tabletop), /<dt>社員<\/dt><dd>無<\/dd>.*<dt>非社員<\/dt><dd>未開單<\/dd>/);
   assert.doesNotMatch(card, /calendar-payment-summary/);
   assert.doesNotMatch(renderCard(true, event, [], false), /calendar-payment-summary/);
   assert.doesNotMatch(renderCard(true, { ...event, memberBilling: "FREE" }), />管理本場帳單</);
@@ -454,4 +456,23 @@ test("編輯活動只鎖定已開單的價格，免費場不顯示金額", () =>
   assert.match(paused, /不再開新帳單，既有帳單不變/);
   assert.doesNotMatch(paused.match(/<select[^>]+name="memberBilling"[^>]*>/)[0], /disabled/);
   assert.match(markup({ ...event, memberBilling: "FREE" }, [], [{ status: "GENERATING", eventIds: [event.id] }]), /已確認的季費開單會繼續/);
+});
+
+
+test("總覽的下一場活動以台北日期顯示今日或明日，跨年也正確", () => {
+  const { Overview } = load("src/app/page.tsx", {
+    "@/lib/billing-view": billingView,
+    "@/lib/club-roles": load("src/lib/club-roles.ts"),
+    ...Object.fromEntries(["quarter-planner", "loading-screen", "shuttle-art", "billing-dashboard", "balance-history-dialog", "floating-notifications"].map((name) => ["@/app/" + name, {}])),
+    react: { ...React, useState: () => [Date.parse("2026-12-31T15:50:00Z"), () => {}] },
+  }, "\nexport { Overview };");
+  const renderOverview = (startsAt) => renderToStaticMarkup(React.createElement(Overview, {
+    event: { id: "next", startsAt, courts: "球場", time: "18:00–20:00", bookings: [] },
+    user: { member: true },
+  }));
+  const today = renderOverview("2026-12-31T15:59:00Z");
+  assert.match(today, /下一場活動<\/span><span class="badge green">今日<\/span>/);
+  assert.match(today, /<strong>31<\/strong><span>12月<\/span>/);
+  assert.match(renderOverview("2026-12-31T16:00:00Z"), /下一場活動<\/span><span class="badge blue">明日<\/span>/);
+  assert.doesNotMatch(renderOverview("2027-01-01T16:00:00Z"), /今日|明日/);
 });

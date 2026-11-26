@@ -948,7 +948,10 @@ select {
   overflow-wrap: anywhere;
 }
 .next-event-kicker {
-  display: block;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   margin-bottom: 4px;
   color: var(--green);
   font-size: 13px;
@@ -3026,14 +3029,14 @@ dialog.event-dialog {
 .activity-detail-card .activity-detail-action { position:relative; z-index:2; }
 .calendar-session-check { justify-self:start; cursor:pointer; }
 
-/* Billing mode: rose = not billed; amber = payment still outstanding. */
+/* Billing mode: orange = not billed; blue = awaiting collection or confirmation. */
 .activity-month-workspace .calendar-date-picker[data-fee-tone="unbilled"] {
-  background:#fce5eb;
-  border-color:#ce859e;
+  background:#fff1dc;
+  border-color:#d48c49;
 }
 .activity-month-workspace .calendar-date-picker[data-fee-tone="outstanding"] {
-  background:#fff0d8;
-  border-color:#d9ac71;
+  background:#d8e7ff;
+  border-color:#719dcc;
 }
 .activity-month-workspace .calendar-date-picker[data-fee-tone]:hover {
   box-shadow:inset 0 0 0 1px currentColor;
