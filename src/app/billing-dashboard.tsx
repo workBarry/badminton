@@ -1,19 +1,25 @@
 "use client";
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { activityPayments, billingSummary, invoiceEventLines, invoiceInRange, isOpen, isPrincipal, referencesEvent, taipeiDay, type BillingActivity, type InvoiceSchedule, type ManagedInvoice } from "@/lib/billing-view";
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { activityPayments, billingSummary, invoiceEventLines, invoiceInRange, isOpen, isPaidForEvent, isPrincipal, referencesEvent, taipeiDay, type BillingActivity, type InvoiceSchedule, type ManagedInvoice } from "@/lib/billing-view";
 
 type ActionResult = { results?: { id: string; success: boolean; error?: string }[]; status?: string; invoiceId?: string; recorded?: number; alreadyRecorded?: number; totalAmount?: number };
 export type BillingProps = {
   admin: boolean; invoices: ManagedInvoice[]; viewer: { id: string; name?: string; creditBalance: number }; saving: boolean;
   events?: BillingActivity[];
   focusEventId?: string | null;
+  focusInvoice?: { eventId: string; invoiceId?: string } | null;
   clearFocusEvent?: () => void;
   openEvent?: (eventId: string) => void;
   reportPayment: (id: string) => void; remindPayment: (id: string) => void; openRates: () => void;
   manage?: (action: string, input: Record<string, string>) => Promise<ActionResult | null>;
 };
 const labels: Record<string, string> = { PENDING: "待繳", REPORTED: "已回報，待對帳", CONFIRMED: "已結清", VOID: "已作廢", CREDITED: "已退回餘額", REFUNDED: "已退款", AWAITING_PAYMENT_CONFIRMATION: "原付款待核對", AWAITING_OFFLINE_REFUND: "待退款" };
-const types: Record<string, string> = { QUARTERLY_MEMBER: "季度社員費", MEMBERSHIP_PRORATED: "中途加入社員費", MEMBER_EXTRA: "社員加場費", SINGLE_EVENT: "零打活動費", CREDIT: "退款／餘額紀錄" };
+const types: Record<string, string> = { QUARTERLY_MEMBER: "季度社員費", MEMBERSHIP_PRORATED: "中途加入社員費", MEMBER_EXTRA: "社員加場費", MEMBER_SINGLE: "社員單場費", SINGLE_EVENT: "零打活動費", CREDIT: "退款／餘額紀錄" };
+const feeTypeLabel = (invoice: ManagedInvoice) => invoice.period_label === "單場活動費" && isPrincipal(invoice) ? "單場活動費" : types[invoice.type] ?? "帳單";
+const feeTitle = (invoice: ManagedInvoice) => {
+  const type = feeTypeLabel(invoice);
+  return invoice.period_label && invoice.period_label !== type ? type + " · " + invoice.period_label : type;
+};
 const money = (amount: number) => "NT$ " + amount.toLocaleString("zh-TW");
 const receiptMax = 20;
 const collectable = (invoice: ManagedInvoice) => isOpen(invoice) && Number.isSafeInteger(invoice.amount) && invoice.amount > 0;
@@ -35,6 +41,55 @@ type Operation = "voidInvoice" | "reissueInvoice" | "refundInvoice" | "rejectPay
 type Selection = { operation: Operation; invoice: ManagedInvoice } | { operation: "voidInvoiceBatch"; invoices: ManagedInvoice[]; excluded: number };
 const operationLabels = { voidInvoice: "作廢帳單", reissueInvoice: "作廢並重開", refundInvoice: "辦理退款", rejectPaymentReport: "核對未入帳，退回待繳", voidInvoiceBatch: "批次作廢未繳帳單" };
 
+function BillingMore({ label = "更多", description, children }: { label?: string; description?: string; children: ReactNode }) {
+  const id = useId();
+  const trigger = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const button = trigger.current, popup = menu.current;
+      if (!button || !popup?.matches(":popover-open")) return;
+      const rect = button.getBoundingClientRect();
+      const width = document.documentElement.clientWidth;
+      const height = document.documentElement.clientHeight;
+      const gap = 6, edge = 10;
+      if (rect.bottom < edge || rect.top > height - edge) { popup.hidePopover(); return; }
+      const below = Math.max(0, height - rect.bottom - edge - gap);
+      const above = Math.max(0, rect.top - edge - gap);
+      const upward = below < popup.scrollHeight && above > below;
+      popup.style.maxHeight = Math.max(1, upward ? above : below) + "px";
+      popup.style.left = Math.max(edge, Math.min(rect.right - popup.offsetWidth, width - popup.offsetWidth - edge)) + "px";
+      popup.style.top = Math.max(edge, upward ? rect.top - gap - popup.offsetHeight : rect.bottom + gap) + "px";
+      popup.style.visibility = "visible";
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, { capture: true, passive: true });
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open]);
+  return <div className="billing-more">
+    <button ref={trigger} type="button" className="billing-more-trigger" popoverTarget={id} aria-expanded={open} aria-controls={id}>
+      {label}{description && <span className="billing-sr-only">：{description}</span>}
+    </button>
+    <div ref={menu} id={id} popover="auto" className="billing-more-actions" role="group" aria-label={description ? description + "操作" : label}
+      onToggle={(event) => {
+        const shown = event.newState === "open";
+        if (!shown) event.currentTarget.style.visibility = "";
+        setOpen(shown);
+      }}
+      onClick={(event) => {
+        if (event.target instanceof Element && event.target.closest("button:not(:disabled)")) event.currentTarget.hidePopover();
+      }}>
+      {children}
+    </div>
+  </div>;
+}
+
 export default function BillingDashboard(props: BillingProps) {
   const { admin, viewer, saving, events = [], manage } = props;
   const invoices = admin ? props.invoices : props.invoices.filter((invoice) => invoice.member_id === viewer.id);
@@ -50,6 +105,15 @@ export default function BillingDashboard(props: BillingProps) {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [receiptRows, setReceiptRows] = useState<ManagedInvoice[] | null>(null);
   const [feedback, setFeedback] = useState("");
+  const activeInvoice = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!props.focusInvoice?.invoiceId) return;
+    const frame = requestAnimationFrame(() => {
+      activeInvoice.current?.focus({ preventScroll: true });
+      activeInvoice.current?.scrollIntoView({ block: "center" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [props.focusInvoice]);
   const periods = [...new Map(invoices.filter((invoice) => invoice.period_id && invoice.period_start && invoice.period_end).map((invoice) => [invoice.period_id!, { id: invoice.period_id!, label: invoice.period_label ?? "季度", start: invoice.period_start!, end: invoice.period_end! }])).values()].sort((a, b) => b.start.localeCompare(a.start));
   const today = taipeiDay(new Date());
   const currentPeriod = periods.find((entry) => entry.start <= today && entry.end >= today);
@@ -92,7 +156,7 @@ export default function BillingDashboard(props: BillingProps) {
     if (!result || typeof result.recorded !== "number") return;
     setReceiptRows(null);
     setSelectedIds([]);
-    setFeedback(result.recorded ? `已登記 ${result.recorded} 筆收款 · ${money(result.totalAmount ?? 0)}。${result.alreadyRecorded ? `另有 ${result.alreadyRecorded} 筆已登記，未重複處理。` : ""}` : "這些款項已登記，沒有重複入帳。");
+    setFeedback(result.recorded ? `已確認 ${result.recorded} 筆收款 · ${money(result.totalAmount ?? 0)}。${result.alreadyRecorded ? `另有 ${result.alreadyRecorded} 筆已登記，未重複處理。` : ""}` : "這些款項已登記，沒有重複入帳。");
   };
   const submit = async (input: Record<string, string>) => {
     if (!selection || !manage) return;
@@ -111,17 +175,14 @@ export default function BillingDashboard(props: BillingProps) {
     const mayVoid = admin && manage && isPrincipal(invoice) && invoice.status === "PENDING";
     const mayReissue = admin && manage && isPrincipal(invoice) && !invoice.replaced_by_id && (invoice.status === "PENDING" || (invoice.status === "VOID" && invoice.cancellation_reason === "ADMIN_VOID"));
     const mayRefund = admin && manage && isPrincipal(invoice) && !invoices.some((entry) => entry.related_invoice_id === invoice.id && ["AWAITING_OFFLINE_REFUND", "AWAITING_PAYMENT_CONFIRMATION"].includes(entry.status)) && invoice.status === "CONFIRMED" && (invoice.refundable_amount ?? 0) > 0;
-    return (mayReport || mayRemind || mayReject || mayVoid || mayReissue || mayRefund) && <details className="billing-more">
-      <summary>更多<span className="billing-sr-only">：{invoice.memberName}的帳單</span></summary>
-      <div className="billing-more-actions">
+    return (mayReport || mayRemind || mayReject || mayVoid || mayReissue || mayRefund) && <BillingMore description={invoice.memberName + "的帳單"}>
         {mayReport && <button className="link" disabled={saving} onClick={() => props.reportPayment(invoice.id)}>回報已轉帳（選用）</button>}
         {mayRemind && <button className="link" disabled={saving} onClick={() => props.remindPayment(invoice.id)}>提醒繳費</button>}
         {mayReject && <button className="link" disabled={saving} onClick={() => openOperation("rejectPaymentReport", invoice)}>核對未入帳</button>}
         {mayVoid && <button className="link danger" disabled={saving} onClick={() => openOperation("voidInvoice", invoice)}>作廢</button>}
         {mayReissue && <button className="link" disabled={saving} onClick={() => openOperation("reissueInvoice", invoice)}>{invoice.status === "VOID" ? "重新開單" : "作廢並重開"}</button>}
         {mayRefund && <button className="link danger" disabled={saving} onClick={() => openOperation("refundInvoice", invoice)}>退款／轉餘額</button>}
-      </div>
-    </details>;
+    </BillingMore>;
   };
   const renderDetails = (invoice: ManagedInvoice) => <details><summary>帳單明細{invoice.event_ids?.length ? " · " + invoice.event_ids.length + " 場" : ""}</summary>
       <div className="billing-invoice-detail">
@@ -157,14 +218,19 @@ export default function BillingDashboard(props: BillingProps) {
         {(invoice.adjustments ?? []).map((entry, index) => <p key={index}>{entry.eventDate} {entry.reason} · {money(entry.amount)}<small>{entry.actorName} · {schedule(entry.createdAt)}</small></p>)}
       </div>
     </details>;
-  const renderInvoice = (invoice: ManagedInvoice) => <article className="billing-invoice" key={invoice.id}>
-    <div className="billing-invoice-title"><div><strong>{types[invoice.type] ?? "帳務調整"}{invoice.period_label && " · " + invoice.period_label}</strong>{admin && <small>{invoice.memberName}{invoice.memberAccountName ? " · 帳號：" + invoice.memberAccountName : ""}</small>}</div><span className={"billing-pill " + (overdue(invoice) ? "overdue" : invoice.status.toLowerCase())}>{overdue(invoice) ? "逾期待繳" : invoiceStatusLabel(invoice)}</span></div>
+  const renderInvoice = (invoice: ManagedInvoice) => {
+    const focused = props.focusInvoice?.invoiceId === invoice.id;
+    return <article className={focused ? "billing-invoice billing-invoice-target" : "billing-invoice"} key={invoice.id}
+      ref={focused ? activeInvoice : undefined} tabIndex={focused ? -1 : undefined}
+      aria-label={focused ? "定位帳單：" + invoice.memberName : undefined}>
+    <div className="billing-invoice-title"><div><strong>{feeTitle(invoice)}</strong>{admin && <small>{invoice.memberName}{invoice.memberAccountName ? " · 帳號：" + invoice.memberAccountName : ""}</small>}</div><span className={"billing-pill " + (overdue(invoice) ? "overdue" : invoice.status.toLowerCase())}>{overdue(invoice) ? "逾期待繳" : invoiceStatusLabel(invoice)}</span></div>
     <div className="billing-invoice-money"><strong>{money(invoice.type === "CREDIT" ? (invoice.pending_refund_amount || invoice.refund_completed_amount || Math.abs(invoice.amount)) : invoice.amount)}</strong>{invoice.credit_applied > 0 && <small>已抵扣餘額 {money(invoice.credit_applied)}</small>}{invoice.due_at && <small>期限：{taipeiDay(invoice.due_at)}</small>}</div>
     {renderDetails(invoice)}
-    {(admin && manage && collectable(invoice)) ? <div className="billing-actions"><button className="secondary receipt-action" disabled={saving} onClick={() => openReceipt([invoice])}>登記收款</button>{renderMore(invoice)}</div> : renderMore(invoice)}
+    {(admin && manage && collectable(invoice)) ? <div className="billing-actions"><button className="secondary receipt-action" disabled={saving} onClick={() => openReceipt([invoice])}>確認收款</button>{renderMore(invoice)}</div> : renderMore(invoice)}
   </article>;
+  };
   const exportLedger = () => {
-    const rows = [["顯示名稱", "帳號名稱", "項目", "季度", "活動日期", "原單金額", "應付", "狀態", "收款日期", "收款方式", "實收金額", "登記人", "收款備註", "作廢原因", "重開自", "新帳單", "調整紀錄"], ...ledger.map((invoice) => [invoice.memberName, invoice.memberAccountName ?? "", types[invoice.type] ?? invoice.type, invoice.period_label ?? "", invoice.event_schedules?.map((entry) => schedule(entry.starts_at)).join("；") ?? "", invoice.original_gross_amount ?? invoice.gross_amount, invoice.amount, invoiceStatusLabel(invoice), invoice.receipt_received_date ?? "", receiptMethod(invoice.receipt_method), invoice.receipt_amount ?? "", invoice.receipt_recorded_by_name ?? "", invoice.receipt_note ?? "", invoice.void_reason ?? "", invoice.replacement_of_id ?? "", invoice.replaced_by_id ?? "", invoice.adjustments?.map((entry) => entry.reason + " " + entry.amount + " " + entry.actorName + " " + entry.createdAt).join("；") ?? ""])];
+    const rows = [["顯示名稱", "帳號名稱", "項目", "季度", "活動日期", "原單金額", "應付", "狀態", "收款日期", "收款方式", "實收金額", "登記人", "收款備註", "作廢原因", "重開自", "新帳單", "調整紀錄"], ...ledger.map((invoice) => [invoice.memberName, invoice.memberAccountName ?? "", feeTypeLabel(invoice), invoice.period_label ?? "", invoice.event_schedules?.map((entry) => schedule(entry.starts_at)).join("；") ?? "", invoice.original_gross_amount ?? invoice.gross_amount, invoice.amount, invoiceStatusLabel(invoice), invoice.receipt_received_date ?? "", receiptMethod(invoice.receipt_method), invoice.receipt_amount ?? "", invoice.receipt_recorded_by_name ?? "", invoice.receipt_note ?? "", invoice.void_reason ?? "", invoice.replacement_of_id ?? "", invoice.replaced_by_id ?? "", invoice.adjustments?.map((entry) => entry.reason + " " + entry.amount + " " + entry.actorName + " " + entry.createdAt).join("；") ?? ""])];
     const escape = (value: unknown) => {
       const raw = String(value);
       const safe = typeof value === "string" && /^\s*[=+@-]/.test(raw) ? "'" + raw : raw;
@@ -217,13 +283,13 @@ export default function BillingDashboard(props: BillingProps) {
       {manage && selected.length > 0 && <div className="billing-batch-bar">
         <strong>已選 {selected.length} 筆 · {money(selected.reduce((sum, invoice) => sum + invoice.amount, 0))}</strong>
         <button className="link" disabled={saving} onClick={() => setSelectedIds([])}>清除</button>
-        <button className="primary" disabled={saving} onClick={() => openReceipt(selected)}>登記這 {selected.length} 筆</button>
+        <button className="primary" disabled={saving} onClick={() => openReceipt(selected)}>確認收款（{selected.length} 筆）</button>
       </div>}
       {!queue.length ? <p className="billing-empty">目前沒有符合條件的待收款。</p> : <ul className="billing-queue" role="list">{queue.map((invoice) => <li className="billing-queue-row" key={invoice.id}>
-        {manage && <label className="billing-receipt-check"><input type="checkbox" checked={selectedIds.includes(invoice.id)} disabled={saving || !collectable(invoice) || (!selectedIds.includes(invoice.id) && selectedIds.length >= receiptMax)} onChange={(event) => { const checked = event.target.checked; setSelectedIds((ids) => checked ? [...ids, invoice.id].slice(0, receiptMax) : ids.filter((id) => id !== invoice.id)); }} /><span className="billing-sr-only">選取 {invoice.memberName} · {types[invoice.type] ?? "帳單"} · {money(invoice.amount)}</span></label>}
-        <div className="billing-queue-person"><strong>{invoice.memberName}</strong>{invoice.memberAccountName && <small>帳號：{invoice.memberAccountName}</small>}<span>{types[invoice.type] ?? "帳單"}{invoice.period_label && " · " + invoice.period_label}</span></div>
+        {manage && <label className="billing-receipt-check"><input type="checkbox" checked={selectedIds.includes(invoice.id)} disabled={saving || !collectable(invoice) || (!selectedIds.includes(invoice.id) && selectedIds.length >= receiptMax)} onChange={(event) => { const checked = event.target.checked; setSelectedIds((ids) => checked ? [...ids, invoice.id].slice(0, receiptMax) : ids.filter((id) => id !== invoice.id)); }} /><span className="billing-sr-only">選取 {invoice.memberName} · {feeTypeLabel(invoice)} · {money(invoice.amount)}</span></label>}
+        <div className="billing-queue-person"><strong>{invoice.memberName}</strong>{invoice.memberAccountName && <small>帳號：{invoice.memberAccountName}</small>}<span>{feeTitle(invoice)}</span></div>
         <div className="billing-queue-amount"><strong>{money(invoice.amount)}</strong><span className={"billing-pill " + (overdue(invoice) ? "overdue" : invoice.status.toLowerCase())}>{overdue(invoice) ? "逾期待繳" : invoiceStatusLabel(invoice)}</span></div>
-        <div className="billing-queue-actions">{manage && collectable(invoice) && <button className="primary receipt-action" disabled={saving} onClick={() => openReceipt([invoice])}>登記收款<span className="billing-sr-only">：{invoice.memberName}</span></button>}{renderMore(invoice)}</div>
+        <div className="billing-queue-actions">{manage && collectable(invoice) && <button className="primary receipt-action" disabled={saving} onClick={() => openReceipt([invoice])}>確認收款<span className="billing-sr-only">：{invoice.memberName}</span></button>}{renderMore(invoice)}</div>
         <div className="billing-queue-detail">{renderDetails(invoice)}</div>
       </li>)}</ul>}
       {selected.length >= receiptMax && <p className="form-note">每次最多登記 {receiptMax} 筆。不同日期或方式請分批。</p>}
@@ -254,9 +320,9 @@ export default function BillingDashboard(props: BillingProps) {
       const scopedEvent = admin ? event : { ...event, bookings: event.bookings.filter((booking) => booking.memberId === viewer.id) };
       const progress = activityPayments(scopedEvent, invoices);
       if (!admin && !progress.rows.length) return null;
-      return <details className="billing-person" key={event.id}><summary><strong>{schedule(event.startsAt)} · {event.courts}</strong><span className={"billing-pill " + (progress.complete ? "confirmed" : "pending")}>{progress.complete ? "全數結清" : !progress.rows.length ? "尚無報名" : "尚未結清"}</span>{admin && <small>已結清 {progress.settled} 人 · 未繳 {progress.unpaid} 人 · 待確認 {progress.reported} 人 · 未開單 {progress.unbilled} 人 · 免收／轉讓 {progress.exempt} 人</small>}</summary><div className="billing-detail-list">{progress.rows.map((row) => <div className="billing-activity-person" key={row.memberId}><strong>{row.name}{row.accountName && <small className="account-name">帳號：{row.accountName}</small>}</strong><span>{row.quarterly ? "季度費 · " : ""}{{ PENDING: "未繳", REPORTED: "待確認", SETTLED: "已結清", TRANSFER: "私人轉讓，社團免收", EXEMPT: "本場免收社員費", UNBILLED: "尚未開單" }[row.status]}</span>{row.bills.map(renderInvoice)}</div>)}</div></details>;
+      return <details className="billing-person" key={event.id}><summary><strong>{schedule(event.startsAt)} · {event.courts}</strong><span className={"billing-pill " + (progress.complete ? "confirmed" : "pending")}>{progress.complete ? "全數結清" : !progress.rows.length ? "尚無報名" : "尚未結清"}</span>{admin && <small>已結清 {progress.settled} 人 · 未繳 {progress.unpaid} 人 · 待確認 {progress.reported} 人 · 未開單 {progress.unbilled} 人 · 免收／轉讓 {progress.exempt} 人</small>}</summary><div className="billing-detail-list">{progress.rows.map((row) => <div className="billing-activity-person" key={row.memberId}><strong>{row.name}{row.accountName && <small className="account-name">帳號：{row.accountName}</small>}</strong><span>{row.quarterly ? "季度費 · " : ""}{row.status === "SETTLED" && row.bills.some((bill) => isPaidForEvent(bill, event.id)) ? <span className="billing-pill confirmed">已繳費</span> : { PENDING: "未繳", REPORTED: "待確認", SETTLED: "已結清", TRANSFER: "私人轉讓，社團免收", EXEMPT: "本場免收社員費", UNBILLED: "尚未開單" }[row.status]}</span>{row.bills.map(renderInvoice)}</div>)}</div></details>;
     })}</section>}
-    {tab === "records" && <section><div className="billing-section-tools"><label>紀錄類型<select value={ledgerType} onChange={(event) => setLedgerType(event.target.value)}><option value="CHARGES">{admin ? "收費帳單" : "已結案帳單"}</option><option value="ADJUSTMENTS">退款與餘額紀錄</option><option value="ALL">全部紀錄</option></select></label><label className="billing-checkbox"><input type="checkbox" checked={showVoided} onChange={(event) => setShowVoided(event.target.checked)} />包含已作廢</label>{admin && <><button className="secondary" disabled={!ledger.length} onClick={exportLedger}>匯出紀錄</button>{manage && <details className="billing-more"><summary>更多操作</summary><div className="billing-more-actions"><button className="link danger" disabled={saving || !filtered.some((invoice) => isPrincipal(invoice) && invoice.status === "PENDING")} onClick={() => setSelection({ operation: "voidInvoiceBatch", invoices: filtered.filter((invoice) => isPrincipal(invoice) && invoice.status === "PENDING").slice(0, 100), excluded: filtered.filter((invoice) => isPrincipal(invoice) && invoice.status !== "PENDING" && invoice.status !== "VOID").length })}>批次作廢未繳帳單</button></div></details>}</>}</div><div className="billing-personal-list">{ledger.length ? ledger.map(renderInvoice) : <p className="billing-empty">沒有符合條件的紀錄</p>}</div></section>}
+    {tab === "records" && <section><div className="billing-section-tools"><label>紀錄類型<select value={ledgerType} onChange={(event) => setLedgerType(event.target.value)}><option value="CHARGES">{admin ? "收費帳單" : "已結案帳單"}</option><option value="ADJUSTMENTS">退款與餘額紀錄</option><option value="ALL">全部紀錄</option></select></label><label className="billing-checkbox"><input type="checkbox" checked={showVoided} onChange={(event) => setShowVoided(event.target.checked)} />包含已作廢</label>{admin && <><button className="secondary" disabled={!ledger.length} onClick={exportLedger}>匯出紀錄</button>{manage && <BillingMore label="更多操作"><button className="link danger" disabled={saving || !filtered.some((invoice) => isPrincipal(invoice) && invoice.status === "PENDING")} onClick={() => setSelection({ operation: "voidInvoiceBatch", invoices: filtered.filter((invoice) => isPrincipal(invoice) && invoice.status === "PENDING").slice(0, 100), excluded: filtered.filter((invoice) => isPrincipal(invoice) && invoice.status !== "PENDING" && invoice.status !== "VOID").length })}>批次作廢未繳帳單</button></BillingMore>}</>}</div><div className="billing-personal-list">{ledger.length ? ledger.map(renderInvoice) : <p className="billing-empty">沒有符合條件的紀錄</p>}</div></section>}
     {receiptRows && <ReceiptDialog invoices={receiptRows} saving={saving} submit={recordReceipts} close={() => setReceiptRows(null)} />}
     {refundRows && <OfflineRefundDialog invoices={refundRows} saving={saving} submit={recordRefunds} close={() => setRefundRows(null)} />}
     {selection && <InvoiceOperationModal selection={selection} saving={saving} submit={submit} close={() => setSelection(null)} />}
@@ -307,11 +373,11 @@ function ReceiptDialog({ invoices, saving, submit, close }: { invoices: ManagedI
     await submit({ method, receivedDate: String(data.get("receivedDate") ?? ""), note: String(data.get("note") ?? "") });
   };
   return <dialog ref={dialog} className="modal billing-receipt-modal" aria-labelledby="billing-receipt-title" onCancel={(event) => { event.preventDefault(); if (!saving) close(); }}>
-    <button type="button" className="close" disabled={saving} aria-label="關閉登記收款" onClick={close}>×</button>
-    <h2 id="billing-receipt-title">{invoices.length === 1 ? "登記收款" : "批次登記收款"}</h2>
-    <p className="billing-receipt-lead">只登記你已實際收到的全額款項，不會發起轉帳。若金額不足，先勿登記為結清。</p>
+    <button type="button" className="close" disabled={saving} aria-label="關閉確認收款" onClick={close}>×</button>
+    <h2 id="billing-receipt-title">{invoices.length === 1 ? "確認收款" : "批次確認收款"}</h2>
+    <p className="billing-receipt-lead">收到全額後再確認。這個操作不會發起轉帳。</p>
     <div className="billing-receipt-total"><span>實收合計 · {invoices.length} 筆</span><strong>{money(total)}</strong></div>
-    <ul className="billing-receipt-list" role="list">{invoices.map((invoice) => <li key={invoice.id}><span><strong>{invoice.memberName}</strong><small>{types[invoice.type] ?? "帳單"}{invoice.memberAccountName ? " · " + invoice.memberAccountName : ""}</small></span><strong>{money(invoice.amount)}</strong></li>)}</ul>
+    <ul className="billing-receipt-list" role="list">{invoices.map((invoice) => <li key={invoice.id}><span><strong>{invoice.memberName}</strong><small>{feeTypeLabel(invoice)}{invoice.memberAccountName ? " · " + invoice.memberAccountName : ""}</small></span><strong>{money(invoice.amount)}</strong></li>)}</ul>
     <form className="manager-form billing-receipt-form" onSubmit={(event) => void record(event)}>
       <fieldset disabled={saving}>
         <legend>收款方式</legend>
@@ -321,8 +387,8 @@ function ReceiptDialog({ invoices, saving, submit, close }: { invoices: ManagedI
         <label>收款日期<input name="receivedDate" type="date" defaultValue={today} max={today} required /></label>
         <label>備註（選填）<input name="note" type="text" maxLength={200} placeholder="例如：球場現場收款" /></label>
       </fieldset>
-      {invoices.length > 1 && <p className="form-note">這批帳單使用同一收款方式和日期。不同方式或日期請分開登記。</p>}
-      <button type="submit" className="primary" disabled={!method || saving}>{saving ? "登記中…" : "確認登記 · " + money(total)}</button>
+      {invoices.length > 1 && <p className="form-note">這批帳單使用同一收款方式和日期。不同方式或日期請分開確認。</p>}
+      <button type="submit" className="primary" disabled={!method || saving}>{saving ? "確認中…" : "確認收款 · " + money(total)}</button>
     </form>
   </dialog>;
 }

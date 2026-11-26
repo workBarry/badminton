@@ -154,7 +154,7 @@ export default function QuarterPlanner({ plans, existingDates, saving, confirmPl
 
 type QuarterPeriodEvent = { id: string; startsAt?: string; endsAt?: string; courts: string; quarterEligible?: boolean };
 
-function defaultBillingPeriod(anchor?: string) {
+export function defaultBillingPeriod(anchor?: string) {
   const today = anchor || new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(new Date());
   const year = Number(today.slice(0, 4));
   const quarter = Math.floor((Number(today.slice(5, 7)) - 1) / 3);

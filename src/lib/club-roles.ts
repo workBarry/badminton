@@ -16,6 +16,5 @@ export function clubIdentityLabel(person: ClubIdentity) {
   const administrator = person.role === "ADMIN" || person.role === "admin";
   if (administrator && person.primaryAdmin === true) return "社長";
   if (administrator) return "幹部管理者";
-  if (person.membershipStatus === "EXITING") return "本期後退出";
-  return person.member === true || person.membershipStatus === "MEMBER" ? "社員" : "非社員";
+  return person.member === true || person.membershipStatus === "MEMBER" || person.membershipStatus === "EXITING" ? "社員" : "非社員";
 }

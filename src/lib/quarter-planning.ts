@@ -119,7 +119,7 @@ export function reduceUnpaidInvoice(invoice: InvoiceAmounts, reduction: number) 
 // cash balance can mean the entire charge was paid out of club wallet credit.
 export function invoiceCoversEvent(invoice: Record<string, unknown>, eventId: string) {
   return ["PENDING", "REPORTED", "CONFIRMED"].includes(String(invoice.status))
-    && ["SINGLE_EVENT", "QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "MEMBER_EXTRA"].includes(String(invoice.type))
+    && ["SINGLE_EVENT", "QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "MEMBER_EXTRA", "MEMBER_SINGLE"].includes(String(invoice.type))
     && (invoice.eventId === eventId || Array.isArray(invoice.eventIds) && invoice.eventIds.includes(eventId))
     && !(Array.isArray(invoice.adjustments) && invoice.adjustments.some((entry) =>
       entry?.eventId === eventId && ["MEMBERSHIP_END_REDUCTION", "MEMBERSHIP_END_CREDIT"].includes(entry.kind)));

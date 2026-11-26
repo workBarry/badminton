@@ -62,12 +62,15 @@
 .billing-queue-actions .primary, .billing-actions .receipt-action { min-height: 44px; padding-inline: 12px; white-space: nowrap; }
 .billing-receipt-check { display: grid; place-items: center; width: 44px; height: 44px; cursor: pointer; }
 .billing-receipt-check input { width: 18px; height: 18px; margin: 0; accent-color: #1d6856; }
-.billing-more { align-self: flex-start; font-size: 13px; min-width: 0; }
-.billing-more > summary, .billing-invoice .billing-more > summary { display: flex; gap: 5px; align-items: center; min-height: 44px; padding-inline: 7px; color: var(--green); cursor: pointer; }
-.billing-more > summary::after { content: "▾"; font-size: 11px; }
-.billing-more[open] > summary::after { content: "▴"; }
-.billing-more-actions { display: grid; gap: 2px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 9px; background: #f7faf8; }
-.billing-more-actions .link { min-height: 44px; text-align: left; overflow-wrap: anywhere; }
+.billing-more { display: inline-flex; align-self: flex-start; font-size: 13px; min-width: 0; }
+.billing-more-trigger { display: inline-flex; gap: 5px; align-items: center; min-height: 44px; padding-inline: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--green); cursor: pointer; white-space: nowrap; }
+.billing-more-trigger::after { content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: translateY(-1px) rotate(45deg); }
+.billing-more-trigger:is(:hover, [aria-expanded="true"]) { background: #edf5ef; }
+.billing-more-trigger[aria-expanded="true"]::after { transform: translateY(2px) rotate(225deg); }
+.billing-more-actions { display: none; position: fixed; inset: auto; margin: 0; width: min(13rem, calc(100vw - 20px)); max-height: calc(100dvh - 20px); overflow: auto; overscroll-behavior: contain; visibility: hidden; padding: 4px; border: 1px solid var(--line); border-radius: 11px; background: #fff; color: var(--ink); font-size: 13px; box-shadow: 0 8px 26px #183f3029; }
+.billing-more-actions:popover-open { display: grid; gap: 2px; }
+.billing-more-actions .link { min-height: 44px; padding: 6px 9px; border-radius: 7px; text-align: left; overflow-wrap: anywhere; }
+.billing-more-actions .link:is(:hover, :focus-visible):not(:disabled) { background: #edf5ef; }
 .billing-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .billing-receipt-feedback { background: #e6f5ed; color: #22634a; }
 .billing-receipt-modal { border: 1px solid #d5e6de; width: min(520px, calc(100% - 24px)); max-height: min(90dvh, 730px); padding: clamp(16px, 4vw, 26px); margin: auto; overflow-y: auto; }
@@ -138,3 +141,4 @@
   color: var(--primary, #174e41);
   font-size: .85rem;
 }
+.billing-invoice.billing-invoice-target { border-color: #477ba7; box-shadow: 0 0 0 2px #d8eaf8; }

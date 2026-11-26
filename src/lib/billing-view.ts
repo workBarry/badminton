@@ -17,15 +17,23 @@ export type ManagedInvoice = {
   receipt_recorded_by?: string | null; receipt_recorded_by_name?: string | null; receipt_recorded_at?: string | null; receipt_note?: string | null;
 };
 export type BillingActivity = {
-  id: string; startsAt?: string; endsAt?: string; courts: string; memberBilling?: string;
-  bookings: { memberId: string; name: string; accountName?: string; kind: string; transferred?: boolean }[];
+  id: string; startsAt?: string; endsAt?: string; courts: string; memberBilling?: string; eventKind?: string;
+  guestSettlements?: { memberId: string; status: string }[];
+  bookings: { memberId: string; name: string; accountName?: string; kind: string; rank?: string; transferred?: boolean }[];
 };
-export const PRINCIPAL_TYPES = ["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "SINGLE_EVENT", "MEMBER_EXTRA"];
+export const PRINCIPAL_TYPES = ["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "SINGLE_EVENT", "MEMBER_EXTRA", "MEMBER_SINGLE"];
 export const isPrincipal = (invoice: Pick<ManagedInvoice, "type">) => PRINCIPAL_TYPES.includes(invoice.type);
 export const isOpen = (invoice: ManagedInvoice) => isPrincipal(invoice) && ["PENDING", "REPORTED"].includes(invoice.status);
 export const includesEvent = (invoice: ManagedInvoice, eventId: string) =>
   (invoice.event_id === eventId || invoice.event_ids?.includes(eventId) === true) &&
   !invoice.adjustments?.some((entry) => entry.eventId === eventId && ["MEMBERSHIP_END_REDUCTION", "MEMBERSHIP_END_CREDIT"].includes(entry.kind));
+export function isPaidForEvent(invoice: ManagedInvoice, eventId: string) {
+  if (invoice.status !== "CONFIRMED" || !isPrincipal(invoice) || !includesEvent(invoice, eventId) ||
+    invoice.event_schedules?.some((event) => event.id === eventId && event.status === "CANCELLED")) return false;
+  const index = invoice.event_ids?.length ? invoice.event_ids.indexOf(eventId) : 0;
+  return (invoice.event_amounts?.[index] ?? (invoice.amount + (invoice.credit_applied ?? 0))) > 0;
+}
+
 export function taipeiDay(value: string | Date) {
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(date);
@@ -67,7 +75,7 @@ export function activityPayments(event: BillingActivity, invoices: ManagedInvoic
       : bills.some((invoice) => invoice.status === "REPORTED") ? "REPORTED"
       : bills.length && bills.every((invoice) => invoice.status === "CONFIRMED") ? "SETTLED"
       : person.transferred ? "TRANSFER"
-      : (event.memberBilling === "FREE" || person.kind === "社員" && event.memberBilling === "NO_CHARGE") ? "EXEMPT" : "UNBILLED";
+      : (event.memberBilling === "FREE" || person.kind === "社員" && event.memberBilling === "NO_CHARGE" || event.eventKind === "OTHER" && (person.rank === "候補" || event.guestSettlements?.some((item) => item.memberId === person.memberId && item.status === "SKIPPED"))) ? "EXEMPT" : "UNBILLED";
     return { ...person, status, bills, quarterly: bills.some((invoice) => ["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED"].includes(invoice.type)) };
   });
   const count = (status: string) => rows.filter((row) => row.status === status).length;

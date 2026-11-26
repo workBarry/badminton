@@ -100,7 +100,7 @@ export async function POST(request: NextRequest) {
     }
 
     const actionResult = await mutate(body.action, body, viewer);
-    if (body.action === "previewCancelEvent" || body.action === "previewQuarterlyInvoices" || body.action === "previewMemberExtraBills") {
+    if (body.action === "previewCancelEvent" || body.action === "previewQuarterlyInvoices" || body.action === "previewMemberExtraBills" || body.action === "previewGuestEventBills" || body.action === "previewCalendarQuarter") {
       return NextResponse.json({ actionResult }, { headers: { "Cache-Control": "private, no-store" } });
     }
     const refreshedViewer = await viewerForDeviceToken(currentToken);

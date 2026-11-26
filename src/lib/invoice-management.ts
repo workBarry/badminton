@@ -4,7 +4,7 @@ import { getAdminFirestore } from "@/lib/firebase-admin";
 import { recordBalanceMovement } from "@/lib/balance-ledger";
 import type { Viewer } from "@/lib/device-auth";
 import { effectiveInvoiceAmounts, invoiceCoversEvent, reduceUnpaidInvoice, validCalendarDate } from "@/lib/quarter-planning";
-const TYPES = ["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "SINGLE_EVENT", "MEMBER_EXTRA"];
+const TYPES = ["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "SINGLE_EVENT", "MEMBER_EXTRA", "MEMBER_SINGLE"];
 function eventIds(data: DocumentData): string[] {
   const ids = Array.isArray(data.eventIds) ? data.eventIds.map(String) : [];
   if (data.eventId && !ids.includes(String(data.eventId))) ids.push(String(data.eventId));

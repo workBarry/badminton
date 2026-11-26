@@ -258,13 +258,13 @@ test("billing shows direct receipt for both pending and reported bills, while op
   const render = (entry) => renderToStaticMarkup(React.createElement(loaded.exports.BillingForTest, { ...props, invoices: [entry] }));
   const own = render(invoice);
   assert.match(own, /回報已轉帳（選用）/);
-  assert.match(own, /登記收款/);
+  assert.match(own, /確認收款/);
   assert.doesNotMatch(own, /提醒繳費/);
   const others = render({ ...invoice, member_id: "someone-else" });
   assert.match(others, /提醒繳費/);
   assert.doesNotMatch(others, /回報已轉帳/);
-  assert.match(render({ ...invoice, status: "REPORTED" }), /登記收款/);
-  assert.doesNotMatch(render({ ...invoice, status: "CONFIRMED" }), /回報已轉帳|提醒繳費|登記收款/);
+  assert.match(render({ ...invoice, status: "REPORTED" }), /確認收款/);
+  assert.doesNotMatch(render({ ...invoice, status: "CONFIRMED" }), /回報已轉帳|提醒繳費|確認收款/);
 });
 const admin = { id: "admin", name: "社長", role: "ADMIN" };
 const member = { id: "member", name: "社員", role: "MEMBER" };
@@ -292,7 +292,7 @@ function database() {
     records.set(op.ref.path, next);
   };
   const reference = (pathname) => ({
-    path: pathname, id: pathname.split("/").at(-1),
+    path: pathname, id: pathname.split("/").at(-1), firestore: db,
     get: async () => snapshot(reference(pathname)),
     collection: (name) => query(pathname + "/" + name),
     create: async (data) => apply({ kind: "create", ref: reference(pathname), data }),
@@ -492,7 +492,7 @@ test("post-event guest settlement requires a complete staff decision, preserves 
   }
   s.db.seed("invoices/legacy-guest-bill", { eventId, memberId: "legacy", type: "SINGLE_EVENT", status: "PENDING", amount: 170 });
   const choices = [{ memberId: "billed", decision: "BILL" }, { memberId: "skipped", decision: "SKIP" }];
-  const publish = (decisions, actor) => s.mutate("publishGuestEventBills", { eventId, decisions: JSON.stringify(decisions) }, actor);
+  const publish = (decisions, actor) => s.mutate("publishGuestEventBills", { eventId, reviewedGuestFee: "190", decisions: JSON.stringify(decisions) }, actor);
   const before = s.db.entries("");
   await assert.rejects(publish(choices, member), /只有幹部/);
   assert.deepEqual(s.db.entries(""), before);
@@ -539,7 +539,7 @@ test("guest billing cannot charge a payer already covered by quarterly, prorated
     s.db.seed("events/" + eventId + "/bookings/" + id, { memberId: id, eventId, status: "REGULAR", kindSnapshot: "GUEST" });
     if (type) s.db.seed("invoices/cover-" + id, { memberId: id, type, status, eventId: null, eventIds: [eventId], grossAmount: 150, creditApplied: status === "CONFIRMED" ? 150 : 0, amount: status === "CONFIRMED" ? 0 : 150 });
   }
-  const publish = (ids) => s.mutate("publishGuestEventBills", { eventId, decisions: JSON.stringify(ids.map((memberId) => ({ memberId, decision: "BILL" }))) });
+  const publish = (ids) => s.mutate("publishGuestEventBills", { eventId, reviewedGuestFee: "180", decisions: JSON.stringify(ids.map((memberId) => ({ memberId, decision: "BILL" }))) });
   const before = s.db.entries("");
   for (const id of ["quarter", "prorated", "extra"]) await assert.rejects(publish([id, "unbilled"]), /名單已變更/);
   assert.deepEqual(s.db.entries(""), before);
@@ -557,7 +557,7 @@ test("a staff member can open a guest bill before or during an activity, but not
     s.db.seed(eventPath, { startsAt, endsAt: new Date(+startsAt + 7_200_000), status: phase === "cancelled" ? "CANCELLED" : "SCHEDULED", memberBilling: phase === "free" ? "FREE" : "NORMAL", guestFeeSnapshot: 180 });
     s.db.seed("members/g", { displayName: "球友", membershipStatus: "GUEST", creditBalance: 0 });
     s.db.seed(eventPath + "/bookings/g", { eventId, memberId: "g", kindSnapshot: "GUEST", status: "REGULAR" });
-    const publish = () => s.mutate("publishGuestEventBills", { eventId, decisions: JSON.stringify([{ memberId: "g", decision: "BILL" }]) });
+    const publish = () => s.mutate("publishGuestEventBills", { eventId, reviewedGuestFee: "180", decisions: JSON.stringify([{ memberId: "g", decision: "BILL" }]) });
     if (["free", "cancelled"].includes(phase)) {
       await assert.rejects(publish(), /不開立|沒有可開單/);
       assert.equal(s.db.entries("invoices/").length, 0);
@@ -582,7 +582,7 @@ test("cancelling advance guest bills restores credit or holds real cash for refu
     s.db.seed(eventPath, { startsAt, endsAt: new Date(+startsAt + 7_200_000), status: "SCHEDULED", guestFeeSnapshot: 180, regularCount: 0, standbyCount: 0 });
     s.db.seed("members/g", { displayName: guest.name, membershipStatus: "GUEST", creditBalance: 40 });
     const join = () => s.mutate("join", { eventId }, guest);
-    const publish = () => s.mutate("publishGuestEventBills", { eventId, decisions: JSON.stringify([{ memberId: guest.id, decision: "BILL" }]) });
+    const publish = () => s.mutate("publishGuestEventBills", { eventId, reviewedGuestFee: "180", decisions: JSON.stringify([{ memberId: guest.id, decision: "BILL" }]) });
     await join();
     await publish();
     const [invoicePath, original] = s.db.entries("invoices/")[0];
@@ -1215,7 +1215,7 @@ test("ordinary administrator profile shows own exit action and ignores another u
   assert.match(ownPending, /退出申請審核中/);
   assert.match(ownPending, /<button[^>]*disabled[^>]*>等待審核<\/button>/);
 });
-test("personal profile prioritizes three sections, states exactly when membership ends, and collapses detail", () => {
+test("personal profile prioritizes three sections, shows current identity without an end date, and collapses detail", () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
   const { AccountProfileForTest } = accountComponentsForTest();
@@ -1224,7 +1224,9 @@ test("personal profile prioritizes three sections, states exactly when membershi
   props.membershipRequests = [{ id: "own-approved", memberId: "admin", kind: "EXIT", status: "APPROVED", requestedAt: "2026-11-20T00:00:00Z" }];
   const html = renderToStaticMarkup(React.createElement(AccountProfileForTest, props));
   assert.match(html, /個人資料<\/h2>[\s\S]*我的會籍<\/h2>[\s\S]*登入與安全<\/h2>/);
-  assert.match(html, /社員身分有效至 2026\/11\/25/);
+  assert.match(html, /目前為社員/);
+  assert.match(html, /已排定退出/);
+  assert.doesNotMatch(html, /社員身分有效至|會籍即將結束|2026\/11\/25/);
   assert.doesNotMatch(html, /申請退出社員|還沒設定取回帳號的方式|原本的復原碼會立即失效/);
   assert.match(html, /<details class="account-disclosure"><summary>更多帳號資訊<\/summary>/);
   assert.match(html, /<details class="account-disclosure"><summary>申請紀錄<\/summary>/);
@@ -1283,7 +1285,7 @@ test("roster defaults to members and keeps guests and search results separate", 
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
   const member = { id: "member", name: "社員甲", role: "member", member: true, department: "共用部門" };
-  const exiting = { ...member, id: "exiting", name: "社員乙", membershipStatus: "EXITING" };
+  const exiting = { ...member, id: "exiting", name: "社員乙", membershipStatus: "EXITING", membershipEndingAt: "2026-12-31T15:59:59Z" };
   const guest = { ...member, id: "guest", name: "球友丙", member: false };
   const guest2 = { ...guest, id: "guest2", name: "球友丁", department: "另一部門" };
   const render = (state, admin = false) => {
@@ -1297,13 +1299,16 @@ test("roster defaults to members and keeps guests and search results separate", 
   assert.match(initial, /aria-pressed="true">社員/);
   assert.match(initial, /社員甲/);
   assert.match(initial, /社員乙/);
-  assert.match(initial, /本期後退出/);
-  assert.doesNotMatch(initial, /球友丙|球友丁|社員申請審核/);
+  assert.equal((initial.match(/badge green">社員<\/span>/g) ?? []).length, 2);
+  assert.doesNotMatch(initial, /本期後退出|會籍至|2026-12-31/);
+  assert.doesNotMatch(initial, /球友丙|球友丁|申請審核|一起上場的球友|查看現任社員或尚未入社的球友/);
+  assert.match(initial, /<h2 id="roster-title">社員名單<\/h2>/);
   const guestResults = render({ group: "guest", query: " 共用部門 " }, true);
   assert.match(guestResults, /aria-pressed="true">非社員/);
   assert.match(guestResults, /球友丙/);
   assert.doesNotMatch(guestResults, /社員甲|社員乙|球友丁/);
-  assert.match(guestResults, /社員申請審核/);
+  assert.match(guestResults, /roster-search-actions[\s\S]*?搜尋非社員[\s\S]*?<\/label><button[^>]*aria-label="申請審核，0 筆待審核"/);
+  assert.doesNotMatch(guestResults, /社員申請審核/);
   assert.match(guestResults, /aria-label="編輯 球友丙"/);
   assert.match(render({ group: "guest", query: "社員甲" }), /找不到符合「社員甲」的非社員/);
 });
@@ -1353,6 +1358,24 @@ test("approval during billing generation prorates remaining sessions and never o
   assert.ok(memberBill.dueAt > s.date(13));
   await s.mutate("createQuarterlyInvoices", { planId: "current", dueDate: s.day(9) });
   assert.equal(s.db.entries("invoices/").filter(([, item]) => item.memberId === "visitor" && item.status === "PENDING").length, 1);
+});
+
+test("pausing a badminton session stops new join charges while an already approved quarterly batch finishes", async () => {
+  const s = membershipBillingFixture("GENERATING");
+  const prior = s.db.data("events/future");
+  const startsAt = new Date(s.day(3) + "T18:00:00+08:00");
+  const endsAt = new Date(s.day(3) + "T20:00:00+08:00");
+  s.db.seed("events/future", { ...prior, startsAt, endsAt, courts: "A 場" });
+  await s.mutate("updateEvent", {
+    eventId: "future", startsAt: startsAt.toISOString(), endsAt: endsAt.toISOString(),
+    courts: "A 場", regularCapacity: "10", standbyCapacity: "4", memberBilling: "FREE",
+  });
+  await s.approve(s.visitor, "JOIN");
+  assert.equal(s.db.entries("invoices/membership-").length, 0);
+  await s.mutate("createQuarterlyInvoices", { planId: "current", dueDate: s.day(9) });
+  assert.deepEqual(s.db.data("invoices/quarter-current-member").eventIds, ["past", "future"]);
+  assert.equal(s.db.data("invoices/quarter-current-member").grossAmount, 300);
+  assert.equal(s.db.entries("invoices/").filter(([, item]) => item.memberId === "visitor").length, 0);
 });
 
 test("approved exit cancels future member slots and prevents charges even if next quarter was planned first", async () => {
@@ -1456,7 +1479,7 @@ test("manual activity prices are saved per event, drive later invoices, and do n
   assert.equal(s.db.entries("feeRates/").length, 0);
   s.db.seed("members/price-guest", { displayName: "費率球友", accountName: "price-guest", membershipStatus: "GUEST", role: "MEMBER", creditBalance: 0 });
   s.db.seed("events/" + custom.eventId + "/bookings/price-guest", { memberId: "price-guest", kindSnapshot: "GUEST", status: "REGULAR" });
-  await s.mutate("publishGuestEventBills", { eventId: custom.eventId, decisions: JSON.stringify([{ memberId: "price-guest", decision: "BILL" }]) });
+  await s.mutate("publishGuestEventBills", { eventId: custom.eventId, reviewedGuestFee: "310", decisions: JSON.stringify([{ memberId: "price-guest", decision: "BILL" }]) });
   const fee = s.db.entries("invoices/").map(([, data]) => data).find((data) => data.type === "SINGLE_EVENT");
   assert.equal(fee.grossAmount, 310);
   await s.createPeriod([custom.eventId]);
@@ -1484,8 +1507,17 @@ test("event fee edits update unissued draft amounts and preserve the issued fee 
   assert.equal(s.db.entries("invoices/").length, 0);
   await s.bill();
   assert.equal(s.db.data(s.invoicePath).grossAmount, 220);
-  await assert.rejects(update({ memberBilling: "FREE" }), /已有帳單/);
-  await assert.rejects(update({ memberAmount: "221" }), /社員費已開單/);
+  const issued = s.db.data(s.invoicePath);
+  const billedPeriod = s.db.data(draftPath);
+  await update({ memberBilling: "FREE" });
+  const paused = (await s.readState(admin)).events.find((event) => event.id === eventId);
+  assert.deepEqual([paused.member_billing, paused.billing_paused, paused.quarter_eligible, paused.member_fee, paused.guest_fee], ["FREE", true, false, 0, 0]);
+  assert.deepEqual([paused.member_list_rate, paused.guest_list_rate], [220, 260]);
+  assert.deepEqual(s.db.data(s.invoicePath), issued);
+  assert.deepEqual(s.db.data(draftPath), billedPeriod);
+  await assert.rejects(s.mutate("previewGuestEventBills", { eventId, decisions: JSON.stringify([{ memberId: "guest", decision: "BILL" }]) }), /不開立帳單/);
+  await assert.rejects(update({ memberBilling: "NORMAL", memberAmount: "221" }), /社員費已開單/);
+  await update({ memberBilling: "NORMAL" });
   await update({ guestAmount: "300" });
   assert.equal(s.db.data(eventPath).guestFeeSnapshot, 300);
   assert.equal(s.db.data(s.invoicePath).grossAmount, 220);
@@ -1500,9 +1532,9 @@ test("editing a free event can restore prices and setting it free removes its un
   const update = (fees) => s.mutate("updateEvent", { ...input, eventId, ...fees });
   await update({ memberBilling: "FREE" });
   const path = "events/" + eventId;
-  assert.equal(s.db.data(path).memberBilling, "FREE");
-  assert.equal(s.db.data(path).memberFeeSnapshot, 0);
-  assert.equal(s.db.data(path).guestFeeSnapshot, 0);
+  assert.equal(s.db.data(path).billingPaused, true);
+  assert.equal(s.db.data(path).memberFeeSnapshot, 150);
+  assert.equal(s.db.data(path).guestFeeSnapshot, 180);
   assert.deepEqual(s.db.data("billingPeriods/quarter-test-plan").eventIds, []);
   await update({ memberBilling: "NORMAL", memberAmount: "190", guestAmount: "200" });
   assert.equal(s.db.data(path).memberBilling, "NORMAL");
@@ -1510,9 +1542,244 @@ test("editing a free event can restore prices and setting it free removes its un
   assert.equal(s.db.data(path).guestFeeSnapshot, 200);
   assert.equal(s.db.entries("invoices/").length, 0);
   s.db.seed("invoices/guest-edit-lock", { eventId, type: "SINGLE_EVENT", status: "PENDING" });
-  await assert.rejects(update({ memberBilling: "FREE" }), /已有帳單/);
-  await assert.rejects(update({ guestAmount: "201" }), /非社員費已開單/);
+  await update({ memberBilling: "FREE" });
+  await assert.rejects(update({ memberBilling: "NORMAL", guestAmount: "201" }), /非社員費已開單/);
+  await update({ memberBilling: "NORMAL" });
   await update({ memberAmount: "205" });
   assert.equal(s.db.data(path).memberFeeSnapshot, 205);
   assert.equal(s.db.data(path).guestFeeSnapshot, 200);
+});
+
+test("guest billing requires the price shown at confirmation and does not double issue on retry", async () => {
+  const s = setup();
+  const eventId = "changed-guest-price";
+  const path = "events/" + eventId;
+  const startsAt = new Date(Date.now() + 3_600_000);
+  s.db.seed(path, { startsAt, endsAt: new Date(+startsAt + 3_600_000), status: "SCHEDULED", guestFeeSnapshot: 180 });
+  for (const memberId of ["guest-a", "guest-b"]) {
+    s.db.seed("members/" + memberId, { displayName: memberId, membershipStatus: "GUEST", creditBalance: 25 });
+    s.db.seed(path + "/bookings/" + memberId, { memberId, kindSnapshot: "GUEST", status: "REGULAR" });
+  }
+  const decisions = JSON.stringify(["guest-a", "guest-b"].map((memberId) => ({ memberId, decision: "BILL" })));
+  const confirm = (reviewedGuestFee) => s.mutate("publishGuestEventBills", { eventId, decisions, reviewedGuestFee });
+  s.db.seed(path, { ...s.db.data(path), guestFeeSnapshot: 220 });
+  const before = s.db.entries("");
+  await assert.rejects(confirm("180"), /零打費已變更/);
+  await assert.rejects(confirm(undefined), /零打費已變更/);
+  assert.deepEqual(s.db.entries(""), before);
+  assert.deepEqual(await confirm("220"), { issued: 2, skipped: 0 });
+  assert.equal(s.db.entries("invoices/").reduce((sum, [, bill]) => sum + bill.grossAmount, 0), 440);
+  const after = s.db.entries("");
+  assert.deepEqual(await confirm("220"), { issued: 0, skipped: 0 });
+  assert.deepEqual(s.db.entries(""), after);
+});
+
+test("calendar guest review is read-only, supports leaving people pending, and accounts for earlier reviewed charges", async () => {
+  const s = setup();
+  const startsAt = new Date(Date.now() + 3_600_000);
+  const endsAt = new Date(+startsAt + 3_600_000);
+  for (const [memberId, creditBalance] of [["payer", 100], ["waived", 0], ["later", 0]]) {
+    s.db.seed("members/" + memberId, { displayName: memberId, membershipStatus: "GUEST", creditBalance });
+    for (const eventId of ["early", "later"]) {
+      s.db.seed("events/" + eventId, { startsAt, endsAt, status: "SCHEDULED", guestFeeSnapshot: 180 });
+      s.db.seed(`events/${eventId}/bookings/${memberId}`, { memberId, kindSnapshot: "GUEST", status: "REGULAR" });
+    }
+  }
+  const input = (eventId) => ({ eventId, reviewedGuestFee: "180", decisions: JSON.stringify([
+    { memberId: "payer", decision: "BILL" }, { memberId: "waived", decision: "SKIP" },
+  ]) });
+  const before = s.db.entries("");
+  const first = await s.mutate("previewGuestEventBills", input("early"));
+  const second = await s.mutate("previewGuestEventBills", { ...input("later"), priorCredit: JSON.stringify([["payer", 100]]) });
+  assert.equal(first.totalAmount, 80);
+  assert.equal(second.totalAmount, 180);
+  assert.deepEqual(s.db.entries(""), before);
+  await assert.rejects(s.mutate("publishGuestEventBills", { ...input("later"), previewKey: second.previewKey, priorCredit: JSON.stringify([["payer", 100]]) }), /餘額已變更/);
+  assert.deepEqual(s.db.entries(""), before);
+  assert.deepEqual(await s.mutate("publishGuestEventBills", { ...input("early"), previewKey: first.previewKey }), { issued: 1, skipped: 1, totalAmount: 80 });
+  assert.deepEqual(await s.mutate("publishGuestEventBills", { ...input("later"), previewKey: second.previewKey }), { issued: 1, skipped: 1, totalAmount: 180 });
+  assert.deepEqual(s.db.data("events/later").guestSettlements.map((entry) => entry.memberId), ["payer", "waived"]);
+  assert.deepEqual(s.db.entries("invoices/").map(([, bill]) => bill.amount).sort((a, b) => a - b), [80, 180]);
+  assert.equal(s.db.entries("balanceMovements/").reduce((total, [, movement]) => total + movement.amount, 0), -100);
+  assert.equal(s.db.data("members/payer").creditBalance, 0);
+});
+
+test("calendar quarter is quoted without a draft and only opens a still-matching selection", async () => {
+  const s = setup();
+  const startsAt = new Date(Date.now() + 3 * 86_400_000);
+  const endsAt = new Date(+startsAt + 3_600_000);
+  const day = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(startsAt);
+  const eventId = "review-quarter-event";
+  const eventPath = "events/" + eventId;
+  s.db.seed(eventPath, { startsAt, endsAt, courts: "試打球場", status: "SCHEDULED", memberBilling: "NORMAL", memberFeeSnapshot: 170 });
+  s.db.seed("members/quarter-payer", { displayName: "預繳社員", membershipStatus: "MEMBER", membershipStartedAt: new Date(0), creditBalance: 10 });
+  const input = { periodId: "calendar-new-quarter", label: "測試季費", startDate: day, endDate: day, dueDate: day, eventIds: JSON.stringify([eventId]) };
+  const before = s.db.entries("");
+  const quote = await s.mutate("previewCalendarQuarter", input);
+  assert.ok(quote.rows.some((row) => row.memberId === "quarter-payer" && row.amount === 160)); // No booking is necessary.
+  assert.deepEqual(s.db.entries(""), before);
+  s.db.seed(eventPath, { ...s.db.data(eventPath), memberFeeSnapshot: 210 });
+  const changed = s.db.entries("");
+  await assert.rejects(s.mutate("publishCalendarQuarter", { ...input, previewKey: quote.previewKey }), /已變更/);
+  assert.deepEqual(s.db.entries(""), changed);
+  const fresh = await s.mutate("previewCalendarQuarter", input);
+  const receipt = await s.mutate("publishCalendarQuarter", { ...input, previewKey: fresh.previewKey });
+  assert.equal(receipt.totalAmount, fresh.totalAmount);
+  assert.equal(s.db.data("billingPeriods/quarter-calendar-new-quarter").status, "ACTIVE");
+  await assert.rejects(s.mutate("publishCalendarQuarter", { ...input, previewKey: fresh.previewKey }), /不能編輯/);
+  assert.equal(s.db.entries("invoices/").length, receipt.invoiceCount);
+});
+
+test("approved join replaces only unpaid upcoming guest bills and preserves paid and reported records", async () => {
+  const s = membershipBillingFixture("ACTIVE");
+  const base = s.db.data("events/future");
+  const add = (id, day, mode, amount) => s.db.seed("events/" + id, {
+    ...base, id, startsAt: s.date(day), endsAt: s.date(day + 0.1), memberBilling: mode, memberFeeSnapshot: amount,
+  });
+  add("standalone", 4, "NORMAL", 135);
+  add("reported", 5, "NORMAL", 150);
+  add("paid", 6, "NORMAL", 150);
+  add("free", 7, "FREE", 0);
+  add("not-extra", 8, "NO_CHARGE", 0);
+  add("no-old-bill", 9, "NORMAL", 150);
+  for (const [eventId, status, credit] of [
+    ["past", "PENDING", 0], ["future", "PENDING", 0], ["standalone", "PENDING", 20],
+    ["reported", "REPORTED", 0], ["paid", "CONFIRMED", 0], ["free", "PENDING", 0], ["not-extra", "PENDING", 0],
+  ]) {
+    const id = "old-" + eventId;
+    s.db.seed("invoices/" + id, { id, memberId: "visitor", eventId, type: "SINGLE_EVENT", grossAmount: 180, creditApplied: credit, amount: 180 - credit, status, ...(status === "CONFIRMED" ? { receipt: { amount: 180, method: "CASH" } } : {}) });
+  }
+  const paid = s.db.data("invoices/old-paid");
+  const reported = s.db.data("invoices/old-reported");
+  const past = s.db.data("invoices/old-past");
+  const approval = await s.approve(s.visitor, "JOIN");
+  assert.equal(approval.replacedGuestBillCount, 4);
+  assert.equal(approval.singleInvoiceCount, 1);
+  assert.equal(approval.amount, 265);
+  assert.deepEqual(s.db.data("invoices/old-paid"), paid);
+  assert.deepEqual(s.db.data("invoices/old-reported"), reported);
+  assert.deepEqual(s.db.data("invoices/old-past"), past);
+  for (const event of ["future", "standalone", "free", "not-extra"]) assert.equal(s.db.data("invoices/old-" + event).status, "VOID");
+  const replacement = s.db.entries("invoices/member-join-").map(([, row]) => row)[0];
+  assert.equal(replacement.type, "MEMBER_SINGLE");
+  assert.equal(replacement.grossAmount, 135);
+  assert.equal(s.db.data("invoices/old-standalone").replacedById, replacement.id);
+  assert.equal(replacement.replacementOfId, "old-standalone");
+  const [quarter] = s.db.entries("invoices/membership-").map(([, row]) => row);
+  assert.deepEqual(quarter.eventIds, ["future"]);
+  assert.equal(quarter.creditApplied + replacement.creditApplied, 20);
+  assert.equal(s.db.data("members/visitor").creditBalance, 0);
+  const adminState = await s.readState(admin);
+  assert.equal(adminState.events.find((event) => event.id === "standalone").quarter_eligible, true);
+  assert.equal(adminState.invoices.find((bill) => bill.id === replacement.id).amount, 135);
+  const [request] = s.db.entries("membershipRequests/").find(([, row]) => row.memberId === "visitor");
+  assert.equal(await s.mutate("reviewMembershipRequest", { requestId: request.split("/").pop(), decision: "APPROVE" }), undefined);
+  assert.equal(s.db.entries("invoices/member-join-").length, 1);
+  await s.mutate("recordInvoiceReceipts", receiptRequest([{ id: replacement.id, amount: 135 }]));
+  assert.equal(s.db.data("invoices/" + replacement.id).status, "CONFIRMED");
+});
+
+test("an unpaid guest bill covered by a quarterly draft is not replaced with a separate charge", async () => {
+  const s = membershipBillingFixture("PLANNED");
+  s.db.seed("invoices/guest-draft", { memberId: "visitor", eventId: "future", type: "SINGLE_EVENT", grossAmount: 180, creditApplied: 20, amount: 160, status: "PENDING" });
+  const approval = await s.approve(s.visitor, "JOIN");
+  assert.equal(approval.singleInvoiceCount, 0);
+  assert.equal(s.db.data("invoices/guest-draft").status, "VOID");
+  assert.equal(s.db.data("members/visitor").creditBalance, 20);
+  const input = { planId: "current", dueDate: s.day(9) };
+  const quote = await s.mutate("previewQuarterlyInvoices", input);
+  assert.deepEqual(quote.rows.find((row) => row.memberId === "visitor").eventIds, ["future"]);
+  assert.equal(quote.rows.find((row) => row.memberId === "visitor").amount, 130);
+});
+
+test("guest bill history locks its rate but never blocks the activity billing switch", async () => {
+  const s = setup();
+  const date = s.rules.startDate;
+  const input = { startsAt: date + "T18:00:00+08:00", endsAt: date + "T20:00:00+08:00", courts: "收費切換", regularCapacity: "10", standbyCapacity: "0" };
+  const { eventId } = await s.mutate("createEvent", input);
+  const eventPath = "events/" + eventId;
+  const billPath = "invoices/guest-lock-edit";
+  const event = s.db.data(eventPath);
+  const settlement = { memberId: "guest-rate", status: "ISSUED", amount: 180 };
+  const bill = { type: "SINGLE_EVENT", eventId, memberId: settlement.memberId, grossAmount: 180, creditApplied: 0, amount: 180 };
+  s.db.seed(eventPath, { ...event, status: undefined, guestSettlements: [settlement] });
+  const locks = async () => (await s.readState(admin)).events.find((event) => event.id === eventId).billing_locks;
+  const edit = (fields) => s.mutate("updateEvent", { ...input, eventId, ...fields });
+  assert.deepEqual(await locks(), { member: false, guest: true });
+  await edit({ memberBilling: "FREE" });
+  await edit({ memberBilling: "NORMAL" });
+  for (const status of ["PENDING", "REPORTED", "CONFIRMED"]) {
+    s.db.seed(billPath, { ...bill, status });
+    assert.deepEqual(await locks(), { member: false, guest: true });
+    await edit({ memberBilling: "FREE" });
+    assert.equal(s.db.data(eventPath).billingPaused, true);
+    assert.deepEqual(s.db.data(billPath), { ...bill, status });
+    await assert.rejects(edit({ memberBilling: "NORMAL", guestAmount: "181" }), /非社員費已開單/);
+    await edit({ memberBilling: "NORMAL" });
+  }
+  const history = { ...bill, status: "VOID", cancellationReason: "MEMBERSHIP_JOIN" };
+  s.db.seed(billPath, history);
+  assert.deepEqual(await locks(), { member: false, guest: false });
+  await edit({ memberBilling: "FREE", memberAmount: "", guestAmount: "" });
+  assert.equal(s.db.data(eventPath).billingPaused, true);
+  assert.equal(s.db.data(eventPath).standbyCapacity, 0);
+  await edit({ memberBilling: "NORMAL", memberAmount: "200", guestAmount: "240" });
+  assert.equal(s.db.data(eventPath).memberFeeSnapshot, 200);
+  assert.equal(s.db.data(eventPath).guestFeeSnapshot, 240);
+  assert.deepEqual(s.db.data(billPath), history);
+});
+
+test("other activities can switch to paid and bill only registered regular players at their own rate", async () => {
+  const s = setup(20);
+  const date = s.rules.startDate;
+  const times = { startsAt: date + "T18:00:00+08:00", endsAt: date + "T20:00:00+08:00", courts: "桌遊", regularCapacity: "2", standbyCapacity: "1", eventKind: "OTHER" };
+  const { eventId } = await s.mutate("createEvent", { ...times, memberBilling: "FREE" });
+  const eventPath = "events/" + eventId;
+  const edit = (mode, memberAmount = "100", guestAmount = "160") => s.mutate("updateEvent", { ...times, eventId, memberBilling: mode, memberAmount, guestAmount });
+  const payload = (ids) => ({ eventId, reviewedMemberFee: "100", reviewedGuestFee: "160", decisions: JSON.stringify(ids.map(memberId => ({memberId, decision: "BILL"}))) });
+  const quote = (ids) => s.mutate("previewGuestEventBills", payload(ids));
+  assert.equal(s.db.entries(eventPath + "/bookings/").length, 0);
+  for (const id of ["guest", "standby", "not-registered"]) s.db.seed("members/" + id, { displayName: id, role: "MEMBER", membershipStatus: "GUEST", creditBalance: 0 });
+  await s.mutate("join", { eventId }, member);
+  await s.mutate("join", { eventId }, { id: "guest", name: "guest", role: "MEMBER" });
+  await s.mutate("join", { eventId }, { id: "standby", name: "standby", role: "MEMBER" });
+  assert.equal(s.db.data(eventPath + "/bookings/standby").status, "STANDBY");
+  await assert.rejects(quote(["member"]), /不開立帳單/);
+  await edit("NORMAL");
+  assert.equal(s.db.data(eventPath).memberFeeSnapshot, 100);
+  await edit("FREE");
+  assert.equal(s.db.data(eventPath).guestFeeSnapshot, 160);
+  await edit("NORMAL");
+  const sameDayBadminton = await s.mutate("createEvent", { ...times, eventKind: "BADMINTON" });
+  const period = await s.createPeriod([sameDayBadminton.eventId, eventId]);
+  assert.deepEqual(period.skippedEventIds, [eventId]);
+  assert.equal((await s.readState(admin)).events.find(e => e.id === eventId).quarter_eligible, false);
+  await assert.rejects(quote(["standby"]), /名單已變更/);
+  await assert.rejects(quote(["not-registered"]), /名單已變更/);
+  const opening = payload(["member", "guest"]);
+  const preview = await quote(["member", "guest"]);
+  assert.deepEqual(preview.rows.map(r => [r.memberId, r.payerKind, r.grossAmount, r.amount]), [["guest", "GUEST", 160, 160], ["member", "MEMBER", 100, 80]]);
+  assert.equal(preview.totalAmount, 240);
+  assert.equal(s.db.entries("invoices/").length, 0);
+  await assert.rejects(s.mutate("publishGuestEventBills", opening), /先核對/);
+  await edit("NORMAL", "105");
+  await assert.rejects(s.mutate("publishGuestEventBills", { ...opening, previewKey: preview.previewKey }), /活動費用已變更/);
+  await edit("NORMAL");
+  const fresh = await quote(["member", "guest"]);
+  const action = { ...opening, previewKey: fresh.previewKey };
+  assert.deepEqual(await s.mutate("publishGuestEventBills", action), { issued: 2, skipped: 0, totalAmount: 240 });
+  assert.equal(s.db.data("members/member").creditBalance, 0);
+  await assert.rejects(s.mutate("publishGuestEventBills", action), /重新核對/);
+  const current = s.db.entries("invoices/");
+  await edit("FREE");
+  await assert.rejects(quote(["guest"]), /不開立帳單/);
+  assert.deepEqual(s.db.entries("invoices/"), current);
+  await edit("NORMAL");
+  assert.deepEqual(s.db.entries("invoices/"), current);
+  const rows = s.db.entries("invoices/").map(([,bill])=>bill);
+  assert.deepEqual(rows.map(bill => [bill.memberId, bill.type, bill.periodLabel]).sort(), [["guest", "SINGLE_EVENT", "單場活動費"], ["member", "MEMBER_SINGLE", "單場活動費"]]);
+  assert.equal(rows.every(bill => bill.eventId === eventId && !bill.periodId), true);
+  await s.mutate("cancel", { eventId }, member);
+  assert.equal(s.db.data("invoices/" + rows.find(bill=>bill.memberId==="member").id).status, "VOID");
+  assert.equal(s.db.data("members/member").creditBalance, 20);
 });

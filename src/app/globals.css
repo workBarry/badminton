@@ -2548,15 +2548,13 @@ dialog.event-dialog {
   border-radius: 18px;
   background: #fff;
 }
-.roster-header, .roster-controls, .roster-results {
+.roster-controls, .roster-results {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
 }
-.roster-header h2 { margin: 0; font-size: 20px; }
-.roster-header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
 .roster-controls { align-items: end; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
 .roster-switch {
   display: flex;
@@ -2591,9 +2589,11 @@ dialog.event-dialog {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
-.roster-search { display: grid; gap: 5px; width: min(100%, 290px); color: var(--muted); font-size: 12px; }
-.roster-search input { width: 100%; min-height: 44px; padding: 9px 12px; }
-.roster-results h3 { margin: 0; font-size: 16px; }
+.roster-search-actions { display: flex; align-items: flex-end; gap: 8px; flex: 1 1 290px; min-width: 0; max-width: 420px; }
+.roster-search { display: grid; gap: 5px; flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: 12px; }
+.roster-search-actions .member-review-trigger { display: inline-flex; align-items: center; flex: none; gap: 6px; min-height: 44px; padding-inline: 10px; white-space: nowrap; }
+.roster-search input { width: 100%; min-width: 0; min-height: 44px; padding: 9px 12px; }
+.roster-results h2 { margin: 0; font-size: 16px; }
 .roster-results > span, .roster-person > span, .roster-person small { color: var(--muted); font-size: 12px; }
 .roster-grid {
   display: grid;
@@ -2634,7 +2634,7 @@ dialog.event-dialog {
   .roster-grid { grid-template-columns: minmax(0, 1fr); }
   .roster-controls > * { width: 100%; }
   .roster-switch button { flex: 1 1 0; }
-  .roster-header .member-review-trigger { min-height: 44px; }
+  .roster-search-actions { max-width: none; flex-basis: 100%; }
 }
 .membership-join-cta {
   display: flex;
@@ -3410,8 +3410,22 @@ dialog.event-dialog {
 .header-actions .calendar-quarter-toggle { white-space:nowrap; }
 .header-actions .calendar-quarter-toggle[aria-pressed="true"] { background:#e1f1e9; color:#164f3e; border-color:#77a895; }
 @media (max-width:600px) {
-  .header-actions:has(.calendar-quarter-toggle) { display:flex; flex-wrap:wrap; gap:6px; }
-  .header-actions:has(.calendar-quarter-toggle) > button { min-height:40px; }
+  .app > main > header.activity-page-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 6px;
+  }
+  .activity-page-header h1 { white-space: nowrap; }
+  .activity-page-header .header-actions {
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .activity-page-header .header-actions > button {
+    min-height: 44px;
+    padding-inline: clamp(6px, 2.2vw, 12px);
+    font-size: 12px;
+    white-space: nowrap;
+  }
 }
 
 .calendar-day-event { display:grid; gap:2px; min-width:0; max-width:100%; margin-top:5px; color:#2e6858; }
@@ -3498,3 +3512,68 @@ dialog.event-dialog {
 .new-event-fee-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .new-event-fee-fields input { width: 100%; min-width: 0; }
 .new-event-fee-preview .form-note { margin-top: 4px; }
+
+/* Calendar billing: one review, with independently expandable details. */
+dialog.issue-review {
+  width: min(620px, calc(100% - 24px));
+  max-height: min(88dvh, 760px);
+  padding: 0;
+  overflow: hidden;
+  border-radius: 20px;
+}
+dialog.issue-review[open] { display: flex; flex-direction: column; }
+.issue-review-header, .issue-review-body, .issue-review-footer { padding: 16px 22px; }
+.issue-review-header { position: relative; border-bottom: 1px solid var(--line, #e4eae5); }
+.issue-review-header > span, .issue-review-group small, .issue-review-footer small { color: var(--muted); font-size: .8rem; }
+.issue-review-header h2 { margin: 4px 0 0; }
+.issue-review-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; gap: 10px; }
+.issue-review-group { min-width: 0; border: 1px solid var(--line, #e4eae5); border-radius: 12px; }
+.issue-review-group > summary { list-style: none; display: flex; align-items: center; gap: 12px; padding: 12px; min-height: 50px; cursor: pointer; }
+.issue-review-group > summary::-webkit-details-marker { display: none; }
+.issue-review-group > summary::after { content: "›"; font-size: 1.4rem; line-height: 1; color: var(--green); }
+.issue-review-group[open] > summary::after { transform: rotate(90deg); }
+.issue-review-group > summary > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.issue-review-group > summary small, .issue-review-footer small { display: block; }
+.issue-review-metrics { margin-left: auto; text-align: right; font-size: .875rem; color: var(--green); flex-shrink: 0; }
+.issue-review-detail { padding: 12px; border-top: 1px solid var(--line, #e4eae5); display: grid; gap: 10px; }
+.issue-review-event + .issue-review-event { border-top: 1px solid var(--line, #e4eae5); padding-top: 10px; }
+.issue-review-event h3 { margin: 0 0 4px; font-size: .875rem; overflow-wrap: anywhere; }
+.issue-review-roster { padding: 0; margin: 0; display: grid; list-style: none; }
+.issue-review-roster li { min-width: 0; display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 42px; padding: 4px 0; border-bottom: 1px solid var(--line, #e4eae5); }
+.issue-review-roster li > :first-child { min-width: 0; overflow-wrap: anywhere; }
+.issue-review-roster li small { display: block; }
+.issue-review-roster li > strong { white-space: nowrap; }
+.issue-check { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; }
+.issue-check input { width: 18px; height: 18px; flex-shrink: 0; accent-color: var(--green); }
+.issue-due { display: grid; gap: 4px; font-size: .875rem; }
+.issue-review :is(select, .issue-due input) { padding: 6px 8px; border: 1px solid var(--line, #e4eae5); border-radius: 8px; background: white; color: inherit; max-width: 100%; min-height: 36px; }
+.issue-review-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line, #e4eae5); }
+.issue-review-footer .primary { flex-shrink: 0; min-height: 44px; }
+.issue-review-result { margin: 0; padding: 10px; border-radius: 8px; background: #e3f4ea; }
+.issue-review-hint { padding: 0 22px 12px; color: var(--muted); font-size: .8rem; }
+@media (max-width: 600px) {
+  dialog.issue-review { max-height: 90dvh; }
+  .issue-review-header, .issue-review-body, .issue-review-footer { padding: 12px 14px; }
+  .issue-review-footer { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+  .issue-review-hint { padding-inline: 14px; }
+}
+
+.event-dialog-roster li.event-roster-link-row { padding: 0; }
+.event-roster-invoice-link {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #d3e4f3;
+  border-radius: inherit;
+  background: #f4f9fd;
+  color: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.event-roster-invoice-link:hover { background: #eaf4ff; }
+.event-roster-link-arrow { color: #315d85; font-size: 18px; line-height: 1; }

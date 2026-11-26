@@ -36,7 +36,7 @@ type HistoryInput = {
   events: HistoryDocument[];
 };
 
-const CHARGE_TYPES = new Set(["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "SINGLE_EVENT", "MEMBER_EXTRA"]);
+const CHARGE_TYPES = new Set(["QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "SINGLE_EVENT", "MEMBER_EXTRA", "MEMBER_SINGLE"]);
 
 function text(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -216,11 +216,13 @@ export function buildBalanceHistory(input: HistoryInput): MemberBalanceHistory {
       const voidRecord = records.find((record) => record.kind === "VOID" && (amount(record.restoredCredit) ?? 0) > 0);
       if (voidRecord) {
         legacy(id, invoice, `invoice:${id}:void`, amount(voidRecord.restoredCredit)!, text(voidRecord.reason) ?? "帳單作廢，退還抵用餘額", timestamp(voidRecord.createdAt) ?? timestamp(invoice.voidedAt), voidRecord);
-      } else if (["SINGLE_EVENT", "MEMBER_EXTRA"].includes(String(invoice.type)) && invoice.cancellationReason !== "ADMIN_VOID" && !invoice.replacedById && applied > 0) {
+      } else if (invoice.cancellationReason === "MEMBERSHIP_JOIN" && applied > 0) {
+        legacy(id, invoice, `invoice:${id}:membership-join`, applied, "入社後退回原零打抵扣", timestamp(invoice.voidedAt ?? invoice.updatedAt));
+      } else if (["SINGLE_EVENT", "MEMBER_EXTRA", "MEMBER_SINGLE"].includes(String(invoice.type)) && invoice.cancellationReason !== "ADMIN_VOID" && !invoice.replacedById && applied > 0) {
         const key = invoice.cancellationReason === "EVENT_CANCELLED" ? "event-cancel" : "cancel";
         legacy(id, invoice, `invoice:${id}:${key}`, applied, key === "event-cancel" ? "活動取消，退還抵用餘額" : "取消報名，退還抵用餘額", timestamp(invoice.cancelledAt));
       }
-    } else if (invoice.status === "CREDITED" && ["SINGLE_EVENT", "MEMBER_EXTRA"].includes(String(invoice.type))) {
+    } else if (invoice.status === "CREDITED" && ["SINGLE_EVENT", "MEMBER_EXTRA", "MEMBER_SINGLE"].includes(String(invoice.type))) {
       const returned = amount(invoice.grossAmount) ?? amount(invoice.amount) ?? 0;
       const key = invoice.cancellationReason === "EVENT_CANCELLED" ? "event-cancel" : "cancel";
       if (returned > 0) legacy(id, invoice, `invoice:${id}:${key}`, returned, key === "event-cancel" ? "活動取消，費用退回餘額" : "取消報名，費用退回餘額", timestamp(invoice.cancelledAt));
