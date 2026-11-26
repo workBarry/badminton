@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { activityPayments, billingSummary, invoiceEventLines, invoiceInRange, isOpen, isPaidForEvent, isPrincipal, referencesEvent, taipeiDay, type BillingActivity, type InvoiceSchedule, type ManagedInvoice } from "@/lib/billing-view";
+import { activityPayments, billingSummary, groupInvoicesByMember, invoiceEventLines, invoiceInRange, isOpen, isPaidForEvent, isPrincipal, referencesEvent, taipeiDay, type BillingActivity, type InvoiceSchedule, type ManagedInvoice } from "@/lib/billing-view";
 
 type ActionResult = { results?: { id: string; success: boolean; error?: string }[]; status?: string; invoiceId?: string; recorded?: number; alreadyRecorded?: number; totalAmount?: number };
 export type BillingProps = {
@@ -30,6 +30,11 @@ const invoiceStatusLabel = (invoice: ManagedInvoice) => invoice.refund_completed
   : labels[invoice.status] ?? invoice.status;
 const receiptMethod = (method?: string | null) => method === "CASH" ? "現金" : method === "BANK" ? "轉帳" : "";
 function schedule(value?: string | null) { return value ? new Date(value).toLocaleString("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "日期未設定"; }
+function singleEventLabel(invoice: ManagedInvoice) {
+  if (invoice.event_schedules?.length !== 1 || (invoice.event_ids?.length ?? 0) > 1) return "";
+  const event = invoice.event_schedules[0];
+  return [event.starts_at ? schedule(event.starts_at) : "", event.courts].filter(Boolean).join(" · ");
+}
 function scheduleDescription(event?: InvoiceSchedule) {
   if (!event) return "日期未設定";
   const { starts_at: start, ends_at: end, courts } = event;
@@ -91,6 +96,26 @@ function BillingMore({ label = "更多", description, children }: { label?: stri
   </div>;
 }
 
+type InvoiceGroup = ReturnType<typeof groupInvoicesByMember>[number];
+function PersonGroups({ groups, renderRow, total }: {
+  groups: InvoiceGroup[];
+  renderRow: (invoice: ManagedInvoice) => ReactNode;
+  total?: (invoices: ManagedInvoice[]) => string | null;
+}) {
+  return <div className="billing-person-groups">
+    {groups.map((group) => {
+      const subtotal = total?.(group.invoices);
+      return <details className="billing-person-group" key={group.id} open={groups.length === 1}>
+        <summary>
+          <span className="billing-person-identity"><strong>{group.name}</strong>{group.accountName && <small>{group.accountName}</small>}</span>
+          <span className="billing-person-totals">{subtotal && <strong>{subtotal}</strong>}<small>{group.invoices.length} 筆</small></span>
+        </summary>
+        <div className="billing-person-bills">{group.invoices.map(renderRow)}</div>
+      </details>;
+    })}
+  </div>;
+}
+
 export default function BillingDashboard(props: BillingProps) {
   const { admin, viewer, saving, events = [], manage } = props;
   const invoices = admin ? props.invoices : props.invoices.filter((invoice) => invoice.member_id === viewer.id);
@@ -129,6 +154,7 @@ export default function BillingDashboard(props: BillingProps) {
   const outside = invoices.filter((invoice) => !inRange(invoice) && isOpen(invoice));
   const queue = filtered.filter((invoice) => isOpen(invoice) && (queueFilter === "ALL" || invoice.status === "REPORTED"))
     .sort((a, b) => Number(b.status === "REPORTED") - Number(a.status === "REPORTED") || String(a.due_at ?? "9999").localeCompare(String(b.due_at ?? "9999")));
+  const queueGroups = admin ? groupInvoicesByMember(queue) : [];
   const selected = queue.filter((invoice) => selectedIds.includes(invoice.id) && collectable(invoice));
   const totalPending = summary.unpaidAmount + summary.reportedAmount;
   const refunds = filtered.filter((invoice) => ["AWAITING_OFFLINE_REFUND", "AWAITING_PAYMENT_CONFIRMATION"].includes(invoice.status));
@@ -219,16 +245,27 @@ export default function BillingDashboard(props: BillingProps) {
         {(invoice.adjustments ?? []).map((entry, index) => <p key={index}>{entry.eventDate} {entry.reason} · {money(entry.amount)}<small>{entry.actorName} · {schedule(entry.createdAt)}</small></p>)}
       </div>
     </details>;
-  const renderInvoice = (invoice: ManagedInvoice) => {
+  const renderInvoice = (invoice: ManagedInvoice, grouped = false) => {
     const focused = props.focusInvoice?.invoiceId === invoice.id;
+    const activity = grouped ? singleEventLabel(invoice) : "";
     return <article className={focused ? "billing-invoice billing-invoice-target" : "billing-invoice"} key={invoice.id}
       ref={focused ? activeInvoice : undefined} tabIndex={focused ? -1 : undefined}
       aria-label={focused ? "定位帳單：" + invoice.memberName : undefined}>
-    <div className="billing-invoice-title"><div><strong>{feeTitle(invoice)}</strong>{admin && <small>{invoice.memberName}{invoice.memberAccountName ? " · 帳號：" + invoice.memberAccountName : ""}</small>}</div><span className={"billing-pill " + (overdue(invoice) ? "overdue" : invoice.status.toLowerCase())}>{overdue(invoice) ? "逾期待繳" : invoiceStatusLabel(invoice)}</span></div>
+    <div className="billing-invoice-title"><div><strong>{feeTitle(invoice)}</strong>{activity && <small>{activity}</small>}{admin && !grouped && <small>{invoice.memberName}{invoice.memberAccountName ? " · 帳號：" + invoice.memberAccountName : ""}</small>}</div><span className={"billing-pill " + (overdue(invoice) ? "overdue" : invoice.status.toLowerCase())}>{overdue(invoice) ? "逾期待繳" : invoiceStatusLabel(invoice)}</span></div>
     <div className="billing-invoice-money"><strong>{money(invoice.type === "CREDIT" ? (invoice.pending_refund_amount || invoice.refund_completed_amount || Math.abs(invoice.amount)) : invoice.amount)}</strong>{invoice.credit_applied > 0 && <small>已抵扣餘額 {money(invoice.credit_applied)}</small>}{invoice.due_at && <small>期限：{taipeiDay(invoice.due_at)}</small>}</div>
     {renderDetails(invoice)}
     {(admin && manage && collectable(invoice)) ? <div className="billing-actions"><button className="secondary receipt-action" disabled={saving} onClick={() => openReceipt([invoice])}>確認收款</button>{renderMore(invoice)}</div> : renderMore(invoice)}
   </article>;
+  };
+  const renderQueueRow = (invoice: ManagedInvoice) => {
+    const activity = singleEventLabel(invoice);
+    return <div className={"billing-queue-row" + (manage ? "" : " no-selection")} key={invoice.id}>
+    {manage && <label className="billing-receipt-check"><input type="checkbox" checked={selectedIds.includes(invoice.id)} disabled={saving || !collectable(invoice) || (!selectedIds.includes(invoice.id) && selectedIds.length >= receiptMax)} onChange={(event) => { const checked = event.target.checked; setSelectedIds((ids) => checked ? [...ids, invoice.id].slice(0, receiptMax) : ids.filter((id) => id !== invoice.id)); }} /><span className="billing-sr-only">選取 {invoice.memberName} · {feeTypeLabel(invoice)} · {money(invoice.amount)}{activity && " · " + activity}</span></label>}
+    <div className="billing-queue-item"><strong>{feeTitle(invoice)}</strong>{activity && <small>{activity}</small>}</div>
+    <div className="billing-queue-amount"><strong>{money(invoice.amount)}</strong><span className={"billing-pill " + (overdue(invoice) ? "overdue" : invoice.status.toLowerCase())}>{overdue(invoice) ? "逾期待繳" : invoiceStatusLabel(invoice)}</span></div>
+    <div className="billing-queue-actions">{manage && collectable(invoice) && <button className="primary receipt-action" disabled={saving} onClick={() => openReceipt([invoice])}>確認收款<span className="billing-sr-only">：{invoice.memberName}</span></button>}{renderMore(invoice)}</div>
+    <div className="billing-queue-detail">{renderDetails(invoice)}</div>
+  </div>;
   };
   const exportLedger = () => {
     const rows = [["顯示名稱", "帳號名稱", "項目", "季度", "活動日期", "原單金額", "應付", "狀態", "收款日期", "收款方式", "實收金額", "登記人", "收款備註", "作廢原因", "重開自", "新帳單", "調整紀錄"], ...ledger.map((invoice) => [invoice.memberName, invoice.memberAccountName ?? "", feeTypeLabel(invoice), invoice.period_label ?? "", invoice.event_schedules?.map((entry) => schedule(entry.starts_at)).join("；") ?? "", invoice.original_gross_amount ?? invoice.gross_amount, invoice.amount, invoiceStatusLabel(invoice), invoice.receipt_received_date ?? "", receiptMethod(invoice.receipt_method), invoice.receipt_amount ?? "", invoice.receipt_recorded_by_name ?? "", invoice.receipt_note ?? "", invoice.void_reason ?? "", invoice.replacement_of_id ?? "", invoice.replaced_by_id ?? "", invoice.adjustments?.map((entry) => entry.reason + " " + entry.amount + " " + entry.actorName + " " + entry.createdAt).join("；") ?? ""])];
@@ -246,6 +283,18 @@ export default function BillingDashboard(props: BillingProps) {
     {canRecordRefund(invoice) && <div className="billing-actions"><button type="button" className="primary" disabled={saving} onClick={() => { setFeedback(""); setRefundRows([invoice]); }}>確認退款</button></div>}
     {admin && invoice.status === "AWAITING_PAYMENT_CONFIRMATION" && <p className="form-note">先核對原付款是否入帳，再結算退款。</p>}
   </div>;
+  const renderRefundRow = (invoice: ManagedInvoice, grouped = false) => {
+    const canRecord = canRecordRefund(invoice);
+    const original = invoice.status === "AWAITING_PAYMENT_CONFIRMATION" ? invoices.find((entry) => entry.id === invoice.related_invoice_id) : null;
+    return <div className="billing-refund-item" key={invoice.id}>{renderInvoice(invoice, grouped)}
+      {canRecord && <div className="billing-actions">
+        <label className="billing-checkbox"><input type="checkbox" checked={refundIds.includes(invoice.id)} disabled={saving || Boolean(refundEventId && refundEventId !== invoice.event_id) || (!refundIds.includes(invoice.id) && refundIds.length >= receiptMax)} onChange={(event) => { const checked = event.target.checked; setRefundIds((ids) => checked ? [...ids, invoice.id] : ids.filter((id) => id !== invoice.id)); }} />加入批次<span className="billing-sr-only">：{invoice.memberName}</span></label>
+        <button type="button" className="primary" disabled={saving} onClick={() => { setFeedback(""); setRefundRows([invoice]); }}>確認退款</button>
+      </div>}
+      {invoice.status === "AWAITING_PAYMENT_CONFIRMATION" && <p className="form-note">先核對原付款是否入帳，再結算退款。</p>}
+      {original && admin && <details className="billing-queue-detail"><summary>核對原帳單</summary>{renderInvoice(original)}</details>}
+    </div>;
+  };
   if (props.focusEventId || props.focusInvoiceIds?.length) {
     const eventId = props.focusEventId;
     const eventInvoices = invoices.filter((invoice) => eventId ? referencesEvent(invoice, eventId) : props.focusInvoiceIds?.includes(invoice.id));
@@ -286,23 +335,18 @@ export default function BillingDashboard(props: BillingProps) {
           <button type="button" aria-pressed={queueFilter === "ALL"} onClick={() => { setQueueFilter("ALL"); setSelectedIds([]); }}>全部待收</button>
           <button type="button" aria-pressed={queueFilter === "REPORTED"} onClick={() => { setQueueFilter("REPORTED"); setSelectedIds([]); }}>待確認{summary.reportedCount > 0 && ` ${summary.reportedCount}`}</button>
         </div>
-        <span>{queue.length} 筆帳單</span>
+        <span>{queueGroups.length} 人 · {queue.length} 筆帳單</span>
       </div>
       {manage && selected.length > 0 && <div className="billing-batch-bar">
         <strong>已選 {selected.length} 筆 · {money(selected.reduce((sum, invoice) => sum + invoice.amount, 0))}</strong>
         <button className="link" disabled={saving} onClick={() => setSelectedIds([])}>清除</button>
         <button className="primary" disabled={saving} onClick={() => openReceipt(selected)}>確認收款（{selected.length} 筆）</button>
       </div>}
-      {!queue.length ? <p className="billing-empty">目前沒有符合條件的待收款。</p> : <ul className="billing-queue" role="list">{queue.map((invoice) => <li className="billing-queue-row" key={invoice.id}>
-        {manage && <label className="billing-receipt-check"><input type="checkbox" checked={selectedIds.includes(invoice.id)} disabled={saving || !collectable(invoice) || (!selectedIds.includes(invoice.id) && selectedIds.length >= receiptMax)} onChange={(event) => { const checked = event.target.checked; setSelectedIds((ids) => checked ? [...ids, invoice.id].slice(0, receiptMax) : ids.filter((id) => id !== invoice.id)); }} /><span className="billing-sr-only">選取 {invoice.memberName} · {feeTypeLabel(invoice)} · {money(invoice.amount)}</span></label>}
-        <div className="billing-queue-person"><strong>{invoice.memberName}</strong>{invoice.memberAccountName && <small>帳號：{invoice.memberAccountName}</small>}<span>{feeTitle(invoice)}</span></div>
-        <div className="billing-queue-amount"><strong>{money(invoice.amount)}</strong><span className={"billing-pill " + (overdue(invoice) ? "overdue" : invoice.status.toLowerCase())}>{overdue(invoice) ? "逾期待繳" : invoiceStatusLabel(invoice)}</span></div>
-        <div className="billing-queue-actions">{manage && collectable(invoice) && <button className="primary receipt-action" disabled={saving} onClick={() => openReceipt([invoice])}>確認收款<span className="billing-sr-only">：{invoice.memberName}</span></button>}{renderMore(invoice)}</div>
-        <div className="billing-queue-detail">{renderDetails(invoice)}</div>
-      </li>)}</ul>}
+      {!queue.length ? <p className="billing-empty">目前沒有符合條件的待收款。</p> : <PersonGroups groups={queueGroups} renderRow={renderQueueRow}
+        total={(rows) => money(rows.reduce((sum, invoice) => sum + invoice.amount, 0))} />}
       {selected.length >= receiptMax && <p className="form-note">每次最多登記 {receiptMax} 筆。不同日期或方式請分批。</p>}
     </section> : <section aria-label="我的待繳帳單" className="billing-personal-list">
-      {queue.length ? queue.map(renderInvoice) : <p className="billing-empty">目前沒有待結清的帳單。</p>}
+      {queue.length ? queue.map((invoice) => renderInvoice(invoice)) : <p className="billing-empty">目前沒有待結清的帳單。</p>}
     </section>)}
     {tab === "refunds" && <section aria-label="待退款清單">
       {selectedRefunds.length > 0 && <div className="billing-batch-bar">
@@ -311,26 +355,23 @@ export default function BillingDashboard(props: BillingProps) {
         <button type="button" className="primary" disabled={saving} onClick={() => setRefundRows(selectedRefunds)}>登記這 {selectedRefunds.length} 筆</button>
       </div>}
       {!refunds.length && <p className="billing-empty">目前沒有待退款或待核對款項。</p>}
-      <div className="billing-personal-list">{refunds.map((invoice) => {
-        const canRecord = canRecordRefund(invoice);
-        const original = invoice.status === "AWAITING_PAYMENT_CONFIRMATION" ? invoices.find((entry) => entry.id === invoice.related_invoice_id) : null;
-        return <div className="billing-refund-item" key={invoice.id}>{renderInvoice(invoice)}
-          {canRecord && <div className="billing-actions">
-            <label className="billing-checkbox"><input type="checkbox" checked={refundIds.includes(invoice.id)} disabled={saving || Boolean(refundEventId && refundEventId !== invoice.event_id) || (!refundIds.includes(invoice.id) && refundIds.length >= receiptMax)} onChange={(event) => { const checked = event.target.checked; setRefundIds((ids) => checked ? [...ids, invoice.id] : ids.filter((id) => id !== invoice.id)); }} />加入批次 · {invoice.memberName}</label>
-            <button type="button" className="primary" disabled={saving} onClick={() => { setFeedback(""); setRefundRows([invoice]); }}>確認退款</button>
-          </div>}
-          {invoice.status === "AWAITING_PAYMENT_CONFIRMATION" && <p className="form-note">先核對原付款是否入帳，再結算退款。</p>}
-          {original && admin && <details className="billing-queue-detail"><summary>核對原帳單</summary>{renderInvoice(original)}</details>}
-        </div>;
-      })}</div>
+      {refunds.length > 0 && (admin
+        ? <PersonGroups groups={groupInvoicesByMember(refunds)} renderRow={(invoice) => renderRefundRow(invoice, true)}
+            total={(rows) => {
+              const amount = rows.reduce((sum, invoice) => sum + (invoice.status === "AWAITING_OFFLINE_REFUND" ? invoice.pending_refund_amount ?? 0 : 0), 0);
+              return amount > 0 ? money(amount) : null;
+            }} />
+        : <div className="billing-personal-list">{refunds.map((invoice) => renderRefundRow(invoice))}</div>)}
     </section>}
     {tab === "activities" && <section><p className="form-note">{admin ? "人數依付款人計算，含轉讓後仍負擔季度費者。季度費只標示結清狀態，不重複加總為各場欠款。" : "只顯示自己的活動費用，不會顯示他人的付款狀態。"}</p>{!activityList.length && <p className="billing-empty">此期間沒有活動</p>}{activityList.map((event) => {
       const scopedEvent = admin ? event : { ...event, bookings: event.bookings.filter((booking) => booking.memberId === viewer.id) };
       const progress = activityPayments(scopedEvent, invoices);
       if (!admin && !progress.rows.length) return null;
-      return <details className="billing-person" key={event.id}><summary><strong>{schedule(event.startsAt)} · {event.courts}</strong><span className={"billing-pill " + (progress.complete ? "confirmed" : "pending")}>{progress.complete ? "全數結清" : !progress.rows.length ? "尚無報名" : "尚未結清"}</span>{admin && <small>已結清 {progress.settled} 人 · 未繳 {progress.unpaid} 人 · 待確認 {progress.reported} 人 · 未開單 {progress.unbilled} 人 · 免收／轉讓 {progress.exempt} 人</small>}</summary><div className="billing-detail-list">{progress.rows.map((row) => <div className="billing-activity-person" key={row.memberId}><strong>{row.name}{row.accountName && <small className="account-name">帳號：{row.accountName}</small>}</strong><span>{row.quarterly ? "季度費 · " : ""}{row.status === "SETTLED" && row.bills.some((bill) => isPaidForEvent(bill, event.id)) ? <span className="billing-pill confirmed">已繳費</span> : { PENDING: "未繳", REPORTED: "待確認", SETTLED: "已結清", TRANSFER: "私人轉讓，社團免收", EXEMPT: "本場免收社員費", UNBILLED: "尚未開單" }[row.status]}</span>{row.bills.map(renderInvoice)}</div>)}</div></details>;
+      return <details className="billing-person" key={event.id}><summary><strong>{schedule(event.startsAt)} · {event.courts}</strong><span className={"billing-pill " + (progress.complete ? "confirmed" : "pending")}>{progress.complete ? "全數結清" : !progress.rows.length ? "尚無報名" : "尚未結清"}</span>{admin && <small>已結清 {progress.settled} 人 · 未繳 {progress.unpaid} 人 · 待確認 {progress.reported} 人 · 未開單 {progress.unbilled} 人 · 免收／轉讓 {progress.exempt} 人</small>}</summary><div className="billing-detail-list">{progress.rows.map((row) => <div className="billing-activity-person" key={row.memberId}><strong>{row.name}{row.accountName && <small className="account-name">帳號：{row.accountName}</small>}</strong><span>{row.quarterly ? "季度費 · " : ""}{row.status === "SETTLED" && row.bills.some((bill) => isPaidForEvent(bill, event.id)) ? <span className="billing-pill confirmed">已繳費</span> : { PENDING: "未繳", REPORTED: "待確認", SETTLED: "已結清", TRANSFER: "私人轉讓，社團免收", EXEMPT: "本場免收社員費", UNBILLED: "尚未開單" }[row.status]}</span>{row.bills.map((invoice) => renderInvoice(invoice))}</div>)}</div></details>;
     })}</section>}
-    {tab === "records" && <section><div className="billing-section-tools"><label>紀錄類型<select value={ledgerType} onChange={(event) => setLedgerType(event.target.value)}><option value="CHARGES">{admin ? "收費帳單" : "已結案帳單"}</option><option value="ADJUSTMENTS">退款與餘額紀錄</option><option value="ALL">全部紀錄</option></select></label><label className="billing-checkbox"><input type="checkbox" checked={showVoided} onChange={(event) => setShowVoided(event.target.checked)} />包含已作廢</label>{admin && <><button className="secondary" disabled={!ledger.length} onClick={exportLedger}>匯出紀錄</button>{manage && <BillingMore label="更多操作"><button className="link danger" disabled={saving || !filtered.some((invoice) => isPrincipal(invoice) && invoice.status === "PENDING")} onClick={() => setSelection({ operation: "voidInvoiceBatch", invoices: filtered.filter((invoice) => isPrincipal(invoice) && invoice.status === "PENDING").slice(0, 100), excluded: filtered.filter((invoice) => isPrincipal(invoice) && invoice.status !== "PENDING" && invoice.status !== "VOID").length })}>批次作廢未繳帳單</button></BillingMore>}</>}</div><div className="billing-personal-list">{ledger.length ? ledger.map(renderInvoice) : <p className="billing-empty">沒有符合條件的紀錄</p>}</div></section>}
+    {tab === "records" && <section><div className="billing-section-tools"><label>紀錄類型<select value={ledgerType} onChange={(event) => setLedgerType(event.target.value)}><option value="CHARGES">{admin ? "收費帳單" : "已結案帳單"}</option><option value="ADJUSTMENTS">退款與餘額紀錄</option><option value="ALL">全部紀錄</option></select></label><label className="billing-checkbox"><input type="checkbox" checked={showVoided} onChange={(event) => setShowVoided(event.target.checked)} />包含已作廢</label>{admin && <><button className="secondary" disabled={!ledger.length} onClick={exportLedger}>匯出紀錄</button>{manage && <BillingMore label="更多操作"><button className="link danger" disabled={saving || !filtered.some((invoice) => isPrincipal(invoice) && invoice.status === "PENDING")} onClick={() => setSelection({ operation: "voidInvoiceBatch", invoices: filtered.filter((invoice) => isPrincipal(invoice) && invoice.status === "PENDING").slice(0, 100), excluded: filtered.filter((invoice) => isPrincipal(invoice) && invoice.status !== "PENDING" && invoice.status !== "VOID").length })}>批次作廢未繳帳單</button></BillingMore>}</>}</div>{!ledger.length ? <p className="billing-empty">沒有符合條件的紀錄</p> : admin
+      ? <PersonGroups groups={groupInvoicesByMember(ledger)} renderRow={(invoice) => renderInvoice(invoice, true)} />
+      : <div className="billing-personal-list">{ledger.map((invoice) => renderInvoice(invoice))}</div>}</section>}
     {receiptRows && <ReceiptDialog invoices={receiptRows} saving={saving} submit={recordReceipts} close={() => setReceiptRows(null)} />}
     {refundRows && <OfflineRefundDialog invoices={refundRows} saving={saving} submit={recordRefunds} close={() => setRefundRows(null)} />}
     {selection && <InvoiceOperationModal selection={selection} saving={saving} submit={submit} close={() => setSelection(null)} />}
@@ -385,7 +426,7 @@ function ReceiptDialog({ invoices, saving, submit, close }: { invoices: ManagedI
     <h2 id="billing-receipt-title">{invoices.length === 1 ? "確認收款" : "批次確認收款"}</h2>
     <p className="billing-receipt-lead">收到全額後再確認。這個操作不會發起轉帳。</p>
     <div className="billing-receipt-total"><span>實收合計 · {invoices.length} 筆</span><strong>{money(total)}</strong></div>
-    <ul className="billing-receipt-list" role="list">{invoices.map((invoice) => <li key={invoice.id}><span><strong>{invoice.memberName}</strong><small>{feeTypeLabel(invoice)}{invoice.memberAccountName ? " · " + invoice.memberAccountName : ""}</small></span><strong>{money(invoice.amount)}</strong></li>)}</ul>
+    <ul className="billing-receipt-list" role="list">{invoices.map((invoice) => <li key={invoice.id}><span><strong>{invoice.memberName}</strong><small>{feeTitle(invoice)}{invoice.memberAccountName ? " · " + invoice.memberAccountName : ""}</small>{singleEventLabel(invoice) && <small>{singleEventLabel(invoice)}</small>}</span><strong>{money(invoice.amount)}</strong></li>)}</ul>
     <form className="manager-form billing-receipt-form" onSubmit={(event) => void record(event)}>
       <fieldset disabled={saving}>
         <legend>收款方式</legend>

@@ -1,6 +1,6 @@
 "use client";
 
-import { type ComponentProps, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ComponentProps, type CSSProperties, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import QuarterPlanner, { QuarterPeriodCreator, defaultBillingPeriod } from "@/app/quarter-planner";
@@ -23,7 +23,7 @@ import type {
 type Role = "admin" | "member";
 type Tab = "總覽" | "活動" | "公告" | "球友名單" | "費用管理" | "個人資訊";
 const sectionDescriptions: Record<Tab, string> = {
-  總覽: "查看下一場活動、出席狀態與費用。",
+  總覽: "",
   活動: "",
   公告: "查看球友會的最新消息與重要通知。",
   球友名單: "",
@@ -248,6 +248,7 @@ export default function Home() {
   const [announcementSaving, setAnnouncementSaving] = useState(false);
   const [billingManagerOpen, setBillingManagerOpen] = useState(false);
   const [calendarQuarterMode, setCalendarQuarterMode] = useState(false);
+  const [mobileCalendarUpcoming, setMobileCalendarUpcoming] = useState(false);
   const [calendarPickedIds, setCalendarPickedIds] = useState<string[]>([]);
   const [calendarJump, setCalendarJump] = useState<{date: string} | null>(null);
   const [calendarIssueOpen, setCalendarIssueOpen] = useState(false);
@@ -262,6 +263,7 @@ export default function Home() {
   useEffect(() => {
     setCalendarPickedIds([]);
     setCalendarQuarterMode(false);
+    setMobileCalendarUpcoming(false);
     setCalendarJump(null);
     setCalendarIssueOpen(false);
     setBillingFocus(null);
@@ -793,7 +795,7 @@ export default function Home() {
     if (viewer && target?.eventId && (events.some((event) => event.id === target.eventId) || target.cancelled)) {
       setTab("活動");
       const date = taipeiInputDate(events.find((event) => event.id === target.eventId)?.startsAt ?? target.cancelled?.starts_at ?? "");
-      if (date) setCalendarJump({date});
+      if (date) { setMobileCalendarUpcoming(false); setCalendarJump({date}); }
       setEventDetails({eventId: target.eventId, viewerId: viewer.id, archived: target.cancelled});
       return;
     }
@@ -810,7 +812,7 @@ export default function Home() {
     description={sessionError ? "連線逾時或暫時無法取得資料，請檢查網路後再試一次。" : "正在讀取活動與帳號資訊，請稍候。"}
     onRetry={() => { setSessionError(false); void refresh(); }}
   />;
-  if (!viewer) return <><Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} passkeyLogin={loginWithPasskey} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving || passkeySaving} events={events} news={news} />{transientMessage}</>;
+  if (!viewer) return <><AnnouncementTicker news={news.slice(0, 3)} /><Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} passkeyLogin={loginWithPasskey} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving || passkeySaving} events={events} news={news} />{transientMessage}</>;
   const isAdmin = user.role === "admin";
   const detailId = eventDetails?.viewerId === viewer.id ? eventDetails.eventId : null;
   const detailInvoices = detailId ? invoices.filter((invoice) => isPrincipal(invoice) && (isAdmin || invoice.member_id === viewer.id) && (invoice.event_id === detailId || invoice.event_ids?.includes(detailId))) : [];
@@ -827,8 +829,10 @@ export default function Home() {
   };
   const closeEventDetails = () => setEventDetails(null);
   return (
-    <div className="app">
+    <>
       <a className="skip-to-content" href="#club-main">跳至主要內容</a>
+      <AnnouncementTicker news={news} placement="desktop" />
+      <div className="app">
       <aside className={`sidebar${sidebarCollapsed ? " collapsed" : ""}`}>
         <button
           type="button"
@@ -888,11 +892,15 @@ export default function Home() {
           </button>
         </div>
       </aside>
+      <AnnouncementTicker news={news} placement="mobile" />
       <main id="club-main" tabIndex={-1}>
-        <header className={tab === "活動" ? "activity-page-header" : undefined}>
+        <header className={tab === "活動" ? "activity-page-header" : tab === "總覽" ? "overview-page-header" : undefined}>
           <div className="page-heading">
-            <p className="page-eyebrow">{headerDate}</p>
-            <h1>{tab}</h1>
+            {tab === "總覽" ? <OverviewClock /> : <p className="page-eyebrow">{headerDate}</p>}
+            <div className="page-title-row">
+              <h1>{tab}</h1>
+              {tab === "活動" && <ActivityViewSwitch upcoming={mobileCalendarUpcoming} setUpcoming={setMobileCalendarUpcoming} />}
+            </div>
             {sectionDescriptions[tab] && <p className="page-description">{sectionDescriptions[tab]}</p>}
           </div>
           <div className="header-actions">
@@ -933,8 +941,8 @@ export default function Home() {
           />
         )}
         {tab === "活動" && (
-          <div className="activities-page">
-            <ActivityCalendar
+          <div className="activities-page" data-mobile-view={mobileCalendarUpcoming ? "upcoming" : "calendar"}>
+            <div id="activity-calendar-view" className="activity-calendar-view"><ActivityCalendar
               list={events}
               jump={calendarJump}
               invoices={invoices}
@@ -946,7 +954,13 @@ export default function Home() {
               toggleQuarterEvent={toggleQuarterBillingEvent}
               periods={isAdmin ? quarterBillingPeriods : []}
               createOnDate={isAdmin ? (date) => { setManagerDate(date); setManagerTab("single"); setManagerOpen(true); } : undefined}
-            />
+            /></div>
+            <div id="calendar-upcoming-activities" className="mobile-upcoming-view">
+              {mobileCalendarUpcoming && (isAdmin && calendarQuarterMode
+                ? <ActivityBillingList list={events} invoices={invoices} periods={quarterBillingPeriods} pickedIds={calendarPickedIds}
+                    toggleEvent={toggleQuarterBillingEvent} clear={() => setCalendarPickedIds([])} openIssue={() => setCalendarIssueOpen(true)} />
+                : <UpcomingActivities list={events} openEvent={openEventDetails} />)}
+            </div>
           </div>
         )}
         {tab === "公告" && <News news={news} admin={isAdmin} saving={announcementSaving} edit={(announcement) => { setEditingAnnouncement(announcement); setAnnouncementOpen(true); }} remove={(announcement) => void deleteAnnouncement(announcement)} togglePinned={(announcement) => void toggleAnnouncementPinned(announcement)} />}
@@ -1153,6 +1167,7 @@ export default function Home() {
         if (editingMember) requestAnimationFrame(() => document.querySelector<HTMLElement>(".member-account-menu summary")?.focus());
       }} />}
     </div>
+    </>
   );
 }
 
@@ -2019,6 +2034,33 @@ function AccountProfile({
   );
 }
 
+function OverviewClock() {
+  const minuteMs = 60_000;
+  const [time, setTime] = useState(() => Math.floor(Date.now() / minuteMs) * minuteMs);
+  useEffect(() => {
+    let timer: number;
+    const sync = () => {
+      window.clearTimeout(timer);
+      const now = Date.now();
+      const elapsed = now % minuteMs;
+      setTime(now - elapsed);
+      timer = window.setTimeout(sync, minuteMs - elapsed);
+    };
+    sync();
+    window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("focus", sync);
+      document.removeEventListener("visibilitychange", sync);
+    };
+  }, []);
+  const isoTime = new Date(time).toISOString();
+  const taipei = taipeiInputParts(isoTime)!;
+  const [year, month, day] = taipei.date.split("-").map(Number);
+  return <p className="page-eyebrow"><time dateTime={isoTime}>{year}年{month}月{day}日 {taipei.time}</time></p>;
+}
+
 function Overview({
   event,
   booking,
@@ -2231,6 +2273,137 @@ function hasBillToIssue(options?: ReturnType<typeof calendarBillingOptions>) {
   return Boolean(options && (options.quarter || options.extra || options.guests.length));
 }
 
+const activityTitle = (event: ClubEvent) => event.eventKind === "OTHER"
+  ? event.courts || "其他活動"
+  : event.courts ? "羽球 · " + event.courts : "羽球活動";
+
+function ActivityViewSwitch({ upcoming, setUpcoming }: { upcoming: boolean; setUpcoming: (upcoming: boolean) => void }) {
+  return <div className="mobile-activity-view-switch" role="group" aria-label="活動檢視">
+    <button type="button" aria-label="月曆" aria-controls="activity-calendar-view" aria-pressed={!upcoming} onClick={() => setUpcoming(false)}>
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 10h18M8 14h2m4 0h2m-8 3h2" />
+      </svg>
+    </button>
+    <button type="button" aria-label="活動列表" aria-controls="calendar-upcoming-activities" aria-pressed={upcoming} onClick={() => setUpcoming(true)}>
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+        <path d="M8 6h12M8 12h12M8 18h12M4 6h.1M4 12h.1M4 18h.1" />
+      </svg>
+    </button>
+  </div>;
+}
+
+const listWeekday = new Intl.DateTimeFormat("zh-TW", { timeZone: "Asia/Taipei", weekday: "short" });
+function ActivityListDate({ startsAt, starts }: { startsAt?: string; starts: number }) {
+  const { month, day } = taipeiDateParts(new Date(starts));
+  const weekday = listWeekday.format(starts);
+  return <time className="activity-list-date" dateTime={startsAt} aria-label={`${month}月${day}日 ${weekday}`}>
+    <span>{month}/{day}</span><span>({weekday.replace(/^(週|星期)/, "")})</span>
+  </time>;
+}
+
+function ActivityListRow({ event, starts, openEvent, feeTone, feeStatus, checkbox }: {
+  event: ClubEvent; starts: number; openEvent?: (id: string) => void;
+  feeTone?: "unbilled" | "outstanding"; feeStatus?: string; checkbox?: ReactNode;
+}) {
+  const content = <>
+    <ActivityListDate startsAt={event.startsAt} starts={starts} />
+    <span className="mobile-activity-list-copy"><strong>{activityTitle(event)}</strong><small>{event.time}
+      {feeStatus && <> · <span className="mobile-billing-status">{feeStatus}</span></>}
+    </small></span>
+  </>;
+  return <li className="mobile-activity-list-row" data-fee-tone={feeTone}>
+    {checkbox ? <label className="mobile-activity-list-card mobile-billing-check">
+      {content}{checkbox}
+    </label> : openEvent ? <button type="button" className="mobile-activity-list-card" aria-haspopup="dialog" onClick={() => openEvent(event.id)}>
+      {content}<span className="mobile-upcoming-arrow" aria-hidden="true">›</span>
+    </button> : <div className="mobile-activity-list-card">{content}</div>}
+  </li>;
+}
+
+function UpcomingActivities({ list, openEvent }: { list: ClubEvent[]; openEvent: (id: string) => void }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const upcoming = list.flatMap((event) => {
+    const starts = Date.parse(event.startsAt ?? "");
+    return event.status !== "CANCELLED" && starts > now ? [{ event, starts }] : [];
+  }).sort((a, b) => a.starts - b.starts);
+  if (!upcoming.length) return <p className="mobile-upcoming-empty">目前沒有即將到來的活動。</p>;
+
+  return <ul className="mobile-upcoming-list" aria-label="即將到來的活動">
+    {upcoming.map(({ event, starts }) => <ActivityListRow key={event.id} event={event} starts={starts} openEvent={openEvent} />)}
+  </ul>;
+}
+
+function BillingSelectionBar({ count, error, clear, openIssue }: { count: number; error: string; clear: () => void; openIssue?: () => void }) {
+  return <div className="calendar-selection-bar">
+    {error && <p className="guest-settlement-error calendar-selection-error" role="alert">{error}</p>}
+    <strong aria-live="polite">已選 {count} 場</strong>
+    {count > 0 && <button type="button" className="link" onClick={clear}>清除</button>}
+    <button type="button" className="primary" disabled={!count} onClick={openIssue}>核對帳單 →</button>
+  </div>;
+}
+
+function MobileBillingDock({ children }: { children: ReactNode }) {
+  const dockRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const dock = dockRef.current;
+    const bar = dock?.firstElementChild;
+    if (!dock || !bar) return;
+    const reserveBarSpace = () => {
+      const height = bar.getBoundingClientRect().height;
+      if (height > 0) dock.style.setProperty("--mobile-billing-bar-height", `${height}px`);
+    };
+    reserveBarSpace();
+    const observer = new ResizeObserver(reserveBarSpace);
+    observer.observe(bar, { box: "border-box" });
+    return () => observer.disconnect();
+  }, []);
+  return <div className="mobile-billing-dock" ref={dockRef}>{children}</div>;
+}
+
+function ActivityBillingList({ list, invoices, periods, pickedIds, toggleEvent, clear, openIssue }: {
+  list: ClubEvent[]; invoices: Invoice[]; periods: QuarterBillingPeriod[]; pickedIds: string[];
+  toggleEvent: (event: ClubEvent) => string; clear: () => void; openIssue: () => void;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const rows = list.flatMap((event) => {
+    const starts = Date.parse(event.startsAt ?? "");
+    if (!Number.isFinite(starts)) return [];
+    const plan = calendarBillingOptions(event, invoices, periods, now);
+    const selectable = hasBillToIssue(plan);
+    if (!(starts > now && event.status !== "CANCELLED") && !selectable && !plan.bills.length) return [];
+    const pending = plan.bills.some((bill) => bill.status === "PENDING" && bill.amount > 0);
+    const reported = plan.bills.some((bill) => bill.status === "REPORTED" && bill.amount > 0);
+    const status = selectable ? "未開單" : pending ? "未收齊" : reported ? "待確認" : plan.bills.length ? "已開單" : undefined;
+    return [{ event, starts, selectable, status }];
+  }).sort((a, b) => Number(b.starts >= now) - Number(a.starts >= now) || (a.starts >= now ? a.starts - b.starts : b.starts - a.starts));
+  const selected = new Set(rows.filter((row) => row.selectable && pickedIds.includes(row.event.id)).map((row) => row.event.id));
+  const dateFormat = new Intl.DateTimeFormat("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "numeric", day: "numeric" });
+  return <>
+    {rows.length ? <ul className="mobile-upcoming-list mobile-billing-list" aria-label="活動收費列表">
+      {rows.map(({ event, starts, selectable, status }) => {
+        const title = activityTitle(event);
+        const date = dateFormat.format(starts);
+        return <ActivityListRow key={event.id} event={event} starts={starts} feeStatus={status}
+          feeTone={selectable ? "unbilled" : status === "未收齊" || status === "待確認" ? "outstanding" : undefined}
+          checkbox={selectable ? <input type="checkbox" checked={selected.has(event.id)}
+            aria-label={`選取開單：${title} ${date} ${event.time}`} onChange={() => setError(toggleEvent(event))} /> : undefined} />;
+      })}
+    </ul> : <p className="mobile-upcoming-empty">目前沒有活動帳單或可開單的場次。</p>}
+    <MobileBillingDock>
+      <BillingSelectionBar count={selected.size} error={error} clear={() => { clear(); setError(""); }} openIssue={openIssue} />
+    </MobileBillingDock>
+  </>;
+}
+
 function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterMode, pickedIds, setPickedIds, toggleQuarterEvent, periods, createOnDate }: {
   list: ClubEvent[];
   jump?: {date: string} | null;
@@ -2313,9 +2486,6 @@ function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterM
   const options = new Map(admin && quarterMode ? list.map((item) => [item.id, calendarBillingOptions(item, invoices, periods, calendarNow)]) : []);
   const selectable = (event: ClubEvent) => hasBillToIssue(options.get(event.id));
   const selection = pickedIds.filter((id) => hasBillToIssue(options.get(id)));
-  const eventName = (event: ClubEvent) => event.eventKind === "OTHER"
-    ? event.courts || "其他活動"
-    : event.courts ? "羽球 · " + event.courts : "羽球活動";
   type FeeStatus = (typeof calendarFeeStatuses)[number]["id"];
   const feeStatusByEvent = new Map<string, Set<FeeStatus>>();
   const paymentByEvent = new Map<string, { member: string; guest: string }>();
@@ -2392,7 +2562,7 @@ function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterM
           ));
           const firstEvent = dayEvents[0];
           const feeStatuses = new Set(dayEvents.flatMap((event) => [...(feeStatusByEvent.get(event.id) ?? [])]));
-          const daySummary = [...dayEvents.map((event) => eventName(event) + " " + event.time),
+          const daySummary = [...dayEvents.map((event) => activityTitle(event) + " " + event.time),
             ...calendarFeeStatuses.filter(({ id }) => feeStatuses.has(id)).map(({ label }) => label)];
           const singleCandidate = admin && quarterMode ? dayEvents.filter(selectable) : [];
           const directSelection = singleCandidate.length === 1 ? singleCandidate[0] : undefined;
@@ -2414,7 +2584,7 @@ function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterM
             {directSelection && <span aria-hidden="true" className="calendar-checked-mark" />}
             <span className="calendar-day-number">{day}{isToday && <i>今天</i>}</span>{noticeLabels}
             {firstEvent && <span className="calendar-day-event">
-              <span className="calendar-day-event-name" title={eventName(firstEvent)}>{eventName(firstEvent)}</span>
+              <span className="calendar-day-event-name" title={activityTitle(firstEvent)}>{activityTitle(firstEvent)}</span>
               <span className="calendar-day-event-time">{firstEvent.time.replace(/\s*[–—]\s*/g, "–")}</span>
               {dayEvents.length > 1 && <span className="calendar-day-event-more">另有 {dayEvents.length - 1} 場</span>}
             </span>}
@@ -2435,8 +2605,8 @@ function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterM
         const payment = paymentByEvent.get(event.id);
         const chooseInCard = admin && quarterMode && selectable(event) && selectedEvents.filter(selectable).length > 1;
         return <article key={event.id} className="calendar-session activity-detail-card">
-          <button type="button" className="activity-detail-hit" aria-label={`查看活動：${eventName(event)} ${event.time}`} aria-haspopup="dialog" onClick={() => openEvent(event.id)} />
-          <div className="calendar-session-heading"><h3>{eventName(event)}</h3></div>
+          <button type="button" className="activity-detail-hit" aria-label={`查看活動：${activityTitle(event)} ${event.time}`} aria-haspopup="dialog" onClick={() => openEvent(event.id)} />
+          <div className="calendar-session-heading"><h3>{activityTitle(event)}</h3></div>
           <p>{event.time}</p>
           {payment && <dl className="calendar-payment-summary" aria-label="本場繳費狀態">
             <div><dt>社員</dt><dd>{payment.member}</dd></div>
@@ -2448,12 +2618,10 @@ function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterM
         </article>;
       })}
     </aside>
-    {quarterMode && <div className="calendar-selection-bar">
-      {quarterSelectionError && <p className="guest-settlement-error calendar-selection-error" role="alert">{quarterSelectionError}</p>}
-      <strong aria-live="polite">已選 {selection.length} 場</strong>
-      {selection.length > 0 && <button type="button" className="link" onClick={() => { setPickedIds([]); setQuarterSelectionError(""); }}>清除</button>}
-      <button type="button" className="primary" disabled={!selection.length} onClick={openIssue}>核對帳單 →</button>
-    </div>}
+    {quarterMode && <MobileBillingDock>
+      <BillingSelectionBar count={selection.length} error={quarterSelectionError}
+        clear={() => { setPickedIds([]); setQuarterSelectionError(""); }} openIssue={openIssue} />
+    </MobileBillingDock>}
     </div>
   );
 }
@@ -2954,6 +3122,44 @@ function CalendarIssueDialog({ events, calendarEvents = events, invoices, period
     </footer>
 
   </dialog>;
+}
+
+function AnnouncementTicker({ news, placement }: {
+  news: NewsItem[];
+  placement?: "desktop" | "mobile";
+}) {
+  const [heldPointer, setHeldPointer] = useState<number | null>(null);
+  const [heldSpace, setHeldSpace] = useState(false);
+  const releasePointer = (event: { pointerId: number }) => {
+    setHeldPointer((held) => held === event.pointerId ? null : held);
+  };
+  // The announcement feed already puts pinned items first, then newest.
+  const headlines = news.filter((item) => item.title.trim()).slice(0, 5);
+  if (!headlines.length) return null;
+
+  const duration = Math.max(20, headlines.reduce((sum, item) => sum + item.title.length, 0) * .45 + headlines.length * 2);
+  const track = (copy = false) => <span className="announcement-ticker-set" aria-hidden={copy || undefined}>
+    {headlines.map((item) => <span key={item.id}><span aria-hidden="true">◆</span>{item.title}</span>)}
+  </span>;
+  return <section className="announcement-ticker" aria-label="最新公告" aria-description="按住跑馬燈或空白鍵可暫停"
+    tabIndex={0} data-placement={placement} data-paused={heldPointer !== null || heldSpace}
+    style={{ "--ticker-duration": `${duration}s` } as CSSProperties}
+    onPointerDown={(event) => {
+      if (!event.isPrimary || event.button !== 0) return;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setHeldPointer(event.pointerId);
+    }}
+    onPointerUp={releasePointer} onPointerCancel={releasePointer} onLostPointerCapture={releasePointer}
+    onKeyDown={(event) => {
+      if (event.key !== " ") return;
+      event.preventDefault();
+      setHeldSpace(true);
+    }}
+    onKeyUp={(event) => { if (event.key === " ") setHeldSpace(false); }}
+    onBlur={() => setHeldSpace(false)}>
+    <span className="announcement-ticker-label" aria-hidden="true">公告</span>
+    <div className="announcement-ticker-window"><div className="announcement-ticker-track">{track()}{track(true)}</div></div>
+  </section>;
 }
 
 function News({

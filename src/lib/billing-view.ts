@@ -46,6 +46,20 @@ export function invoiceInRange(invoice: ManagedInvoice, start: string, end: stri
   const fallback = taipeiDay(invoice.created_at ?? invoice.due_at ?? "");
   return fallback >= start && fallback <= end;
 }
+// Keep the incoming order (e.g. reported payments first) and distinguish people with identical names.
+export function groupInvoicesByMember(invoices: ManagedInvoice[]) {
+  const groups = new Map<string, { id: string; name: string; accountName?: string; invoices: ManagedInvoice[] }>();
+  for (const invoice of invoices) {
+    let group = groups.get(invoice.member_id);
+    if (!group) {
+      group = { id: invoice.member_id, name: invoice.memberName, accountName: invoice.memberAccountName, invoices: [] };
+      groups.set(group.id, group);
+    }
+    group.accountName ||= invoice.memberAccountName;
+    group.invoices.push(invoice);
+  }
+  return [...groups.values()];
+}
 export function billingSummary(invoices: ManagedInvoice[], now = new Date()) {
   const pending = invoices.filter((invoice) => isPrincipal(invoice) && invoice.status === "PENDING");
   const reported = invoices.filter((invoice) => isPrincipal(invoice) && invoice.status === "REPORTED");
