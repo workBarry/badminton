@@ -15,6 +15,7 @@ export type Viewer = {
   role: "ADMIN" | "MEMBER";
   primaryAdmin: boolean;
   membershipStatus: string;
+  membershipEndingAt?: string | null;
   creditBalance: number;
   accountType: "guest" | "recoverable" | "verified" | "unclaimed";
   hasRecoveryCode: boolean;
@@ -67,6 +68,7 @@ function viewerFromMember(id: string, member: FirebaseFirestore.DocumentData): V
     role: member.role === "ADMIN" ? "ADMIN" : "MEMBER",
     primaryAdmin: isClubPresident(member),
     membershipStatus,
+    membershipEndingAt: membershipStatus === "EXITING" && endingAt && Number.isFinite(endingAt.getTime()) ? endingAt.toISOString() : null,
     creditBalance: Number(member.creditBalance ?? 0),
     accountType: ["guest", "recoverable", "verified", "unclaimed"].includes(String(member.accountType))
       ? member.accountType as Viewer["accountType"]

@@ -19,8 +19,34 @@ export type QuarterPlan = QuarterRules & {
   eventAmounts?: number[];
   eventCount?: number;
   grossAmount?: number;
+  skippedDates?: string[];
   confirmedAt?: string | null;
   billed?: boolean;
+};
+export type QuarterBillingPeriod = {
+  id: string;
+  label: string;
+  startDate: string;
+  endDate: string;
+  status: "PLANNED" | "GENERATING" | "ACTIVE";
+  eventIds: string[];
+  eventCount: number;
+  grossAmount: number;
+  revision?: string;
+};
+export type QuarterPeriodInput = {
+  periodId: string;
+  label: string;
+  startDate: string;
+  endDate: string;
+  eventIds: string;
+  expectedRevision?: string;
+};
+export type QuarterPeriodResult = {
+  periodId: string;
+  eventCount: number;
+  totalAmount: number;
+  skippedEventIds?: string[];
 };
 
 export function validCalendarDate(value: string) {
@@ -62,12 +88,7 @@ export function validateQuarterSchedule(rules: QuarterRules, activities: Suggest
   validateQuarterRules(rules);
   if (!Array.isArray(activities) || activities.length > 32) throw new Error("每季最多 32 場活動");
   if (!activities.length) throw new Error("至少保留一場活動才能確認季度");
-  const dates = new Set<string>();
-  for (const activity of activities) {
-    validateActivity(activity, rules);
-    if (dates.has(activity.date)) throw new Error("建議活動有重複日期：" + activity.date);
-    dates.add(activity.date);
-  }
+  for (const activity of activities) validateActivity(activity, rules);
 }
 export type InvoiceAmounts = {
   grossAmount?: number; creditApplied?: number; amount?: number;
@@ -91,4 +112,15 @@ export function reduceUnpaidInvoice(invoice: InvoiceAmounts, reduction: number) 
     adjustedAmount: grossAmount - creditApplied,
     restoredCredit: before.creditApplied - creditApplied,
   };
+}
+
+
+// Historical and settled principal bills still reserve their event. A zero
+// cash balance can mean the entire charge was paid out of club wallet credit.
+export function invoiceCoversEvent(invoice: Record<string, unknown>, eventId: string) {
+  return ["PENDING", "REPORTED", "CONFIRMED"].includes(String(invoice.status))
+    && ["SINGLE_EVENT", "QUARTERLY_MEMBER", "MEMBERSHIP_PRORATED", "MEMBER_EXTRA", "MEMBER_SINGLE"].includes(String(invoice.type))
+    && (invoice.eventId === eventId || Array.isArray(invoice.eventIds) && invoice.eventIds.includes(eventId))
+    && !(Array.isArray(invoice.adjustments) && invoice.adjustments.some((entry) =>
+      entry?.eventId === eventId && ["MEMBERSHIP_END_REDUCTION", "MEMBERSHIP_END_CREDIT"].includes(entry.kind)));
 }
