@@ -8,6 +8,8 @@ type Props = {
   plans: QuarterPlan[];
   existingDates: string[];
   saving: boolean;
+  openBilling?: (date?: string) => void;
+  askConfirmation: (confirmation: { title: string; message: string; action: string }) => Promise<boolean>;
   confirmPlan: (input: { planId: string; schedule: string }) => Promise<Result | null>;
 };
 function defaultRules(): QuarterRules {
@@ -16,7 +18,7 @@ function defaultRules(): QuarterRules {
   const end = new Date(Date.UTC(year, month - 1 + 3, 0)).toISOString().slice(0, 10);
   return { label: year + " 年 " + month + " 月起季度", startDate: today, endDate: end, weekday: 5, startTime: "18:00", endTime: "20:00", courts: "公司體育館 A 場", regularCapacity: 10, standbyCapacity: 4, excludedDates: [] };
 }
-export default function QuarterPlanner({ plans, existingDates, saving, confirmPlan }: Props) {
+export default function QuarterPlanner({ plans, existingDates, saving, confirmPlan, openBilling, askConfirmation }: Props) {
   const pendingPlanId = useRef<string | null>(null);
   const [rules, setRules] = useState<QuarterRules>(defaultRules);
   const [activities, setActivities] = useState<SuggestedActivity[]>([]);
@@ -25,6 +27,7 @@ export default function QuarterPlanner({ plans, existingDates, saving, confirmPl
   const [generationError, setGenerationError] = useState("");
   const [needsGenerate, setNeedsGenerate] = useState(true);
   const [message, setMessage] = useState("");
+  const [billingDate, setBillingDate] = useState<string | null>(null);
   const busy = saving || generating;
   const closureNames = new Map(officialClosures?.map((closure) => [closure.date, closure.name]));
   const occupied = new Set(existingDates);
@@ -47,7 +50,7 @@ export default function QuarterPlanner({ plans, existingDates, saving, confirmPl
     setGenerationError("");
     try {
       validateQuarterRules({ ...rules, excludedDates: [] });
-      if (activities.length && !window.confirm("重新產生會取代目前建議清單，包含手動調整，確定繼續？")) return;
+      if (activities.length && !(await askConfirmation({ title: "重新產生場次？", message: "重新產生會取代目前建議清單，包含手動調整。", action: "重新產生" }))) return;
       setGenerating(true);
       setMessage("");
       const params = new URLSearchParams({ startDate: rules.startDate, endDate: rules.endDate });
@@ -72,9 +75,10 @@ export default function QuarterPlanner({ plans, existingDates, saving, confirmPl
   const confirm = async () => {
     if (busy || needsGenerate || !newCount) return;
     setMessage("");
+    setBillingDate(null);
     try {
       validateQuarterSchedule(rules, activities);
-      if (!window.confirm("預計建立 " + newCount + " 場正式活動" + (skipCount ? "，跳過 " + skipCount + " 筆重複場次" : "") + "。送出時會再次確認日期，這一步不會建立帳單。確定建立嗎？")) return;
+      if (!(await askConfirmation({ title: `建立 ${newCount} 場活動？`, message: (skipCount ? `會跳過 ${skipCount} 筆重複場次。` : "") + "這一步不會建立帳單。", action: "建立活動" }))) return;
       pendingPlanId.current ??= crypto.randomUUID();
       const result = await confirmPlan({ planId: pendingPlanId.current, schedule: JSON.stringify({ rules, activities }) });
       if (typeof result?.eventCount === "number") {
@@ -87,6 +91,7 @@ export default function QuarterPlanner({ plans, existingDates, saving, confirmPl
           setActivities([]);
           setNeedsGenerate(true);
           setMessage("已建立 " + result.eventCount + " 場，未建立帳單。" + skipped);
+          setBillingDate(activities.map((entry) => entry.date).filter((date) => !occupied.has(date) && !result.skippedDates?.includes(date)).sort()[0] ?? rules.startDate);
         }
       }
     } catch (error) {
@@ -135,12 +140,13 @@ export default function QuarterPlanner({ plans, existingDates, saving, confirmPl
           </article>)}
           <button type="button" className="secondary" disabled={activities.length >= 32} onClick={() => setActivities((current) => [...current, { date: rules.startDate, startTime: rules.startTime, endTime: rules.endTime, courts: rules.courts, regularCapacity: rules.regularCapacity, standbyCapacity: rules.standbyCapacity }])}>新增建議場次</button>
         </fieldset>
-        <p className="form-note">可逐場調整，離開視窗會清除未建立的清單。確認時會再查政府公告。社費另由「費用管理 → 季度社費」選擇活動。</p>
+        <p className="form-note">可逐場調整，離開視窗會清除未建立的清單。確認時會再查政府公告。</p>
       </section>}
       <div className="quarter-actions">
         <button type="button" className="primary" disabled={busy || needsGenerate || !newCount} onClick={confirm}>{saving ? "確認建立中…" : newCount ? "確認並建立 " + newCount + " 場" : "確認並建立"}</button>
       </div>
     {message && <p className="quarter-feedback" role="status">{message}</p>}
+    {billingDate && openBilling && <button type="button" className="primary" disabled={busy} onClick={() => openBilling(billingDate)}>選場次開單</button>}
     {plans.length > 0 && <details className="quarter-history">
       <summary>已建立批次（{plans.length}）</summary>
       {plans.map((plan) => <details className="quarter-summary" key={plan.id}>

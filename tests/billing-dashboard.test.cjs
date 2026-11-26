@@ -54,7 +54,7 @@ for (const [role, viewer, other, amount, reported, overdue] of [
     assert.doesNotMatch(html, /未繳人數/);
     assert.doesNotMatch(html, new RegExp(other));
     assert.match(html, new RegExp(`待結清金額</span><strong>NT\\$ ${amount + reported}`));
-    assert.match(html, new RegExp(`待對帳 1 筆 · NT\\$ ${reported}`));
+    assert.match(html, new RegExp(`待確認 1 筆 · NT\\$ ${reported}`));
     assert.match(html, new RegExp(`含逾期未繳 NT\\$ ${overdue}`));
     assert.match(html, /回報已轉帳（選用）/);
     assert.doesNotMatch(html, /確認收款/);
@@ -71,7 +71,7 @@ test("幹部以同一清單直接登記未回報與已回報的款，活動檢�
   assert.match(queue, /待收款總額<\/span><strong>NT\$ 960/);
   assert.equal((queue.match(/>確認收款<span/g) ?? []).length, 5);
   assert.equal((queue.match(/type="checkbox"/g) ?? []).length, 5);
-  assert.match(queue, /已回報，待對帳/);
+  assert.match(queue, /待確認/);
   assert.match(queue, /<button[^>]+class="billing-more-trigger"[^>]+popoverTarget=/i);
   assert.match(queue, /popover="auto" class="billing-more-actions"/);
   assert.doesNotMatch(queue, /<details class="billing-more">/);
@@ -127,6 +127,15 @@ test("活動收費模式可從月曆直接選季費，單場帳務只有一個�
   assert.doesNotMatch(card, /calendar-payment-summary/);
   assert.doesNotMatch(renderCard(true, event, [], false), /calendar-payment-summary/);
   assert.doesNotMatch(renderCard(true, { ...event, memberBilling: "FREE" }), />管理本場帳單</);
+  const paused = { ...event, memberBilling: "FREE", billingPaused: true };
+  for (const [status, label] of [["PENDING", "未收齊"], ["REPORTED", "待確認"]]) {
+    const bill = invoice("guest", "SINGLE_EVENT", status, 180, 7);
+    const markup = renderCard(true, paused, [{ ...bill, event_id: event.id }]);
+    assert.match(dateCell(markup), /data-fee-tone="outstanding"/);
+    assert.match(markup, new RegExp("<dt>非社員</dt><dd>" + label + "</dd>"));
+    assert.match(markup, /<dt>社員<\/dt><dd>不再開單<\/dd>/);
+    assert.doesNotMatch(dateCell(markup), /role="checkbox"|未開單/);
+  }
   const renderDialog = (options) => renderToStaticMarkup(React.createElement(EventDetailsDialog, {
     event: { ...event, startsAt: new Date(Date.now() + 3_600_000).toISOString(),
       endsAt: new Date(Date.now() + 7_200_000).toISOString(),
@@ -198,6 +207,13 @@ test("活動收費模式可從月曆直接選季費，單場帳務只有一個�
   assert.equal(calendarBillingOptions(withMember, [], [], Date.now()).quarter, true);
   assert.equal(calendarBillingOptions(withMember, [], [], Date.now()).extra, false);
   assert.equal(calendarBillingOptions({ ...withMember, quarterEligible: false, memberBilling: "NO_CHARGE" }, [], [], Date.now()).extra, true);
+  const day = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(new Date(withMember.startsAt));
+  const active = [{ ...draft, status: "ACTIVE", startDate: day, endDate: day, eventIds: [] }];
+  const unlisted = { ...withMember, billingLabel: "尚未納入季度社費" };
+  assert.equal(calendarBillingOptions(unlisted, [], active, Date.now()).supplement, true);
+  const existingMemberCharge = { ...bills[0], type: "MEMBER_SINGLE", member_id: "member-on-roster" };
+  assert.equal(calendarBillingOptions(unlisted, [existingMemberCharge], active, Date.now()).supplement, false);
+  assert.equal(calendarBillingOptions({ ...unlisted, memberBilling: "FREE", billingPaused: true }, [], active, Date.now()).supplement, false);
   const mixed = { ...event, id: "mixed" };
   const guestOnly = { ...event, id: "guest-only", quarterEligible: false, memberBilling: "NO_CHARGE" };
   const fullyBilled = { ...guestOnly, id: "fully-billed" };
@@ -409,7 +425,7 @@ test("新增羽球活動只提供收費與不收費，不會自動開單", () =>
   const html = markup({});
   assert.match(html, /name="memberAmount"[^>]*value="220"/);
   assert.match(html, /name="guestAmount"[^>]*value="180"/);
-  assert.match(markup({ periods: [{ status: "ACTIVE", startDate: "2027-01-01", endDate: "2027-03-31" }] }), /社員金額只會用在另開的單場帳單/);
+  assert.match(markup({ periods: [{ status: "ACTIVE", startDate: "2027-01-01", endDate: "2027-03-31" }] }), /本場的社員費會另開，不改既有季費/);
   assert.match(markup({ initialDate: "", currentFees: { member: 155, guest: 185 } }), /name="guestAmount"[^>]*value="185"/);
   const choices = html.match(/<select[^>]+name="memberBilling"[^>]*>(.*?)<\/select>/)?.[1];
   assert.match(choices, /value="NORMAL" selected="">收費<\/option><option value="FREE">不收費<\/option>/);

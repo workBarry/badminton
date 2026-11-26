@@ -3139,3 +3139,51 @@ dialog.issue-review[open] { display: flex; flex-direction: column; }
 }
 .event-roster-invoice-link:hover { background: #eaf4ff; }
 .event-roster-link-arrow { color: #315d85; font-size: 18px; line-height: 1; }
+
+.issue-review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.issue-review-actions > button { min-height: 44px; }
+
+.site-toast {
+  --toast-duration: 4.4s;
+  position: fixed;
+  z-index: 100;
+  inset-inline: 16px;
+  bottom: max(24px, calc(env(safe-area-inset-bottom) + 16px));
+  width: max-content;
+  max-width: min(calc(100vw - 32px), 34rem);
+  margin-inline: auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #173b31;
+  color: white;
+  box-shadow: 0 10px 26px #132d2833;
+  font-size: .92rem;
+  line-height: 1.5;
+  white-space: pre-line;
+  animation: site-toast-in .18s ease-out, site-toast-out .35s ease-in calc(var(--toast-duration) - .35s) both;
+}
+.site-toast-error { --toast-duration: 6.8s; background: #783534; }
+.site-toast-icon { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid #ffffff70; border-radius: 50%; font-weight: 700; }
+.site-toast-close { border: 0; background: transparent; color: inherit; min-width: 36px; min-height: 36px; font-size: 1.2rem; cursor: pointer; }
+.site-toast-close:hover { background: #ffffff20; border-radius: 8px; }
+@keyframes site-toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes site-toast-out { to { opacity: 0; } }
+.site-confirm-dialog { width: min(400px, calc(100vw - 32px)); border: 0; margin: auto; }
+.site-confirm-dialog::backdrop { background: #0e201b80; }
+.site-confirm-dialog p { white-space: pre-line; }
+.site-confirm-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+.site-confirm-actions > button { min-height: 44px; }
+.site-confirm-actions .site-confirm-danger { background: #a63936; border-color: #a63936; }
+@media (prefers-reduced-motion: reduce) {
+  .site-toast { animation: none; }
+}
+.site-toast { pointer-events: none; overflow-wrap: anywhere; }
+.site-toast-close { pointer-events: auto; min-width: 44px; min-height: 44px; }
+@media (max-width: 600px) {
+  body > .site-toast { bottom: calc(72px + env(safe-area-inset-bottom)); }
+  .site-confirm-dialog { padding: 24px; }
+}

@@ -1522,6 +1522,42 @@ test("event fee edits update unissued draft amounts and preserve the issued fee 
   assert.equal(s.db.data(s.invoicePath).grossAmount, 220);
 });
 
+test("a confirmed quarter does not hide uncovered events or charge the same member twice", async () => {
+  const s = setup();
+  const make = (date, fees = {}) => s.mutate("createEvent", {
+    startsAt: date + "T18:00:00+08:00", endsAt: date + "T20:00:00+08:00", courts: "羽球館",
+    regularCapacity: "10", standbyCapacity: "4", memberBilling: "NORMAL", ...fees,
+  });
+  const first = await make(s.rules.startDate);
+  const second = await make(s.rules.startDate.slice(0, 8) + "03", {memberAmount: "215"});
+  await s.createPeriod([first.eventId]);
+  await s.bill();
+  const original = s.db.data(s.invoicePath);
+  const third = await make(s.rules.startDate.slice(0, 8) + "05", {memberAmount: "235"});
+  assert.equal(third.memberBilling, "NORMAL");
+  const newMember = {id: "late", name: "後入社員", role: "MEMBER"};
+  s.db.seed("members/late", { displayName: newMember.name, membershipStatus: "MEMBER", role: "MEMBER", creditBalance: 25 });
+  await s.mutate("join", {eventId: first.eventId}, newMember);
+  const scope = (eventId) => ({eventId, uncovered: "true"});
+  const firstQuote = await s.mutate("previewMemberExtraBills", scope(first.eventId));
+  assert.deepEqual(firstQuote.rows.map((r) => [r.memberId, r.amount]), [["late", 125]]);
+  const secondQuote = await s.mutate("previewMemberExtraBills", scope(second.eventId));
+  assert.deepEqual(secondQuote.rows.map((r) => [r.memberId, r.amount]), [["member", 215]]);
+  const open = { ...scope(second.eventId), previewKey: secondQuote.previewKey };
+  const result = await s.mutate("publishMemberExtraBills", open);
+  assert.equal(result.invoiceCount, 1);
+  assert.equal(result.totalAmount, 215);
+  assert.equal(s.db.data("invoices/" + result.invoiceIds[0]).type, "MEMBER_SINGLE");
+  const data = s.db.entries("");
+  assert.deepEqual(await s.mutate("publishMemberExtraBills", open), result);
+  assert.deepEqual(s.db.entries(""), data);
+  assert.deepEqual(s.db.data(s.invoicePath), original);
+  assert.deepEqual((await s.mutate("previewMemberExtraBills", scope(second.eventId))).rows, []);
+  assert.equal((await s.mutate("previewMemberExtraBills", scope(third.eventId))).totalAmount, 235);
+  await s.mutate("reportPayment", {invoiceId: result.invoiceIds[0]}, member);
+  assert.equal((await s.readState(admin)).notifications.find((entry) => entry.title === "待確認轉帳").target.invoiceId, result.invoiceIds[0]);
+});
+
 test("editing a free event can restore prices and setting it free removes its unissued draft line", async () => {
   const s = setup();
   const date = s.rules.startDate;

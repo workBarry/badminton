@@ -7,13 +7,14 @@ export type BillingProps = {
   admin: boolean; invoices: ManagedInvoice[]; viewer: { id: string; name?: string; creditBalance: number }; saving: boolean;
   events?: BillingActivity[];
   focusEventId?: string | null;
-  focusInvoice?: { eventId: string; invoiceId?: string } | null;
+  focusInvoiceIds?: string[];
+  focusInvoice?: { eventId?: string; invoiceId?: string } | null;
   clearFocusEvent?: () => void;
   openEvent?: (eventId: string) => void;
   reportPayment: (id: string) => void; remindPayment: (id: string) => void; openRates: () => void;
   manage?: (action: string, input: Record<string, string>) => Promise<ActionResult | null>;
 };
-const labels: Record<string, string> = { PENDING: "待繳", REPORTED: "已回報，待對帳", CONFIRMED: "已結清", VOID: "已作廢", CREDITED: "已退回餘額", REFUNDED: "已退款", AWAITING_PAYMENT_CONFIRMATION: "原付款待核對", AWAITING_OFFLINE_REFUND: "待退款" };
+const labels: Record<string, string> = { PENDING: "待繳", REPORTED: "待確認", CONFIRMED: "已結清", VOID: "已作廢", CREDITED: "已退回餘額", REFUNDED: "已退款", AWAITING_PAYMENT_CONFIRMATION: "原付款待核對", AWAITING_OFFLINE_REFUND: "待退款" };
 const types: Record<string, string> = { QUARTERLY_MEMBER: "季度社員費", MEMBERSHIP_PRORATED: "中途加入社員費", MEMBER_EXTRA: "社員加場費", MEMBER_SINGLE: "社員單場費", SINGLE_EVENT: "零打活動費", CREDIT: "退款／餘額紀錄" };
 const feeTypeLabel = (invoice: ManagedInvoice) => invoice.period_label === "單場活動費" && isPrincipal(invoice) ? "單場活動費" : types[invoice.type] ?? "帳單";
 const feeTitle = (invoice: ManagedInvoice) => {
@@ -239,16 +240,23 @@ export default function BillingDashboard(props: BillingProps) {
     const url = URL.createObjectURL(new Blob(["\uFEFF" + rows.map((row) => row.map(escape).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }));
     const anchor = document.createElement("a"); anchor.href = url; anchor.download = "羽球帳單-" + today + ".csv"; anchor.click(); URL.revokeObjectURL(url);
   };
-  if (props.focusEventId) {
+  const canRecordRefund = (invoice: ManagedInvoice) => admin && Boolean(manage) && invoice.status === "AWAITING_OFFLINE_REFUND" && Boolean(invoice.event_id) && (invoice.pending_refund_amount ?? 0) > 0;
+  const renderFocusedInvoice = (invoice: ManagedInvoice) => <div key={invoice.id}>
+    {renderInvoice(invoice)}
+    {canRecordRefund(invoice) && <div className="billing-actions"><button type="button" className="primary" disabled={saving} onClick={() => { setFeedback(""); setRefundRows([invoice]); }}>確認退款</button></div>}
+    {admin && invoice.status === "AWAITING_PAYMENT_CONFIRMATION" && <p className="form-note">先核對原付款是否入帳，再結算退款。</p>}
+  </div>;
+  if (props.focusEventId || props.focusInvoiceIds?.length) {
     const eventId = props.focusEventId;
-    const eventInvoices = invoices.filter((invoice) => referencesEvent(invoice, eventId));
+    const eventInvoices = invoices.filter((invoice) => eventId ? referencesEvent(invoice, eventId) : props.focusInvoiceIds?.includes(invoice.id));
     const entry = events.find((event) => event.id === eventId);
     const archived = eventInvoices.flatMap((invoice) => invoice.event_schedules ?? []).find((event) => event.id === eventId);
     return <div className="billing-workspace">
-      <div className="billing-outstanding"><strong>本場帳單 · {schedule(entry?.startsAt ?? archived?.starts_at)}</strong><button type="button" className="link" onClick={props.clearFocusEvent}>查看所有帳務</button></div>
-      {props.openEvent && (entry || archived) && <button type="button" className="link" onClick={() => props.openEvent?.(eventId)}>查看本場活動</button>}
+      <div className="billing-outstanding"><strong>{eventId ? "本場帳單 · " + schedule(entry?.startsAt ?? archived?.starts_at) : props.focusInvoice?.invoiceId ? "指定帳單" : "本批帳單"}</strong><button type="button" className="link" onClick={props.clearFocusEvent}>查看所有帳務</button></div>
+      {eventId && props.openEvent && (entry || archived) && <button type="button" className="link" onClick={() => props.openEvent?.(eventId)}>查看本場活動</button>}
       {feedback && <p className="billing-outstanding billing-receipt-feedback" role="status">{feedback}</p>}
-      <section className="billing-personal-list">{eventInvoices.length ? eventInvoices.map(renderInvoice) : <p className="billing-empty">本場沒有帳單。</p>}</section>
+      <section className="billing-personal-list">{eventInvoices.length ? eventInvoices.map(renderFocusedInvoice) : <p className="billing-empty">沒有符合條件的帳單。</p>}</section>
+      {refundRows && <OfflineRefundDialog invoices={refundRows} saving={saving} submit={recordRefunds} close={() => setRefundRows(null)} />}
       {receiptRows && <ReceiptDialog invoices={receiptRows} saving={saving} submit={recordReceipts} close={() => setReceiptRows(null)} />}
       {selection && <InvoiceOperationModal selection={selection} saving={saving} submit={submit} close={() => setSelection(null)} />}
     </div>;
@@ -257,7 +265,7 @@ export default function BillingDashboard(props: BillingProps) {
     <div className="billing-balance">
       <div><span>{admin ? "待收款總額" : "待結清金額"}</span><strong>{money(totalPending)}</strong></div>
       <div className="billing-balance-notes">
-        {summary.reportedCount > 0 && <span>含已回報、待對帳 {summary.reportedCount} 筆 · {money(summary.reportedAmount)}</span>}
+        {summary.reportedCount > 0 && <span>含待確認 {summary.reportedCount} 筆 · {money(summary.reportedAmount)}</span>}
         {summary.overdueAmount > 0 && <span>含逾期未繳 {money(summary.overdueAmount)}</span>}
         {refundSum > 0 && <span>待退款 {money(refundSum)}</span>}
         {!admin && <span>我的帳戶餘額 {money(viewer.creditBalance)}</span>}
@@ -276,7 +284,7 @@ export default function BillingDashboard(props: BillingProps) {
       <div className="billing-queue-top">
         <div className="billing-queue-filter" role="group" aria-label="待收款篩選">
           <button type="button" aria-pressed={queueFilter === "ALL"} onClick={() => { setQueueFilter("ALL"); setSelectedIds([]); }}>全部待收</button>
-          <button type="button" aria-pressed={queueFilter === "REPORTED"} onClick={() => { setQueueFilter("REPORTED"); setSelectedIds([]); }}>已回報{summary.reportedCount > 0 && ` ${summary.reportedCount}`}</button>
+          <button type="button" aria-pressed={queueFilter === "REPORTED"} onClick={() => { setQueueFilter("REPORTED"); setSelectedIds([]); }}>待確認{summary.reportedCount > 0 && ` ${summary.reportedCount}`}</button>
         </div>
         <span>{queue.length} 筆帳單</span>
       </div>
@@ -304,12 +312,12 @@ export default function BillingDashboard(props: BillingProps) {
       </div>}
       {!refunds.length && <p className="billing-empty">目前沒有待退款或待核對款項。</p>}
       <div className="billing-personal-list">{refunds.map((invoice) => {
-        const canRecord = admin && manage && invoice.status === "AWAITING_OFFLINE_REFUND" && Boolean(invoice.event_id) && (invoice.pending_refund_amount ?? 0) > 0;
+        const canRecord = canRecordRefund(invoice);
         const original = invoice.status === "AWAITING_PAYMENT_CONFIRMATION" ? invoices.find((entry) => entry.id === invoice.related_invoice_id) : null;
         return <div className="billing-refund-item" key={invoice.id}>{renderInvoice(invoice)}
           {canRecord && <div className="billing-actions">
             <label className="billing-checkbox"><input type="checkbox" checked={refundIds.includes(invoice.id)} disabled={saving || Boolean(refundEventId && refundEventId !== invoice.event_id) || (!refundIds.includes(invoice.id) && refundIds.length >= receiptMax)} onChange={(event) => { const checked = event.target.checked; setRefundIds((ids) => checked ? [...ids, invoice.id] : ids.filter((id) => id !== invoice.id)); }} />加入批次 · {invoice.memberName}</label>
-            <button type="button" className="primary" disabled={saving} onClick={() => { setFeedback(""); setRefundRows([invoice]); }}>登記已退</button>
+            <button type="button" className="primary" disabled={saving} onClick={() => { setFeedback(""); setRefundRows([invoice]); }}>確認退款</button>
           </div>}
           {invoice.status === "AWAITING_PAYMENT_CONFIRMATION" && <p className="form-note">先核對原付款是否入帳，再結算退款。</p>}
           {original && admin && <details className="billing-queue-detail"><summary>核對原帳單</summary>{renderInvoice(original)}</details>}
