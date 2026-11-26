@@ -165,19 +165,17 @@ export function defaultBillingPeriod(anchor?: string) {
   };
 }
 
-export function QuarterPeriodCreator({ events, saving, initialPeriod, initialEventIds = [], initialDate, onCreate, onCreated }: {
+export function QuarterPeriodCreator({ events, saving, initialPeriod, onCreate, onCreated }: {
   events: QuarterPeriodEvent[];
   saving: boolean;
   initialPeriod?: QuarterBillingPeriod;
-  initialEventIds?: string[];
-  initialDate?: string;
   onCreate: (input: QuarterPeriodInput) => Promise<QuarterPeriodResult | null>;
   onCreated?: (id: string) => void | Promise<void>;
 }) {
   const [period, setPeriod] = useState(() => initialPeriod
     ? { label: initialPeriod.label, startDate: initialPeriod.startDate, endDate: initialPeriod.endDate }
-    : defaultBillingPeriod(initialDate));
-  const [selected, setSelected] = useState<string[]>(() => [...new Set([...(initialPeriod?.eventIds ?? []), ...initialEventIds])]);
+    : defaultBillingPeriod());
+  const [selected, setSelected] = useState<string[]>(() => [...new Set(initialPeriod?.eventIds ?? [])]);
   const [error, setError] = useState("");
   const pendingId = useRef<string | null>(null);
   const dateFormat = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" });
@@ -235,7 +233,7 @@ export function QuarterPeriodCreator({ events, saving, initialPeriod, initialEve
           </li>)}</ul>
         </div> : <p className="form-note" role="status">這個日期範圍目前沒有可納入的活動。</p>}
         {error && <p className="guest-settlement-error" role="alert">{error}</p>}
-        <button className="primary" disabled={!selectedIds.length}>{saving ? "儲存中…" : initialEventIds.length ? "儲存草稿並預覽" : initialPeriod ? "儲存草稿變更" : "儲存期間"}</button>
+        <button className="primary" disabled={!selectedIds.length}>{saving ? "儲存中…" : initialPeriod ? "儲存草稿變更" : "儲存期間"}</button>
       </fieldset>
     </form>
   );

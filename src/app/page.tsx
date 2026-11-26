@@ -74,7 +74,6 @@ type Viewer = {
   hasRecoveryCode: boolean;
   hasPasskey: boolean;
 };
-type GuestSettlementDecision = { memberId: string; decision: "BILL" | "SKIP" };
 type GuestSettlement = { memberId: string; status: "ISSUED" | "SKIPPED" | "LEGACY"; amount: number | null };
 type GuestSettlementReceipt = { issued: number; skipped: number };
 type QuarterInvoicePreviewRow = { memberId: string; name: string; eventCount: number; grossAmount: number; creditApplied: number; amount: number; payerKind?: "MEMBER" | "GUEST" };
@@ -180,7 +179,6 @@ export default function Home() {
   const [editingAnnouncement, setEditingAnnouncement] = useState<NewsItem | null>(null);
   const [announcementSaving, setAnnouncementSaving] = useState(false);
   const [billingManagerOpen, setBillingManagerOpen] = useState(false);
-  const [calendarBillIds, setCalendarBillIds] = useState<string[]>([]);
   const [calendarQuarterMode, setCalendarQuarterMode] = useState(false);
   const [calendarPickedIds, setCalendarPickedIds] = useState<string[]>([]);
   const [calendarIssueOpen, setCalendarIssueOpen] = useState(false);
@@ -864,7 +862,6 @@ export default function Home() {
             reportPayment={reportInvoicePayment}
             remindPayment={remindInvoicePayment}
             openRates={() => {
-              setCalendarBillIds([]);
               setBillingManagerTab("rates");
               setBillingManagerOpen(true);
             }}
@@ -991,7 +988,6 @@ export default function Home() {
           currentFees={currentFees}
           feeRates={feeRates}
           periods={quarterBillingPeriods}
-          calendarBillIds={calendarBillIds}
           events={events}
           createBillingPeriod={async (input) => {
             const result = await manageInvoiceAction("createQuarterBillingPeriod", input);
@@ -1374,7 +1370,6 @@ function BillingManagerModal({
   currentFees,
   feeRates,
   periods,
-  calendarBillIds,
   events,
   createBillingPeriod,
   onClose,
@@ -1388,7 +1383,6 @@ function BillingManagerModal({
   currentFees: { member: number; guest: number };
   feeRates: FeeRate[];
   periods: QuarterBillingPeriod[];
-  calendarBillIds: string[];
   events: ClubEvent[];
   createBillingPeriod: ComponentProps<typeof QuarterPeriodCreator>["onCreate"];
   onClose: () => void;
@@ -1402,16 +1396,12 @@ function BillingManagerModal({
   due.setUTCDate(due.getUTCDate() + 14);
   const inputDate = (date: Date) => date.toISOString().slice(0, 10);
   const billablePlans = periods.filter((period) => period.status === "PLANNED" || period.status === "GENERATING");
-  const pickedDate = events.find((event) => event.id === calendarBillIds[0])?.startsAt;
-  const pickedDay = pickedDate ? taipeiInputDate(pickedDate) : "";
-  const matchingDraft = billablePlans.find((period) => period.status === "PLANNED" && period.revision
-    && period.startDate <= pickedDay && pickedDay <= period.endDate);
-  const [selectedPlanId, setSelectedPlanId] = useState(matchingDraft?.id ?? (calendarBillIds.length ? "" : billablePlans[0]?.id ?? ""));
+  const [selectedPlanId, setSelectedPlanId] = useState(billablePlans[0]?.id ?? "");
   const selectedPlan = billablePlans.find((plan) => plan.id === selectedPlanId);
   const [dueDate, setDueDate] = useState(() => inputDate(due));
   const [quarterPreview, setQuarterPreview] = useState<(QuarterInvoicePreview & { planId: string; dueDate: string }) | null>(null);
   const [quarterError, setQuarterError] = useState("");
-  const [draftEditor, setDraftEditor] = useState<"new" | "edit" | null>(() => matchingDraft ? "edit" : calendarBillIds.length || !billablePlans.length ? "new" : null);
+  const [draftEditor, setDraftEditor] = useState<"new" | "edit" | null>(billablePlans.length ? null : "new");
   const matchingPreview = quarterPreview?.planId === selectedPlanId && quarterPreview.dueDate === dueDate ? quarterPreview : null;
   const money = (amount: number) => "NT$ " + amount.toLocaleString("zh-TW");
 
@@ -1455,13 +1445,8 @@ function BillingManagerModal({
             <button type="button" className="secondary" aria-expanded={draftEditor === "new"} disabled={saving} onClick={() => setDraftEditor((current) => current === "new" ? null : "new")}>{draftEditor === "new" ? "收合新增期間" : "＋ 新增社費期間"}</button>
             {selectedPlan?.status === "PLANNED" && selectedPlan.revision && <button type="button" className="link" aria-expanded={draftEditor === "edit"} disabled={saving} onClick={() => setDraftEditor((current) => current === "edit" ? null : "edit")}>{draftEditor === "edit" ? "收合編輯" : "調整本期場次"}</button>}
           </div>
-          {draftEditor && <QuarterPeriodCreator key={draftEditor === "edit" ? selectedPlan?.id : "new"} initialPeriod={draftEditor === "edit" ? selectedPlan : undefined} initialEventIds={calendarBillIds} initialDate={pickedDay} events={events} saving={saving} onCreate={createBillingPeriod} onCreated={async (id) => {
+          {draftEditor && <QuarterPeriodCreator key={draftEditor === "edit" ? selectedPlan?.id : "new"} initialPeriod={draftEditor === "edit" ? selectedPlan : undefined} events={events} saving={saving} onCreate={createBillingPeriod} onCreated={(id) => {
             setSelectedPlanId(id); setQuarterPreview(null); setQuarterError(""); setDraftEditor(null);
-            if (calendarBillIds.length && dueDate) {
-              const result = await previewQuarterlyInvoices({ planId: id, dueDate });
-              if (result) setQuarterPreview({ ...result, planId: id, dueDate });
-              else setQuarterError("草稿已儲存，請重新預覽。");
-            }
           }} />}
           <form className="manager-form" onSubmit={(event) => void submitQuarter(event)}>
             <label>待開單的社費期間<select name="planId" value={selectedPlanId} disabled={saving} onChange={(event) => { setSelectedPlanId(event.target.value); setQuarterPreview(null); setQuarterError(""); setDraftEditor(null); }} required>

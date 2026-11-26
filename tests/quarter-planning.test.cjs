@@ -209,12 +209,11 @@ test("invoice management requires administrator and rejects ledger entries", asy
  s.db.seed("invoices/credit-test",{type:"CREDIT",status:"CONFIRMED",amount:-100,memberId:"member"});
  await assert.rejects(s.mutate("voidInvoice",managementInput(s,"credit-test")),/調整紀錄/);
 });
-test("summary counts distinct people, excludes refunds/void bills and separates pending from reported",()=>{
+test("summary excludes refunds and void bills and separates pending from reported",()=>{
  const base={id:"one",member_id:"member",memberName:"小明",type:"QUARTERLY_MEMBER",status:"PENDING",gross_amount:1500,credit_applied:0,amount:1500};
  const invoices=[base,{...base,id:"two",type:"SINGLE_EVENT",amount:180},{...base,id:"reported",member_id:"second",status:"REPORTED",amount:200},{...base,id:"credit",type:"CREDIT",status:"CONFIRMED",amount:-150},{...base,id:"void",status:"VOID",amount:999}];
  const summary=billingView.billingSummary(invoices);
- assert.equal(summary.unpaidPeople,1);assert.equal(summary.unpaidAmount,1680);assert.equal(summary.reportedAmount,200);
- assert.equal(billingView.groupByPerson(invoices)[0].invoices.length,2);
+ assert.equal(summary.unpaidAmount,1680);assert.equal(summary.reportedAmount,200);
 });
 test("event counts are not settled for missing bills or reported transfers; shared quarterly bill counted once per payer",()=>{
  const event={id:"event",courts:"A",bookings:[{memberId:"member",name:"小明",kind:"社員"},{memberId:"guest",name:"小王",kind:"非社員",transferred:true}]};

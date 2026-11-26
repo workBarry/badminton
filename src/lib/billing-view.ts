@@ -49,19 +49,9 @@ export function invoiceInRange(invoice: ManagedInvoice, start: string, end: stri
 export function billingSummary(invoices: ManagedInvoice[], now = new Date()) {
   const pending = invoices.filter((invoice) => isPrincipal(invoice) && invoice.status === "PENDING");
   const reported = invoices.filter((invoice) => isPrincipal(invoice) && invoice.status === "REPORTED");
-  return { unpaidPeople: new Set(pending.map((invoice) => invoice.member_id)).size,
-    unpaidAmount: pending.reduce((sum, invoice) => sum + invoice.amount, 0),
+  return { unpaidAmount: pending.reduce((sum, invoice) => sum + invoice.amount, 0),
     reportedCount: reported.length, reportedAmount: reported.reduce((sum, invoice) => sum + invoice.amount, 0),
     overdueAmount: pending.filter((invoice) => invoice.due_at && new Date(invoice.due_at) < now).reduce((sum, invoice) => sum + invoice.amount, 0) };
-}
-export function groupByPerson(invoices: ManagedInvoice[]) {
-  const groups = new Map<string, { id: string; name: string; accountName?: string; invoices: ManagedInvoice[] }>();
-  for (const invoice of invoices.filter(isPrincipal).filter((entry) => !["VOID", "REFUNDED", "CREDITED"].includes(entry.status))) {
-    const group = groups.get(invoice.member_id) ?? { id: invoice.member_id, name: invoice.memberName, accountName: invoice.memberAccountName, invoices: [] };
-    group.invoices.push(invoice); groups.set(group.id, group);
-  }
-  return [...groups.values()].map((group) => ({ ...group, ...billingSummary(group.invoices) }))
-    .sort((a, b) => (b.unpaidAmount + b.reportedAmount) - (a.unpaidAmount + a.reportedAmount) || a.name.localeCompare(b.name, "zh-Hant"));
 }
 export function activityPayments(event: BillingActivity, invoices: ManagedInvoice[]) {
   const participants = new Map(event.bookings.map((booking) => [booking.memberId, booking]));
