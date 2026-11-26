@@ -3451,14 +3451,14 @@ dialog.event-dialog {
 .activity-detail-card .activity-detail-action { position:relative; z-index:2; }
 .calendar-session-check { justify-self:start; cursor:pointer; }
 
-/* Billing mode: amber = not billed; rose = payment still outstanding. */
+/* Billing mode: rose = not billed; amber = payment still outstanding. */
 .activity-month-workspace .calendar-date-picker[data-fee-tone="unbilled"] {
-  background:#fff0d8;
-  border-color:#d9ac71;
-}
-.activity-month-workspace .calendar-date-picker[data-fee-tone="outstanding"] {
   background:#fce5eb;
   border-color:#ce859e;
+}
+.activity-month-workspace .calendar-date-picker[data-fee-tone="outstanding"] {
+  background:#fff0d8;
+  border-color:#d9ac71;
 }
 .activity-month-workspace .calendar-date-picker[data-fee-tone]:hover {
   box-shadow:inset 0 0 0 1px currentColor;
