@@ -866,27 +866,42 @@ select {
   font-size: 14px;
 }
 .attendance-summary {
-  display: flex;
-  gap: 0;
+  --attendance-value-size: 29px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(112px, 1fr));
   border: 1px solid #cfe1d6;
   border-radius: 14px;
   background: var(--card);
 }
 .attendance-summary > div {
-  min-width: 104px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
   padding: 17px 20px;
 }
 .attendance-summary > div + div {
   border-left: 1px solid #cfe1d6;
 }
+.attendance-summary > .attendance-personal {
+  align-items: center;
+  justify-content: center;
+  padding-inline: 2px;
+}
+.attendance-personal .badge {
+  font-size: var(--attendance-value-size);
+  white-space: nowrap;
+}
 .attendance-summary small {
-  display: block;
-  margin-bottom: 5px;
+  white-space: nowrap;
   color: #516765;
   font-size: 11px;
 }
 .attendance-summary strong {
-  font-size: 29px;
+  margin-left: auto;
+  text-align: right;
+  white-space: nowrap;
+  font-size: var(--attendance-value-size);
 }
 .attendance-summary strong span {
   color: #516765;
@@ -894,7 +909,6 @@ select {
   font-weight: 600;
 }
 .next-event-footer,
-.next-event-status,
 .next-event-actions {
   display: flex;
   flex-wrap: wrap;
@@ -906,10 +920,6 @@ select {
   gap: 12px 20px;
   padding-top: 16px;
   border-top: 1px solid #cfe1d6;
-}
-.next-event-status {
-  color: #516765;
-  font-size: 13px;
 }
 .next-event-actions > button {
   min-height: 44px;
@@ -1259,9 +1269,12 @@ dialog.event-dialog {
   border-color: transparent;
   background: transparent;
 }
-.calendar-day.has-event {
+.calendar-day.has-event,
+.activity-month-workspace .calendar-session[data-fee-tone="clear"] {
   border-color: #cde1db;
   background: #edf6f2;
+}
+.calendar-day.has-event {
   color: var(--green);
 }
 .calendar-day.has-event:hover {
@@ -2724,15 +2737,16 @@ dialog.event-dialog {
     font-size: 12px;
   }
   .attendance-summary {
+    --attendance-value-size: 24px;
     width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .attendance-summary > div {
-    flex: 1;
-    min-width: 0;
-    padding: 12px 16px;
+    padding: 12px clamp(6px, 2vw, 16px);
+    gap: 5px;
   }
-  .attendance-summary strong {
-    font-size: 24px;
+  .attendance-personal .badge {
+    padding-inline: clamp(1px, calc((100vw - 320px) / 10), 8px);
   }
   .next-event-actions { width: 100%; }
   .next-event-actions > button { flex: 1 1 130px; }
@@ -2904,11 +2918,11 @@ dialog.event-dialog {
 .calendar-session-check { justify-self:start; cursor:pointer; }
 
 /* Billing mode: orange = not billed; blue = awaiting collection or confirmation. */
-.activity-month-workspace .calendar-date-picker[data-fee-tone="unbilled"] {
-  background:#fff1dc;
-  border-color:#d48c49;
+.activity-month-workspace :is(.calendar-date-picker, .calendar-session)[data-fee-tone="unbilled"] {
+  background:#fff4e4;
+  border-color:#dc9b61;
 }
-.activity-month-workspace .calendar-date-picker[data-fee-tone="outstanding"] {
+.activity-month-workspace :is(.calendar-date-picker, .calendar-session)[data-fee-tone="outstanding"] {
   background:#d8e7ff;
   border-color:#719dcc;
 }
@@ -2920,7 +2934,7 @@ dialog.event-dialog {
   box-shadow:inset 0 0 0 1px #3d806b;
 }
 .event-dialog-roster h4 { margin:8px 0; font-size:.9rem; }
-.event-roster-badges { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:4px; }
+.event-roster-badges { display:grid; grid-template-columns:auto 38px; justify-items:end; align-items:center; gap:4px; flex:none; }
 .event-roster-badges .badge, #event-billing-panel .event-dialog-roster .badge { white-space:nowrap; }
 
 
@@ -3007,6 +3021,9 @@ dialog.issue-review[open] { display: flex; flex-direction: column; }
 .issue-review-header > span, .issue-review-group small, .issue-review-footer small { color: var(--muted); font-size: .8rem; }
 .issue-review-header h2 { margin: 4px 0 0; }
 .issue-review-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; gap: 10px; }
+.issue-mode-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.issue-mode-picker > button { min-height: 44px; }
+.issue-review-payer-group h4 { margin: 8px 0 2px; color: var(--muted); font-size: .8rem; }
 .issue-review-group { min-width: 0; border: 1px solid var(--line, #e4eae5); border-radius: 12px; }
 .issue-review-group > summary { list-style: none; display: flex; align-items: center; gap: 12px; padding: 12px; min-height: 50px; cursor: pointer; }
 .issue-review-group > summary::-webkit-details-marker { display: none; }
@@ -3038,13 +3055,14 @@ dialog.issue-review[open] { display: flex; flex-direction: column; }
 
 .event-dialog-roster li.event-roster-link-row { padding: 0; }
 .event-roster-invoice-link {
+  position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
   width: 100%;
   min-height: 44px;
-  padding: 10px 12px;
+  padding: 9px 11px;
   border: 1px solid #d3e4f3;
   border-radius: inherit;
   background: #f4f9fd;
@@ -3054,7 +3072,7 @@ dialog.issue-review[open] { display: flex; flex-direction: column; }
   cursor: pointer;
 }
 .event-roster-invoice-link:hover { background: #eaf4ff; }
-.event-roster-link-arrow { color: #315d85; font-size: 18px; line-height: 1; }
+.event-roster-link-arrow { position:absolute; inset-inline-end:3px; top:50%; transform:translateY(-50%); color:#315d85; font-size:18px; line-height:1; }
 
 .issue-review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .issue-review-actions > button { min-height: 44px; }
@@ -3105,7 +3123,7 @@ dialog.issue-review[open] { display: flex; flex-direction: column; }
 }
 
 .announcement-ticker {
-  --ticker-height: 44px;
+  --ticker-height: 38px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
@@ -3122,7 +3140,7 @@ dialog.issue-review[open] { display: flex; flex-direction: column; }
 }
 .announcement-ticker[data-placement="mobile"] { display: none; }
 .announcement-ticker[data-placement="desktop"] {
-  min-height: 40px;
+  --ticker-height: 34px;
   margin-top: 16px;
   padding-inline: 12px;
   border: 1px solid #c8e1d3;

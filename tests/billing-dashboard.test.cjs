@@ -204,16 +204,27 @@ test("活動收費模式可從月曆直接選季費，單場帳務只有一個�
   assert.doesNotMatch(dateCell(card), /calendar-fee-tag|data-fee-tone/);
   assert.doesNotMatch(dateCell(renderCard(true, event, [], false)), /calendar-fee-tag|data-fee-tone/);
   assert.doesNotMatch(dateCell(renderCard(true, { ...event, memberBilling: "FREE" })), /calendar-fee-tag|data-fee-tone/);
-  assert.doesNotMatch(dateCell(renderCard(true, { ...event, quarterEligible: false, bookings: [{ ...event.bookings[0], rank: "候補" }] })), /calendar-fee-tag|data-fee-tone/);
+  assert.match(dateCell(renderCard(true, { ...event, quarterEligible: false, bookings: [{ ...event.bookings[0], rank: "候補" }] })), /data-fee-tone="unbilled"/);
   assert.doesNotMatch(dateCell(renderCard(true, { ...event, quarterEligible: false, guestSettlements: [{ memberId: "guest", status: "SKIPPED" }] })), /calendar-fee-tag|data-fee-tone/);
   const bills = [
     { ...invoice("guest", "SINGLE_EVENT", "PENDING", 180, 7), event_id: event.id },
     { ...invoice("another", "MEMBER_EXTRA", "REPORTED", 150, 7), event_id: event.id },
   ];
   assert.match(dateCell(renderCard(true, event, bills)), /data-fee-tone="outstanding".*aria-label="[^"]*，未收齊，待確認[^"]*"/);
+  const sessionTone = (markup) => markup.match(/<article class="calendar-session activity-detail-card" data-fee-tone="([^"]+)"/)?.[1];
+  assert.equal(sessionTone(card), undefined);
+  assert.equal(sessionTone(renderCard(true, { ...event, memberBilling: "FREE" })), "clear");
+  assert.equal(sessionTone(renderCard(true, event, bills)), "outstanding");
+  assert.equal(sessionTone(renderCard(true, event, [bills[0]])), "unbilled");
   assert.doesNotMatch(dateCell(renderCard(true, event, bills)), /未開單|>未收齊<|>待確認</);
   assert.match(renderCard(true, event, bills), /<dt>社員<\/dt><dd>待確認<\/dd>.*<dt>非社員<\/dt><dd>未收齊<\/dd>/);
   assert.match(dateCell(renderCard(true, event, [bills[0]])), /data-fee-tone="unbilled".*title="未開單、未收齊"/);
+  const mixedBilling = /<dt>社員<\/dt><dd>未開單<\/dd>.*<dt>非社員<\/dt><dd>未收齊<\/dd>/;
+  assert.match(renderCard(true, event, [bills[0]]), mixedBilling);
+  const mixedDetail = renderDialog({ billingInvoices: [bills[0]], invoiceLabel: "已開單" });
+  assert.match(mixedDetail, mixedBilling);
+  assert.doesNotMatch(mixedDetail, /<dt>收費歸屬<\/dt>/);
+  assert.doesNotMatch(renderDialog({ isAdmin: false, billingInvoices: [bills[0]] }), mixedBilling);
   assert.match(dateCell(renderCard(true, { ...event, bookings: [] })), /data-fee-tone="unbilled"/);
   assert.match(dateCell(renderCard(true, { ...event, quarterEligible: false }, [{ ...bills[0], status: "REPORTED" }])), /data-fee-tone="outstanding"/);
   const payerBills = [
@@ -281,8 +292,8 @@ test("活動收費模式可從月曆直接選季費，單場帳務只有一個�
     events: [event, mixed, guestOnly, fullyBilled], invoices: [settledBill, mixedExisting], periods: [], request: noop,
   }));
   assert.match(issue, />核對帳單<\/h2>/);
-  assert.match(issue, /<summary>.*?<strong>季費<\/strong>.*?2 場<\/span><\/summary>/);
-  assert.match(issue, /<summary><span><strong>零打<\/strong><\/span>.*?>2 場 · 1 人<\/span><\/summary>/);
+  assert.match(issue, /aria-label="帳單類型".*aria-pressed="false">季費<\/button>.*aria-pressed="false">單場活動費<\/button>/);
+  assert.doesNotMatch(issue, /class="issue-review-group"/);
   assert.equal((issue.match(/>確認開單<\/button>/g) ?? []).length, 1);
   assert.doesNotMatch(issue, /<details[^>]+ open|預覽季費|核對零打名單|改為單場補收|本次開季費|繳費期限/);
   const paid = { ...bills[1], status: "CONFIRMED" };

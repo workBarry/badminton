@@ -1046,6 +1046,7 @@ function previewCredit(raw: string | undefined) {
 
 async function publishGuestEventBills(input: Record<string, string>, actor: Viewer, preview = false) {
   const partial = preview || Boolean(input.previewKey);
+  const single = input.billingMode === "single";
   const prior = preview ? previewCredit(input.priorCredit) : new Map<string, number>();
   if (!input.eventId || input.eventId.includes("/") || input.eventId.length > 200) throw new Error("活動識別碼不正確");
   let raw: unknown;
@@ -1073,17 +1074,19 @@ async function publishGuestEventBills(input: Record<string, string>, actor: View
     if (!eventSnapshot.exists || event?.status !== "SCHEDULED") throw new Error("沒有可開單的活動");
     const other = !isBadmintonEvent(event);
     if (!eventAllowsNewBilling(event)) throw new Error("本場活動不開立帳單");
-    if (other && !partial) throw new Error("請先核對這場活動的帳單");
+    const separateRates = other || single;
+    if (separateRates && !partial) throw new Error("請先核對這場活動的帳單");
     const startsAt = dateValue(event.startsAt);
     const endsAt = dateValue(event.endsAt);
     if (!startsAt || !endsAt || !Number.isFinite(+startsAt) || !Number.isFinite(+endsAt) || endsAt <= startsAt) throw new Error("活動時間資料不正確");
     const guestFee = Number(event.guestFeeSnapshot ?? 180);
-    const memberFee = other ? Number(event.memberFeeSnapshot) : 0;
+    const memberFee = separateRates ? Number(event.memberFeeSnapshot ?? (other ? NaN : event.memberBilling === "NO_CHARGE" ? 0 : 150)) : 0;
     if (!Number.isSafeInteger(guestFee) || guestFee < Number(other) || guestFee > 10_000
-      || (other && (!Number.isSafeInteger(memberFee) || memberFee < 1 || memberFee > 10_000))) throw new Error("活動收費金額不正確");
+      || (separateRates && (!Number.isSafeInteger(memberFee) || memberFee < Number(other) || memberFee > 10_000))) throw new Error("活動收費金額不正確");
+    const payerKindFor = (booking: DocumentData) => booking.kindSnapshot === "MEMBER" ? "MEMBER" : "GUEST";
     const eligible = new Set(bookings.docs.filter((entry) => {
       const booking = entry.data();
-      return booking.status === "REGULAR" && (other || booking.kindSnapshot === "GUEST") && !booking.transferredFromMemberId;
+      return (booking.status === "REGULAR" || booking.status === "STANDBY") && (other || (payerKindFor(booking) === "MEMBER" ? single && memberFee > 0 : !single || guestFee > 0)) && !booking.transferredFromMemberId;
     }).map((entry) => String(entry.data().memberId ?? entry.id)));
     const existing = storedGuestSettlements(event);
     const settled = new Map(existing.map((entry) => [entry.memberId, entry.status]));
@@ -1098,8 +1101,8 @@ async function publishGuestEventBills(input: Record<string, string>, actor: View
     if (!selected.length && !partial) return { issued: 0, skipped: 0 };
 
     const billIds = selected.filter((id) => decisions.get(id) === "BILL");
-    if (!preview && billIds.length && (!/^\d+$/.test(input.reviewedGuestFee ?? "") || Number(input.reviewedGuestFee) !== guestFee || (other && Number(input.reviewedMemberFee) !== memberFee))) {
-      throw new Error(other ? "活動費用已變更或未核對，請重新整理後再預覽開單" : "零打費已變更或未核對，請重新整理後再預覽開單");
+    if (!preview && billIds.length && (!/^\d+$/.test(input.reviewedGuestFee ?? "") || Number(input.reviewedGuestFee) !== guestFee || (separateRates && Number(input.reviewedMemberFee) !== memberFee))) {
+      throw new Error(separateRates ? "活動費用已變更或未核對，請重新整理後再預覽開單" : "零打費已變更或未核對，請重新整理後再預覽開單");
     }
     const members = billIds.length ? await transaction.getAll(...billIds.map((id) => db.collection("members").doc(id))) : [];
     if (members.some((entry) => !entry.exists)) throw new Error("零打球友資料不存在，請重新整理");
@@ -1107,16 +1110,17 @@ async function publishGuestEventBills(input: Record<string, string>, actor: View
     const bookingsByMember = new Map(bookings.docs.map((doc) => [String(doc.data().memberId ?? doc.id), doc.data()]));
     const rows = billIds.sort().map((memberId) => {
       const data = memberById.get(memberId)!.data()!;
-      const payerKind: "MEMBER" | "GUEST" = other && (startsAt > now ? memberAt(data, startsAt) : bookingsByMember.get(memberId)?.kindSnapshot === "MEMBER") ? "MEMBER" : "GUEST";
+      const booking = bookingsByMember.get(memberId)!;
+      const payerKind: "MEMBER" | "GUEST" = other && startsAt > now ? (memberAt(data, startsAt) ? "MEMBER" : "GUEST") : separateRates ? payerKindFor(booking) : "GUEST";
       const grossAmount = payerKind === "MEMBER" ? memberFee : guestFee;
       const creditApplied = Math.min(grossAmount, Math.max(0, Number(data.creditBalance ?? 0) - (prior.get(memberId) ?? 0)));
       if (!Number.isSafeInteger(creditApplied)) throw new Error("零打球友的帳戶餘額不正確");
-      return { memberId, name: String(data.displayName ?? "未知使用者"), eventCount: 1, grossAmount, creditApplied, amount: grossAmount - creditApplied, ...(other ? { payerKind } : {}) };
+      return { memberId, name: String(data.displayName ?? "未知使用者"), eventCount: 1, grossAmount, creditApplied, amount: grossAmount - creditApplied, ...(separateRates ? { payerKind } : {}) };
     });
     const skipped = selected.filter((id) => decisions.get(id) === "SKIP").sort();
-    const periodLabel = `${taipeiDate(startsAt)} ${other ? "單場活動費" : "零打費"}`;
+    const periodLabel = `${taipeiDate(startsAt)} ${separateRates ? "單場活動費" : "零打費"}`;
     const totalAmount = rows.reduce((sum, row) => sum + row.amount, 0);
-    const previewKey = createHash("sha256").update(JSON.stringify([eventRef.id, startsAt.toISOString(), endsAt.toISOString(), event.courts, guestFee, ...(other ? [memberFee] : []), rows, skipped])).digest("hex");
+    const previewKey = createHash("sha256").update(JSON.stringify([eventRef.id, startsAt.toISOString(), endsAt.toISOString(), event.courts, guestFee, ...(separateRates ? [memberFee] : []), ...(single ? ["single"] : []), rows, skipped])).digest("hex");
     if (preview) return { rows, periodLabel, totalAmount, previewKey };
     if (partial && previewKey !== input.previewKey) throw new Error("名單、場次或餘額已變更，請重新核對");
     const priced = new Map(rows.map((row) => [row.memberId, row]));
@@ -1131,7 +1135,7 @@ async function publishGuestEventBills(input: Record<string, string>, actor: View
       const member = memberById.get(memberId)!;
       const memberData = member.data()!;
       const { grossAmount, creditApplied, amount, payerKind } = priced.get(memberId)!;
-      const feeLabel = other ? "單場活動費" : "零打活動費";
+      const feeLabel = separateRates ? "單場活動費" : "零打活動費";
       // The transaction and roster decision prevent duplicates. A new booking after cancellation gets a new invoice ID.
       const invoiceId = "guest-settlement-" + randomUUID();
       invoiceIds.push(invoiceId);
@@ -1156,7 +1160,7 @@ async function publishGuestEventBills(input: Record<string, string>, actor: View
         title: "活動帳單已開立", message: `${taipeiDate(event.startsAt)} ${feeLabel}；應付 NT$${amount}`,
         type: "PAYMENT", tab: "費用管理", recipientId: memberId, target: {invoiceId},
       }));
-      results.push({ memberId, status: "ISSUED", amount, ...(other ? { payerKind } : {}) });
+      results.push({ memberId, status: "ISSUED", amount, ...(separateRates ? { payerKind } : {}) });
     }
     transaction.update(eventRef, { guestSettlements: [...existing, ...results], guestSettledAt: now, guestSettledBy: actor.id, updatedAt: now });
     return { issued: billIds.length, skipped: skipped.length, ...(partial ? { totalAmount } : {}), ...(input.includeInvoiceIds === "true" ? { invoiceIds } : {}) };
@@ -1199,7 +1203,11 @@ async function cancel(input: Record<string, string>, actor: Viewer) {
         updatedAt: now,
       });
     } else {
-      transaction.update(eventRef, { standbyCount: FieldValue.increment(-1), updatedAt: now });
+      transaction.update(eventRef, {
+        standbyCount: FieldValue.increment(-1),
+        ...(clearGuestDecision ? { guestSettlements: pendingDecisions.filter((entry) => entry.memberId !== memberSnapshot.id) } : {}),
+        updatedAt: now,
+      });
     }
 
     for (const invoice of relatedInvoices) cancelSingleEventInvoice(transaction, db, invoice, input.eventId, "BOOKING_CANCELLED", now, actor, linkedCredits.filter((credit) => credit.relatedInvoiceId === invoice.id));
@@ -1790,7 +1798,7 @@ async function memberExtraQuote(transaction: Transaction, db: Firestore, event: 
   if (!Number.isSafeInteger(fee) || fee <= 0 || fee > 10_000) throw new Error("這場活動沒有有效的社員費率，請先核對");
   const memberIds = [...new Set(bookings.docs.filter((doc) => {
     const booking = doc.data();
-    return booking.status === "REGULAR" && booking.kindSnapshot === "MEMBER" && !booking.transferredFromMemberId;
+    return (booking.status === "REGULAR" || booking.status === "STANDBY") && booking.kindSnapshot === "MEMBER" && !booking.transferredFromMemberId;
   }).map((doc) => String(doc.data().memberId ?? doc.id)))];
   if (memberIds.length > 100) throw new Error("本場社員超過 100 位，無法在同一批安全開立加場費");
   const members = memberIds.length ? await transaction.getAll(...memberIds.map((id) => db.collection("members").doc(id))) : [];
