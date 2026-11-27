@@ -238,7 +238,7 @@ test("administrator can report and confirm their own membership payment", async 
   await s.mutate("confirmPayment", { invoiceId: "quarter-test-plan-admin" }, admin);
   assert.equal(s.db.data("invoices/quarter-test-plan-admin").status, "CONFIRMED");
 });
-test("billing shows direct receipt for both pending and reported bills, while optional actions stay scoped", () => {
+test("billing keeps receipt selection and optional actions scoped", () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
   const source = fs.readFileSync(path.resolve(__dirname, "../src/app/page.tsx"), "utf8");
@@ -257,12 +257,14 @@ test("billing shows direct receipt for both pending and reported bills, while op
   const render = (entry) => renderToStaticMarkup(React.createElement(loaded.exports.BillingForTest, { ...props, invoices: [entry] }));
   const own = render(invoice);
   assert.match(own, /回報已轉帳（選用）/);
-  assert.match(own, /確認收款/);
+  assert.match(own, /class="billing-receipt-check"/);
+  assert.doesNotMatch(own, /確認收款/);
   assert.doesNotMatch(own, /提醒繳費/);
   const others = render({ ...invoice, member_id: "someone-else" });
   assert.match(others, /提醒繳費/);
   assert.doesNotMatch(others, /回報已轉帳/);
-  assert.match(render({ ...invoice, status: "REPORTED" }), /確認收款/);
+  assert.match(render({ ...invoice, status: "REPORTED" }), /含待確認 1 筆/);
+  assert.doesNotMatch(render({ ...invoice, status: "REPORTED" }), /class="billing-receipt-check"/);
   assert.doesNotMatch(render({ ...invoice, status: "CONFIRMED" }), /回報已轉帳|提醒繳費|確認收款/);
 });
 const admin = { id: "admin", name: "社長", role: "ADMIN" };

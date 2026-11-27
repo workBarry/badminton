@@ -2,10 +2,10 @@
 
 import { type ComponentProps, type CSSProperties, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
+import { startRegistration } from "@simplewebauthn/browser";
 import QuarterPlanner, { QuarterPeriodCreator, defaultBillingPeriod } from "@/app/quarter-planner";
 import LoadingScreen from "@/app/loading-screen";
-import ShuttleArt from "@/app/shuttle-art";
+import { ShuttleLogo } from "@/app/shuttle-art";
 import BillingDashboard, { type BillingProps } from "@/app/billing-dashboard";
 import BalanceHistoryDialog, { type BalanceAdjustmentInput } from "@/app/balance-history-dialog";
 import FloatingNotifications from "@/app/floating-notifications";
@@ -14,9 +14,7 @@ import type { CalendarNotices, OfficialClosure } from "@/lib/official-closures";
 import type { QuarterPlan, QuarterBillingPeriod } from "@/lib/quarter-planning";
 import { clubIdentityLabel } from "@/lib/club-roles";
 import type {
-  AuthenticationResponseJSON,
   PublicKeyCredentialCreationOptionsJSON,
-  PublicKeyCredentialRequestOptionsJSON,
   RegistrationResponseJSON,
 } from "@simplewebauthn/server";
 
@@ -25,12 +23,12 @@ type Tab = "總覽" | "活動" | "公告" | "球友名單" | "費用管理" | "�
 const sectionDescriptions: Record<Tab, string> = {
   總覽: "",
   活動: "",
-  公告: "查看球友會的最新消息與重要通知。",
+  公告: "",
   球友名單: "",
-  費用管理: "查看付款狀態、應繳費用與帳單紀錄。",
+  費用管理: "",
   個人資訊: "管理顯示名稱、社員身分與帳號安全。",
 };
-const sidebarItems: { label: Exclude<Tab, "個人資訊">; icon: ReactNode }[] = [
+const sidebarItems: { label: Exclude<Tab, "個人資訊">; navLabel?: string; icon: ReactNode }[] = [
   {
     label: "總覽",
     icon: <><path d="m3 10 9-6.5 9 6.5M5.5 9v9.5A1.5 1.5 0 0 0 7 20h10a1.5 1.5 0 0 0 1.5-1.5V9" /><path d="M9.5 20v-5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v5" /></>,
@@ -45,10 +43,12 @@ const sidebarItems: { label: Exclude<Tab, "個人資訊">; icon: ReactNode }[] =
   },
   {
     label: "球友名單",
+    navLabel: "名單",
     icon: <><circle cx="9" cy="8" r="3" /><circle cx="17.5" cy="9" r="2.5" /><path d="M3 20v-1a5 5 0 0 1 5-5h2a5 5 0 0 1 5 5v1m2-5h.5a3.5 3.5 0 0 1 3.5 3.5V20" /></>,
   },
   {
     label: "費用管理",
+    navLabel: "費用",
     icon: <><path d="M19 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-2M4 8h15a2 2 0 0 1 2 2v2" /><path d="M21 12h-5a2 2 0 0 0 0 4h5v-4Zm-5 2h.01" /></>,
   },
 ];
@@ -357,7 +357,7 @@ export default function Home() {
     return payload;
   };
 
-  const passkeyRequest = async <T,>(action: string, response?: RegistrationResponseJSON | AuthenticationResponseJSON) => {
+  const passkeyRequest = async <T,>(action: string, response?: RegistrationResponseJSON) => {
     const request = await fetch("/api/passkey", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -375,7 +375,6 @@ export default function Home() {
     [viewer],
   );
   const event = events.find((item) => !item.endsAt || new Date(item.endsAt) > new Date());
-  const headerDate = event?.startsAt ? new Intl.DateTimeFormat("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "long" }).format(new Date(event.startsAt)) : "台北時間 · UTC+8";
   const booking = event?.bookings.find((item) => item.memberId === viewer?.id);
   const personalInvoices = invoices.filter((item) => item.member_id === viewer?.id && isPrincipal(item));
   const invoice = personalInvoices.find((item) => item.status === "PENDING")
@@ -409,23 +408,6 @@ export default function Home() {
       await execute("quickLogin", { userId });
     } finally {
       setAuthSaving(false);
-    }
-  };
-  const loginWithPasskey = async () => {
-    if (typeof PublicKeyCredential === "undefined") {
-      notifySite("這個瀏覽器或裝置不支援 Passkey");
-      return;
-    }
-    setPasskeySaving(true);
-    try {
-      const start = await passkeyRequest<{ options: PublicKeyCredentialRequestOptionsJSON }>("authenticationOptions");
-      const credential = await startAuthentication({ optionsJSON: start.options });
-      const state = await passkeyRequest<ApiState>("verifyAuthentication", credential);
-      applyState(state);
-    } catch (error) {
-      notifySite(error instanceof Error && error.name === "NotAllowedError" ? "已取消 Passkey 登入" : error instanceof Error ? error.message : "Passkey 登入失敗");
-    } finally {
-      setPasskeySaving(false);
     }
   };
   const registerPasskey = async () => {
@@ -491,7 +473,7 @@ export default function Home() {
       if (payload?.actionResult?.claimCode) {
         setCodeNotice({
           title: `請將認領碼交給${person.name}`,
-          body: `使用者可在登入頁選擇「取回既有帳號」，輸入帳號名稱「${person.accountName ?? person.name}」與此碼。代碼只會顯示一次，請透過可信任的方式交付。`,
+          body: `使用者可在登入頁選擇「取回帳號」，輸入帳號名稱「${person.accountName ?? person.name}」與此碼。代碼只會顯示一次，請透過可信任的方式交付。`,
           code: payload.actionResult.claimCode,
         });
       }
@@ -812,26 +794,27 @@ export default function Home() {
     description={sessionError ? "連線逾時或暫時無法取得資料，請檢查網路後再試一次。" : "正在讀取活動與帳號資訊，請稍候。"}
     onRetry={() => { setSessionError(false); void refresh(); }}
   />;
-  if (!viewer) return <><AnnouncementTicker news={news.slice(0, 3)} /><Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} passkeyLogin={loginWithPasskey} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving || passkeySaving} events={events} news={news} />{transientMessage}</>;
+  if (!viewer) return <><Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving} events={events} />{transientMessage}</>;
   const isAdmin = user.role === "admin";
   const detailId = eventDetails?.viewerId === viewer.id ? eventDetails.eventId : null;
   const detailInvoices = detailId ? invoices.filter((invoice) => isPrincipal(invoice) && (isAdmin || invoice.member_id === viewer.id) && (invoice.event_id === detailId || invoice.event_ids?.includes(detailId))) : [];
   const selectedEvent = detailId ? events.find((item) => item.id === detailId)
     ?? archivedClubEvent(detailInvoices.flatMap((invoice) => invoice.event_schedules ?? []).find((entry) => entry.id === detailId) ?? eventDetails?.archived) : undefined;
   const openEventDetails = (eventId: string) => setEventDetails({ eventId, viewerId: viewer.id });
-  const toggleQuarterBillingEvent = (event: ClubEvent) => {
-    const eligible = (item: ClubEvent) => hasBillToIssue(calendarBillingOptions(item, invoices, quarterBillingPeriods, Date.now()));
-    const selection = calendarPickedIds.filter((id) => events.some((item) => item.id === id && eligible(item)));
-    if (selection.includes(event.id)) { setCalendarPickedIds(selection.filter((id) => id !== event.id)); return ""; }
-    if (!eligible(event)) return "本場目前沒有可開立的帳單。";
-    setCalendarPickedIds([...selection, event.id]);
+  const toggleQuarterBillingEvents = (targets: ClubEvent[]) => {
+    const now = Date.now();
+    const eligibleIds = new Set(events.filter((item) =>
+      hasBillToIssue(calendarBillingOptions(item, invoices, quarterBillingPeriods, now)),
+    ).map((item) => item.id));
+    const targetIds = [...new Set(targets.map((item) => item.id))].filter((id) => eligibleIds.has(id));
+    if (!targetIds.length) return "目前沒有可開立的帳單。";
+    setCalendarPickedIds((previous) => toggleCalendarEventIds(previous.filter((id) => eligibleIds.has(id)), targetIds));
     return "";
   };
   const closeEventDetails = () => setEventDetails(null);
   return (
     <>
       <a className="skip-to-content" href="#club-main">跳至主要內容</a>
-      <AnnouncementTicker news={news} placement="desktop" />
       <div className="app">
       <aside className={`sidebar${sidebarCollapsed ? " collapsed" : ""}`}>
         <button
@@ -845,11 +828,7 @@ export default function Home() {
         </button>
         <div className="brand">
           <b role="img" aria-label="羽球">
-            <svg viewBox="-8 -4 84 88" fill="none" aria-hidden="true" focusable="false">
-              <g transform="rotate(-18 32 40)">
-                <ShuttleArt />
-              </g>
-            </svg>
+            <ShuttleLogo />
           </b>
           <span>
             <strong>球友會</strong>
@@ -857,20 +836,20 @@ export default function Home() {
           </span>
         </div>
         <nav aria-label="球友會導覽">
-          {sidebarItems.map(({ label, icon }) => (
+          {sidebarItems.map(({ label, navLabel = label, icon }) => (
             <button
               key={label}
               type="button"
               className={tab === label ? "nav-active" : ""}
-              aria-label={label}
+              aria-label={navLabel}
               aria-current={tab === label ? "page" : undefined}
-              title={sidebarCollapsed ? label : undefined}
+              title={sidebarCollapsed ? navLabel : undefined}
               onClick={() => { if (label === "費用管理") setBillingFocus(null); setTab(label); setNotificationOpen(false); }}
             >
               <svg className="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
                 {icon}
               </svg>
-              <span>{label}</span>
+              <span>{navLabel}</span>
             </button>
           ))}
         </nav>
@@ -888,19 +867,19 @@ export default function Home() {
               <strong title={user.name}>{user.name}</strong>
               <small>{clubIdentityLabel(user)}</small>
             </span>
-            <span className="profile-mobile-label" aria-hidden="true">帳號</span>
           </button>
         </div>
       </aside>
       <AnnouncementTicker news={news} placement="mobile" />
       <main id="club-main" tabIndex={-1}>
-        <header className={tab === "活動" ? "activity-page-header" : tab === "總覽" ? "overview-page-header" : undefined}>
+        <AnnouncementTicker news={news} placement="desktop" />
+        <PageClock />
+        <header className={tab === "活動" ? "activity-page-header" : tab === "總覽" ? "overview-page-header" : tab === "公告" ? "news-page-header" : undefined}>
           <div className="page-heading">
-            {tab === "總覽" ? <OverviewClock /> : <p className="page-eyebrow">{headerDate}</p>}
-            <div className="page-title-row">
+            {tab === "總覽" ? <h1 className="sr-only">{tab}</h1> : <div className="page-title-row">
               <h1>{tab}</h1>
               {tab === "活動" && <ActivityViewSwitch upcoming={mobileCalendarUpcoming} setUpcoming={setMobileCalendarUpcoming} />}
-            </div>
+            </div>}
             {sectionDescriptions[tab] && <p className="page-description">{sectionDescriptions[tab]}</p>}
           </div>
           <div className="header-actions">
@@ -951,14 +930,14 @@ export default function Home() {
               quarterMode={isAdmin && calendarQuarterMode}
               pickedIds={calendarPickedIds}
               setPickedIds={setCalendarPickedIds}
-              toggleQuarterEvent={toggleQuarterBillingEvent}
+              toggleQuarterEvents={toggleQuarterBillingEvents}
               periods={isAdmin ? quarterBillingPeriods : []}
               createOnDate={isAdmin ? (date) => { setManagerDate(date); setManagerTab("single"); setManagerOpen(true); } : undefined}
             /></div>
             <div id="calendar-upcoming-activities" className="mobile-upcoming-view">
               {mobileCalendarUpcoming && (isAdmin && calendarQuarterMode
                 ? <ActivityBillingList list={events} invoices={invoices} periods={quarterBillingPeriods} pickedIds={calendarPickedIds}
-                    toggleEvent={toggleQuarterBillingEvent} clear={() => setCalendarPickedIds([])} openIssue={() => setCalendarIssueOpen(true)} />
+                    toggleEvent={(item) => toggleQuarterBillingEvents([item])} clear={() => setCalendarPickedIds([])} openIssue={() => setCalendarIssueOpen(true)} />
                 : <UpcomingActivities list={events} openEvent={openEventDetails} />)}
             </div>
           </div>
@@ -1650,108 +1629,91 @@ function Login({
   setInput,
   createGuest,
   recover,
-  passkeyLogin,
   quickAccounts,
   quickLogin,
   saving,
   events,
-  news,
 }: {
   input: string;
   setInput: (value: string) => void;
   createGuest: (accountName: string) => void;
   recover: (accountName: string, code: string) => void;
-  passkeyLogin: () => void;
   quickAccounts: DeviceAccount[];
   quickLogin: (userId: string) => void;
   saving: boolean;
   events: ClubEvent[];
-  news: NewsItem[];
 }) {
   const [mode, setMode] = useState<"new" | "recover">("new");
   const [code, setCode] = useState("");
-  const upcomingEvents = events.filter((event) => !event.endsAt || new Date(event.endsAt) > new Date()).slice(0, 3);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  // The club API supplies events in ascending start time.
+  const nextEvent = events.find((event) =>
+    event.status !== "CANCELLED" && event.status !== "ARCHIVED" && Date.parse(event.startsAt ?? "") > now,
+  );
   return (
-    <main className="login public-login">
-      <div className="public-shell">
-        <section className="public-preview">
-          <section className="public-section">
-            <div className="public-section-heading"><div><small>UPCOMING</small><h2>近期活動</h2></div><span>{upcomingEvents.length} 場</span></div>
-            <div className="public-event-list">
-              {upcomingEvents.length === 0 ? <p className="public-empty">目前尚未公布新活動</p> : upcomingEvents.map((event) => (
-                <article key={event.id}>
-                  <div><strong>{event.date}</strong><small>{event.weekday}</small></div>
-                  <span><strong>{event.time}</strong><small>{event.courts}</small></span>
-                  <Badge tone="green">尚有 {Math.max(0, event.regular - event.regularBooked) + Math.max(0, event.wait - event.waitBooked)} 位</Badge>
-                </article>
-              ))}
+    <main className="login">
+      <div className="login-shell">
+        {nextEvent && (
+          <section className="login-next-event" aria-labelledby="login-next-event-title">
+            <h2 id="login-next-event-title">下一場活動</h2>
+            <div className="login-event-info">
+              <div className="login-event-date"><strong>{nextEvent.date}</strong><span>{nextEvent.weekday}</span></div>
+              <div className="login-event-details"><strong>{nextEvent.time}</strong><span>{nextEvent.courts}</span></div>
+              <Badge tone="green">尚有 {Math.max(0, nextEvent.regular - nextEvent.regularBooked) + Math.max(0, nextEvent.wait - nextEvent.waitBooked)} 位</Badge>
             </div>
           </section>
-          <section className="public-section">
-            <div className="public-section-heading"><div><small>NOTICE</small><h2>最新公告</h2></div></div>
-            <div className="public-news-list">
-              {news.length === 0 ? <p className="public-empty">目前沒有公告</p> : news.slice(0, 3).map((item) => (
-                <article key={item.id}><span><strong>{item.title}</strong><small>{item.date}</small></span><p>{item.content}</p>{item.linkUrl && <a href={item.linkUrl} target="_blank" rel="noreferrer">開啟連結 →</a>}</article>
-              ))}
-            </div>
-          </section>
-        </section>
-        <section className="login-card" id="guest-account">
-        <div className="login-logo">羽</div>
-        <p>COMPANY BADMINTON CLUB</p>
-        <h1>下班，一起上場。</h1>
-        <span>{mode === "new" ? "第一次使用只需設定一個不重複的帳號名稱，建立後固定不變。顯示名稱初始相同，登入後可自行修改。" : "輸入原本固定的帳號名稱與認領碼或復原碼，即可在這台裝置取回帳號。"}</span>
-        {quickAccounts.length > 0 && (
-          <aside className="quick-accounts">
-            <strong>這台裝置的快速登入</strong>
-            <div>
-              {quickAccounts.map((account) => (
-                <button type="button" key={account.id} disabled={saving} onClick={() => quickLogin(account.id)}>
-                  <i>{account.name.slice(0, 1)}</i>
-                  <span>
-                    <b>{account.name}</b>
-                    <small>帳號：{account.accountName ?? account.name}</small>
-                    <small>{clubIdentityLabel(account)}</small>
-                  </span>
-                  <em>登入</em>
-                </button>
-              ))}
-            </div>
-            <small>共享裝置上的其他人也能使用快速登入；共用電腦請使用獨立瀏覽器設定檔。</small>
-          </aside>
         )}
-        {quickAccounts.length > 0 && <div className="login-divider"><span>使用其他帳號</span></div>}
-        <div className="login-tabs" role="tablist" aria-label="登入方式">
-          <button type="button" role="tab" aria-selected={mode === "new"} className={mode === "new" ? "active" : ""} onClick={() => setMode("new")}>第一次使用</button>
-          <button type="button" role="tab" aria-selected={mode === "recover"} className={mode === "recover" ? "active" : ""} onClick={() => setMode("recover")}>取回既有帳號</button>
-        </div>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (mode === "new") createGuest(input);
-            else recover(input, code);
-          }}
-        >
-          <label htmlFor="login-account-name">帳號名稱</label>
-          <input id="login-account-name" value={input} onChange={(e) => setInput(e.target.value)} placeholder="輸入固定的帳號名稱" maxLength={40} required autoComplete="username" />
-          {mode === "recover" && (
-            <>
-              <label htmlFor="login-recovery-code">認領碼或復原碼</label>
-              <input id="login-recovery-code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="XXXX-XXXX-XXXX-XXXX" maxLength={19} required autoComplete="one-time-code" />
-            </>
+        <section className="login-card" id="guest-account" aria-labelledby="login-title">
+          <header className="login-heading">
+            <div className="login-logo" aria-hidden="true"><ShuttleLogo /></div>
+            <h1 id="login-title">羽球社</h1>
+          </header>
+          {quickAccounts.length > 0 && (
+            <section className="quick-accounts" aria-labelledby="quick-login-title">
+              <h2 id="quick-login-title">快速登入</h2>
+              <div>
+                {quickAccounts.map((account) => (
+                  <button type="button" key={account.id} disabled={saving} onClick={() => quickLogin(account.id)}>
+                    <i aria-hidden="true">{account.name.slice(0, 1)}</i>
+                    <span>
+                      <b>{account.name}</b>
+                      {account.accountName && account.accountName !== account.name && <small>{account.accountName}</small>}
+                    </span>
+                    <span className="quick-login-arrow" aria-hidden="true">›</span>
+                  </button>
+                ))}
+              </div>
+              <small>共用裝置上的其他人也能使用快速登入。</small>
+            </section>
           )}
-          <button className="primary" disabled={saving}>{saving ? "處理中…" : mode === "new" ? "建立這台裝置的帳號" : "取回帳號"}</button>
-        </form>
-        <div className="login-divider"><span>或</span></div>
-        <button type="button" className="passkey-button" disabled={saving} onClick={passkeyLogin}>
-          <strong>使用 Passkey 登入</strong>
-          <span>使用指紋、臉部辨識或裝置 PIN</span>
-        </button>
-        {saving && <LoadingScreen compact title="正在處理登入…" description="若出現裝置驗證視窗，請依提示完成。" />}
-        <aside className="notice">
-          <strong>測試版帳號提醒</strong>
-          <span>帳號名稱固定且不得重複（英文大小寫、全半形與多餘空白視為相同）；顯示名稱可自行修改，也可與他人相同。已有帳號請使用快速登入、Passkey 或復原碼。建議先在「個人資訊 → 登入與安全」設定至少一種復原方式。</span>
-        </aside>
+          <div className="login-tabs" role="group" aria-label="帳號操作">
+            <button type="button" aria-pressed={mode === "new"} disabled={saving} onClick={() => setMode("new")}>首次使用</button>
+            <button type="button" aria-pressed={mode === "recover"} disabled={saving} onClick={() => setMode("recover")}>取回帳號</button>
+          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (mode === "new") createGuest(input);
+              else recover(input, code);
+            }}
+          >
+            <label htmlFor="login-account-name">帳號名稱</label>
+            <input id="login-account-name" value={input} onChange={(e) => setInput(e.target.value)} aria-describedby={mode === "new" ? "login-name-note" : undefined} maxLength={40} required autoComplete="username" />
+            {mode === "new" ? (
+              <p id="login-name-note" className="login-name-note">建立後無法更改。</p>
+            ) : (
+              <>
+                <label htmlFor="login-recovery-code">認領碼或復原碼</label>
+                <input id="login-recovery-code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="XXXX-XXXX-XXXX-XXXX" maxLength={19} required autoComplete="one-time-code" />
+              </>
+            )}
+            <button className="primary" disabled={saving}>{mode === "new" ? "建立帳號" : "取回帳號"}</button>
+          </form>
+          <div role="status" className="login-progress">{saving ? "處理中…" : ""}</div>
         </section>
       </div>
     </main>
@@ -2034,7 +1996,7 @@ function AccountProfile({
   );
 }
 
-function OverviewClock() {
+function PageClock() {
   const minuteMs = 60_000;
   const [time, setTime] = useState(() => Math.floor(Date.now() / minuteMs) * minuteMs);
   useEffect(() => {
@@ -2404,7 +2366,15 @@ function ActivityBillingList({ list, invoices, periods, pickedIds, toggleEvent, 
   </>;
 }
 
-function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterMode, pickedIds, setPickedIds, toggleQuarterEvent, periods, createOnDate }: {
+function toggleCalendarEventIds(selected: string[], targets: string[]) {
+  const targetSet = new Set(targets);
+  const picked = new Set(selected);
+  return targets.every((id) => picked.has(id))
+    ? selected.filter((id) => !targetSet.has(id))
+    : [...new Set([...selected, ...targets])];
+}
+
+function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterMode, pickedIds, setPickedIds, toggleQuarterEvents, periods, createOnDate }: {
   list: ClubEvent[];
   jump?: {date: string} | null;
   invoices: Invoice[];
@@ -2413,7 +2383,7 @@ function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterM
   quarterMode: boolean;
   pickedIds: string[];
   setPickedIds: (ids: string[]) => void;
-  toggleQuarterEvent: (event: ClubEvent) => string;
+  toggleQuarterEvents: (events: ClubEvent[]) => string;
   periods: QuarterBillingPeriod[];
   createOnDate?: (date: string) => void;
 }) {
@@ -2564,24 +2534,26 @@ function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterM
           const feeStatuses = new Set(dayEvents.flatMap((event) => [...(feeStatusByEvent.get(event.id) ?? [])]));
           const daySummary = [...dayEvents.map((event) => activityTitle(event) + " " + event.time),
             ...calendarFeeStatuses.filter(({ id }) => feeStatuses.has(id)).map(({ label }) => label)];
-          const singleCandidate = admin && quarterMode ? dayEvents.filter(selectable) : [];
-          const directSelection = singleCandidate.length === 1 ? singleCandidate[0] : undefined;
+          const candidates = admin && quarterMode ? dayEvents.filter(selectable) : [];
+          const hasSelection = candidates.length > 0;
+          const checkedCount = candidates.filter((event) => selection.includes(event.id)).length;
+          const checked = !hasSelection ? undefined : checkedCount === candidates.length ? true : checkedCount > 0 ? "mixed" : false;
           const hasUnbilled = feeStatuses.has("unbilled");
           const hasOutstanding = feeStatuses.has("unpaid") || feeStatuses.has("reported");
           const feeTone = hasUnbilled ? "unbilled" : hasOutstanding ? "outstanding" : undefined;
           return <button type="button" key={day} className={`calendar-day calendar-date-picker${dayEvents.length ? " has-event" : ""}${isToday ? " today" : ""}`}
             data-fee-tone={feeTone}
             title={feeTone ? [hasUnbilled && "未開單", hasOutstanding && "未收齊"].filter(Boolean).join("、") : undefined}
-            role={directSelection ? "checkbox" : undefined}
-            aria-checked={directSelection ? selection.includes(directSelection.id) : undefined}
-            aria-pressed={directSelection ? undefined : selectedDate === dateKey}
+            role={hasSelection ? "checkbox" : undefined}
+            aria-checked={checked}
+            aria-pressed={hasSelection ? undefined : selectedDate === dateKey}
             data-active-date={selectedDate === dateKey}
-            aria-label={[dateKey, ...daySummary, ...dayNotices.map((notice) => notice.name), directSelection && "選取開單"].filter(Boolean).join("，")}
+            aria-label={[dateKey, ...daySummary, ...dayNotices.map((notice) => notice.name), hasSelection && (candidates.length === 1 ? "選取開單" : `選取開單（當天 ${candidates.length} 場）`)].filter(Boolean).join("，")}
             onClick={() => {
               setPickedDate(dateKey);
-              setQuarterSelectionError(directSelection ? toggleQuarterEvent(directSelection) : "");
+              setQuarterSelectionError(hasSelection ? toggleQuarterEvents(candidates) : "");
             }}>
-            {directSelection && <span aria-hidden="true" className="calendar-checked-mark" />}
+            {hasSelection && <span aria-hidden="true" className="calendar-checked-mark" />}
             <span className="calendar-day-number">{day}{isToday && <i>今天</i>}</span>{noticeLabels}
             {firstEvent && <span className="calendar-day-event">
               <span className="calendar-day-event-name" title={activityTitle(firstEvent)}>{activityTitle(firstEvent)}</span>
@@ -2603,18 +2575,20 @@ function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterM
       {!selectedEvents.length && !quarterMode && createOnDate && selectedDate >= todayKey && <button type="button" className="secondary" onClick={() => createOnDate(selectedDate)}>新增當天活動</button>}
       {selectedEvents.map((event) => {
         const payment = paymentByEvent.get(event.id);
-        const chooseInCard = admin && quarterMode && selectable(event) && selectedEvents.filter(selectable).length > 1;
+        const chooseInCard = admin && quarterMode && selectable(event);
         return <article key={event.id} className="calendar-session activity-detail-card">
           <button type="button" className="activity-detail-hit" aria-label={`查看活動：${activityTitle(event)} ${event.time}`} aria-haspopup="dialog" onClick={() => openEvent(event.id)} />
           <div className="calendar-session-heading"><h3>{activityTitle(event)}</h3></div>
           <p>{event.time}</p>
-          {payment && <dl className="calendar-payment-summary" aria-label="本場繳費狀態">
-            <div><dt>社員</dt><dd>{payment.member}</dd></div>
-            <div><dt>非社員</dt><dd>{payment.guest}</dd></div>
-          </dl>}
-          {chooseInCard && <label className="calendar-session-check activity-detail-action">
-            <input type="checkbox" checked={selection.includes(event.id)} onChange={() => setQuarterSelectionError(toggleQuarterEvent(event))} />選取開單
-          </label>}
+          {(payment || chooseInCard) && <div className="calendar-session-billing" data-selectable={chooseInCard || undefined}>
+            {payment && <dl className="calendar-payment-summary" aria-label="本場繳費狀態">
+              <div><dt>社員</dt><dd>{payment.member}</dd></div>
+              <div><dt>非社員</dt><dd>{payment.guest}</dd></div>
+            </dl>}
+            {chooseInCard && <label className="calendar-session-check">
+              <input type="checkbox" checked={selection.includes(event.id)} onChange={() => setQuarterSelectionError(toggleQuarterEvents([event]))} />選取開單
+            </label>}
+          </div>}
         </article>;
       })}
     </aside>
@@ -3134,12 +3108,19 @@ function AnnouncementTicker({ news, placement }: {
     setHeldPointer((held) => held === event.pointerId ? null : held);
   };
   // The announcement feed already puts pinned items first, then newest.
-  const headlines = news.filter((item) => item.title.trim()).slice(0, 5);
-  if (!headlines.length) return null;
+  const announcements = news.filter((item) => item.title.trim()).slice(0, 5).map((item) => ({
+    id: item.id,
+    title: item.title.trim(),
+    content: item.content.trim().replace(/\s+/g, " "),
+  }));
+  if (!announcements.length) return null;
 
-  const duration = Math.max(20, headlines.reduce((sum, item) => sum + item.title.length, 0) * .45 + headlines.length * 2);
+  const duration = Math.max(20, announcements.reduce((sum, item) => sum + item.title.length * .45 + item.content.length * .25, 0) + announcements.length * 2);
   const track = (copy = false) => <span className="announcement-ticker-set" aria-hidden={copy || undefined}>
-    {headlines.map((item) => <span key={item.id}><span aria-hidden="true">◆</span>{item.title}</span>)}
+    {announcements.map((item) => <span className="announcement-ticker-item" key={item.id}>
+      <span className="announcement-ticker-marker" aria-hidden="true">◆</span>
+      <span className="announcement-ticker-text"><strong>{item.title}</strong>{item.content && <>：{item.content}</>}</span>
+    </span>)}
   </span>;
   return <section className="announcement-ticker" aria-label="最新公告" aria-description="按住跑馬燈或空白鍵可暫停"
     tabIndex={0} data-placement={placement} data-paused={heldPointer !== null || heldSpace}
@@ -3287,14 +3268,17 @@ function Members({
               <li className="roster-card" key={person.id}>
                 <span className="roster-avatar" aria-hidden="true">{Array.from(person.name)[0] ?? "球"}</span>
                 <div className="roster-person">
-                  <strong>{person.name}{person.id === currentUser.id && <small>（你）</small>}</strong>
-                  {person.department && <span>{person.department}</span>}
-                  {person.accountName && <small>帳號：{person.accountName}</small>}
+                  <div className="roster-person-title">
+                    <strong>{person.name}{person.id === currentUser.id && <small>（你）</small>}</strong>
+                    <Badge tone={person.role === "admin" ? "blue" : person.member ? "green" : "gray"}>{clubIdentityLabel(person)}</Badge>
+                  </div>
+                  {(person.department || person.accountName) && <span className="roster-person-meta">
+                    {person.department && <span className="roster-person-department" title={person.department}>{person.department}</span>}
+                    {person.department && person.accountName && <span className="roster-person-meta-separator" aria-hidden="true">·</span>}
+                    {person.accountName && <span title={"帳號：" + person.accountName}>帳號：{person.accountName}</span>}
+                  </span>}
                 </div>
-                <div className="roster-card-actions">
-                  <Badge tone={person.role === "admin" ? "blue" : person.member ? "green" : "gray"}>{clubIdentityLabel(person)}</Badge>
-                  {admin && <button type="button" className="link" disabled={saving} aria-label={`編輯 ${person.name}`} onClick={() => manageMember(person)}>編輯</button>}
-                </div>
+                {admin && <button type="button" className="link roster-card-edit" disabled={saving} aria-label={`編輯 ${person.name}`} onClick={() => manageMember(person)}>編輯</button>}
               </li>
             ))}
           </ul>
