@@ -170,15 +170,6 @@ select {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
-.login-logo,
-.brand > b {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #eaf2e8;
-  color: var(--green);
-  border-radius: 12px;
-}
 .login-logo {
   width: 42px;
   height: 42px;
@@ -398,11 +389,11 @@ select {
   height: 38px;
   flex-shrink: 0;
 }
-.login-logo svg,
-.brand > b svg {
+.login-logo img,
+.brand > b img {
   display: block;
-  width: 26px;
-  height: 30px;
+  width: 100%;
+  height: 100%;
 }
 .brand strong,
 .brand small,

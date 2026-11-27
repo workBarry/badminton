@@ -2,10 +2,10 @@
 
 import { type ComponentProps, type CSSProperties, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import Image from "next/image";
 import { startRegistration } from "@simplewebauthn/browser";
 import QuarterPlanner, { QuarterPeriodCreator, defaultBillingPeriod } from "@/app/quarter-planner";
 import LoadingScreen from "@/app/loading-screen";
-import { ShuttleLogo } from "@/app/shuttle-art";
 import BillingDashboard, { type BillingProps } from "@/app/billing-dashboard";
 import BalanceHistoryDialog, { type BalanceAdjustmentInput } from "@/app/balance-history-dialog";
 import FloatingNotifications from "@/app/floating-notifications";
@@ -828,7 +828,7 @@ export default function Home() {
         </button>
         <div className="brand">
           <b role="img" aria-label="羽球">
-            <ShuttleLogo />
+            <Image src="/icon.svg" alt="" width={38} height={38} unoptimized />
           </b>
           <span>
             <strong>球友會</strong>
@@ -1670,7 +1670,7 @@ function Login({
         )}
         <section className="login-card" id="guest-account" aria-labelledby="login-title">
           <header className="login-heading">
-            <div className="login-logo" aria-hidden="true"><ShuttleLogo /></div>
+            <div className="login-logo" aria-hidden="true"><Image src="/icon.svg" alt="" width={42} height={42} unoptimized /></div>
             <h1 id="login-title">羽球社</h1>
           </header>
           {quickAccounts.length > 0 && (
