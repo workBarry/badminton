@@ -54,7 +54,7 @@ const sidebarItems: { label: Exclude<Tab, "個人資訊">; navLabel?: string; ic
 ];
 type ActivityManagerTab = "single" | "quarter";
 type BillingManagerTab = "quarterly" | "rates";
-type Person = { id: string; name: string; accountName?: string; department?: string; role: Role; member: boolean; membershipStatus?: string; membershipEndingAt?: string | null; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean };
+type Person = { id: string; avatarVersion?: string | null; name: string; accountName?: string; department?: string; role: Role; member: boolean; membershipStatus?: string; membershipEndingAt?: string | null; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean };
 type Booking = { memberId: string; name: string; accountName?: string; kind: "社員" | "非社員"; rank: "正取" | "候補"; transferred?: boolean };
 type NewsItem = { id: string; title: string; content: string; date: string; linkUrl?: string; pinned: boolean };
 type Invoice = ManagedInvoice;
@@ -74,6 +74,8 @@ type Viewer = {
   accountType: "guest" | "recoverable" | "verified" | "unclaimed";
   hasRecoveryCode: boolean;
   hasPasskey: boolean;
+  hasPassword?: boolean;
+  avatarVersion?: string | null;
 };
 type GuestSettlement = { memberId: string; status: "ISSUED" | "SKIPPED" | "LEGACY"; amount: number | null };
 type GuestSettlementReceipt = { issued: number; skipped: number };
@@ -84,7 +86,8 @@ type EventCancellationPreview = {
   pendingCreditAmount: number; pendingCashRefundAmount?: number; legacyReviewAmount?: number;
 };
 type ActionResult = Partial<GuestSettlementReceipt & QuarterInvoicePreview & EventCancellationPreview> & { creditBalance?: number; memberId?: string; adjustmentInvoiceId?: string; results?: { id: string; success: boolean; error?: string }[]; invoiceId?: string; planId?: string; recoveryCode?: string; claimCode?: string; recipientName?: string; invoiceCount?: number; invoiceIds?: string[]; eventIds?: string[]; eventCount?: number; totalAmount?: number; periodLabel?: string; createdDate?: string | null; targetDate?: string; status?: string; skippedDates?: string[]; skippedEventIds?: string[]; periodId?: string; recorded?: number; alreadyRecorded?: number; joined?: boolean; amount?: number; singleInvoiceCount?: number; replacedGuestBillCount?: number };
-type DeviceAccount = { id: string; name: string; accountName: string; role: "ADMIN" | "MEMBER"; membershipStatus: string; primaryAdmin: boolean };
+type LoginMode = "login" | "register" | "setup" | "legacy";
+type DeviceAccount = { requiresPassword?: boolean; id: string; name: string; accountName: string; role: "ADMIN" | "MEMBER"; membershipStatus: string; primaryAdmin: boolean };
 type ClubEvent = {
   id: string;
   memberBilling?: string;
@@ -115,7 +118,7 @@ type ClubEvent = {
 
 type ApiState = {
   viewer: Viewer | null;
-  members: { id: string; name: string; accountName: string; department?: string; role: string; membershipStatus: string; membershipEndingAt?: string | null; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean }[];
+  members: { id: string; avatarVersion?: string | null; name: string; accountName: string; department?: string; role: string; membershipStatus: string; membershipEndingAt?: string | null; creditBalance?: number; primaryAdmin?: boolean; canReceivePresidency?: boolean }[];
   events: { id: string; starts_at: string; ends_at: string; courts: string; regular_capacity: number; standby_capacity: number; regular_count: number; standby_count: number; member_fee: number; member_list_rate?: number; guest_list_rate?: number; billing_paused?: boolean; guest_fee: number; member_billing?: string; event_kind?: string; quarter_eligible?: boolean; status?: string; member_billing_label?: string | null; billing_locks?: { member: boolean; guest: boolean }; guest_settlements?: GuestSettlement[]; bookings: { memberId: string; name: string; accountName?: string; kind: string; status: string; transferred?: boolean }[] }[];
   announcements: { id: string; title: string; content: string; publishedAt: string; linkUrl?: string; pinned: boolean }[];
   invoices: Invoice[];
@@ -292,7 +295,7 @@ export default function Home() {
   const applyState = useCallback((state: ApiState) => {
     setViewer(state.viewer);
     setQuickAccounts(state.quickAccounts ?? []);
-    setMembers(state.members.map((member) => ({ id: member.id, name: member.name, accountName: member.accountName, department: member.department, role: member.role === "ADMIN" ? "admin" : "member", member: member.membershipStatus === "MEMBER" || member.membershipStatus === "EXITING", membershipStatus: member.membershipStatus, membershipEndingAt: member.membershipEndingAt, creditBalance: Number(member.creditBalance ?? 0), primaryAdmin: Boolean(member.primaryAdmin), canReceivePresidency: Boolean(member.canReceivePresidency) })));
+    setMembers(state.members.map((member) => ({ id: member.id, name: member.name, accountName: member.accountName, avatarVersion: member.avatarVersion, department: member.department, role: member.role === "ADMIN" ? "admin" : "member", member: member.membershipStatus === "MEMBER" || member.membershipStatus === "EXITING", membershipStatus: member.membershipStatus, membershipEndingAt: member.membershipEndingAt, creditBalance: Number(member.creditBalance ?? 0), primaryAdmin: Boolean(member.primaryAdmin), canReceivePresidency: Boolean(member.canReceivePresidency) })));
     setEvents(state.events.map((item) => {
       const startsAt = new Date(item.starts_at);
       const endsAt = new Date(item.ends_at);
@@ -370,7 +373,7 @@ export default function Home() {
 
   const user = useMemo<Person>(
     () => viewer
-      ? { id: viewer.id, name: viewer.name, accountName: viewer.accountName, department: viewer.department ?? undefined, role: viewer.role === "ADMIN" ? "admin" : "member", member: viewer.membershipStatus === "MEMBER" || viewer.membershipStatus === "EXITING", membershipStatus: viewer.membershipStatus, creditBalance: viewer.creditBalance, primaryAdmin: viewer.primaryAdmin }
+      ? { id: viewer.id, name: viewer.name, accountName: viewer.accountName, avatarVersion: viewer.avatarVersion, department: viewer.department ?? undefined, role: viewer.role === "ADMIN" ? "admin" : "member", member: viewer.membershipStatus === "MEMBER" || viewer.membershipStatus === "EXITING", membershipStatus: viewer.membershipStatus, creditBalance: viewer.creditBalance, primaryAdmin: viewer.primaryAdmin }
       : { id: "", name: "", role: "member", member: false },
     [viewer],
   );
@@ -380,23 +383,14 @@ export default function Home() {
   const invoice = personalInvoices.find((item) => item.status === "PENDING")
     ?? personalInvoices.find((item) => item.status === "REPORTED")
     ?? personalInvoices.find((item) => item.status === "CONFIRMED");
-  const createGuest = async (candidate: string) => {
-    const clean = candidate.trim();
-    if (!clean) return;
+  const submitLogin = async (mode: LoginMode, candidate: string, password: string, code: string, rememberDevice: boolean) => {
+    const actions = { login: "loginPassword", register: "registerPassword", setup: "setPasswordWithCode", legacy: "recover" };
     setAuthSaving(true);
     try {
-      const created = await execute("createGuest", { accountName: clean });
-      if (created) setInput("");
-    } finally {
-      setAuthSaving(false);
-    }
-  };
-  const recover = async (candidate: string, code: string) => {
-    setAuthSaving(true);
-    try {
-      const payload = await execute("recover", { accountName: candidate.trim(), code: code.trim() });
+      const payload = await execute(actions[mode], { accountName: candidate.trim(), password, code: code.trim(), rememberDevice: String(rememberDevice) }, true);
+      setInput("");
       if (payload?.actionResult?.recoveryCode) {
-        setCodeNotice({ title: "請保存新的復原碼", body: "舊的認領碼或復原碼已失效。這組新碼只會顯示一次，請放在安全的地方。", code: payload.actionResult.recoveryCode });
+        setCodeNotice({ title: "請保存新的復原碼", body: "舊碼已失效。新碼只顯示一次，請妥善保存。", code: payload.actionResult.recoveryCode });
       }
     } finally {
       setAuthSaving(false);
@@ -405,7 +399,7 @@ export default function Home() {
   const quickLogin = async (userId: string) => {
     setAuthSaving(true);
     try {
-      await execute("quickLogin", { userId });
+      await execute("quickLogin", { userId }, true);
     } finally {
       setAuthSaving(false);
     }
@@ -428,7 +422,23 @@ export default function Home() {
       setPasskeySaving(false);
     }
   };
-  const logout = async () => { await execute("logout", {}); setTab("總覽"); setNotificationOpen(false); };
+  const saveAvatar = async (file: File | null) => {
+    if (!viewer) throw new Error("請先登入");
+    const memberId = viewer.id;
+    const photo = file ? await (await import("@/lib/avatar-upload")).prepareAvatar(file) : null;
+    const response = await fetch("/api/avatar", {
+      method: photo ? "POST" : "DELETE",
+      headers: { "X-Avatar-Owner": memberId, ...(photo ? { "Content-Type": photo.type } : {}) },
+      ...(photo ? { body: photo } : {}),
+      signal: AbortSignal.timeout(20000),
+    });
+    const state = await response.json() as { avatarVersion?: string | null; error?: string };
+    if (!response.ok || state.avatarVersion === undefined) throw new Error(state.error ?? "無法儲存頭貼，請稍後再試");
+    setViewer((current) => current?.id === memberId ? { ...current, avatarVersion: state.avatarVersion } : current);
+    setMembers((current) => current.map((person) => person.id === memberId ? { ...person, avatarVersion: state.avatarVersion } : person));
+    notifySite(photo ? "頭貼已更新" : "頭貼已移除", "success");
+  };
+  const logout = async (forgetDevice = false) => { await execute("logout", { forgetDevice: String(forgetDevice) }); setTab("總覽"); setNotificationOpen(false); };
   const makeRecoveryCode = async (replaceExisting: boolean) => {
     if (replaceExisting && !(await askSiteConfirmation({ title: "重新產生復原碼？", message: "原本的復原碼會立即失效，新碼只會顯示一次。", action: "重新產生" }))) return;
     setRecoverySaving(true);
@@ -472,8 +482,8 @@ export default function Home() {
       const payload = await execute("issueClaimCode", { memberId: person.id });
       if (payload?.actionResult?.claimCode) {
         setCodeNotice({
-          title: `請將認領碼交給${person.name}`,
-          body: `使用者可在登入頁選擇「取回帳號」，輸入帳號名稱「${person.accountName ?? person.name}」與此碼。代碼只會顯示一次，請透過可信任的方式交付。`,
+          title: `請將設定碼交給${person.name}`,
+          body: `使用者可在登入頁選擇「設定／重設密碼」，輸入帳號「${person.accountName ?? person.name}」和這組設定碼。請確認本人後再交付；已設定密碼的帳號須於 30 分鐘內使用。`,
           code: payload.actionResult.claimCode,
         });
       }
@@ -493,7 +503,7 @@ export default function Home() {
       setRecipient("");
       setTransferEventId(null);
       if (payload.actionResult?.claimCode) {
-        setCodeNotice({ title: "請將認領碼交給接手者", body: `請在登入頁輸入帳號名稱「${clean}」與這組認領碼開啟帳號。此碼只會顯示一次。`, code: payload.actionResult.claimCode });
+        setCodeNotice({ title: "請將認領碼交給接手者", body: `請在登入頁選擇「設定／重設密碼」，輸入帳號「${clean}」和這組認領碼。此碼只會顯示一次。`, code: payload.actionResult.claimCode });
       }
     }
   };
@@ -794,7 +804,7 @@ export default function Home() {
     description={sessionError ? "連線逾時或暫時無法取得資料，請檢查網路後再試一次。" : "正在讀取活動與帳號資訊，請稍候。"}
     onRetry={() => { setSessionError(false); void refresh(); }}
   />;
-  if (!viewer) return <><Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving} events={events} />{transientMessage}</>;
+  if (!viewer) return <><Login input={input} setInput={setInput} submitLogin={submitLogin} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving} events={events} />{transientMessage}</>;
   const isAdmin = user.role === "admin";
   const detailId = eventDetails?.viewerId === viewer.id ? eventDetails.eventId : null;
   const detailInvoices = detailId ? invoices.filter((invoice) => isPrincipal(invoice) && (isAdmin || invoice.member_id === viewer.id) && (invoice.event_id === detailId || invoice.event_ids?.includes(detailId))) : [];
@@ -862,7 +872,7 @@ export default function Home() {
             title="個人資訊"
             onClick={() => { setTab("個人資訊"); setNotificationOpen(false); }}
           >
-            <b className="profile-avatar" aria-hidden="true">{user.name[0]}</b>
+            <MemberAvatar className="profile-avatar" person={user} />
             <span className="profile-copy">
               <strong title={user.name}>{user.name}</strong>
               <small>{clubIdentityLabel(user)}</small>
@@ -972,6 +982,7 @@ export default function Home() {
             user={user}
             profileSaving={profileSaving}
             saveDisplayName={saveDisplayName}
+            saveAvatar={saveAvatar}
             recoverySaving={recoverySaving}
             passkeySaving={passkeySaving}
             membershipSaving={membershipSaving}
@@ -982,7 +993,7 @@ export default function Home() {
             createRecoveryCode={() => void makeRecoveryCode(viewer.hasRecoveryCode)}
             registerPasskey={() => void registerPasskey()}
             requestMembershipChange={(kind) => void requestMembershipChange(kind)}
-            logout={() => void logout()}
+            logout={(forgetDevice) => void logout(forgetDevice)}
           />
         )}
       </main>
@@ -1426,8 +1437,8 @@ function MemberManagerModal({
                       accountMenu.current.querySelector("summary")?.focus();
                     }
                     void issueClaimCode(member);
-                  }}>{claimCodeSaving ? "產生中…" : "產生認領碼"}</button>
-                  <small>供使用者在其他裝置找回帳號。新碼會取代舊認領碼，只顯示一次。</small>
+                  }}>{claimCodeSaving ? "產生中…" : "產生密碼設定碼"}</button>
+                  <small>確認是本人後再交付。新碼會取代舊碼，只顯示一次。</small>
                 </>
               )}
             </div>
@@ -1628,8 +1639,7 @@ function BillingManagerModal({
 function Login({
   input,
   setInput,
-  createGuest,
-  recover,
+  submitLogin,
   quickAccounts,
   quickLogin,
   saving,
@@ -1637,15 +1647,29 @@ function Login({
 }: {
   input: string;
   setInput: (value: string) => void;
-  createGuest: (accountName: string) => void;
-  recover: (accountName: string, code: string) => void;
+  submitLogin: (mode: LoginMode, accountName: string, password: string, code: string, rememberDevice: boolean) => Promise<void>;
   quickAccounts: DeviceAccount[];
-  quickLogin: (userId: string) => void;
+  quickLogin: (userId: string) => Promise<void>;
   saving: boolean;
   events: ClubEvent[];
 }) {
-  const [mode, setMode] = useState<"new" | "recover">("new");
+  const [mode, setMode] = useState<LoginMode>("login");
+  const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [adminCode, setAdminCode] = useState(false);
+  const [rememberDevice, setRememberDevice] = useState(false);
+  const actions = { login: "登入", register: "建立帳號", setup: "儲存新密碼", legacy: "用舊碼登入" };
+  const codeNeeded = mode === "setup" || mode === "legacy" || adminCode;
+  const newPassword = mode === "register" || mode === "setup";
+  const go = (next: LoginMode) => {
+    setMode(next);
+    setRememberDevice(false);
+    setPassword("");
+    setCode("");
+    setError("");
+    setAdminCode(false);
+  };
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
@@ -1675,10 +1699,16 @@ function Login({
           </header>
           {quickAccounts.length > 0 && (
             <section className="quick-accounts" aria-labelledby="quick-login-title">
-              <h2 id="quick-login-title">快速登入</h2>
+              <h2 id="quick-login-title">此裝置記住的帳號</h2>
               <div>
                 {quickAccounts.map((account) => (
-                  <button type="button" key={account.id} disabled={saving} onClick={() => quickLogin(account.id)}>
+                  <button type="button" key={account.id} disabled={saving} onClick={() => {
+                    go("login");
+                    setInput(account.accountName || account.name);
+                    if (account.requiresPassword === false) {
+                      void quickLogin(account.id).catch((reason) => setError(reason instanceof Error ? reason.message : "暫時無法快速登入"));
+                    }
+                  }}>
                     <i aria-hidden="true">{account.name.slice(0, 1)}</i>
                     <span>
                       <b>{account.name}</b>
@@ -1688,32 +1718,49 @@ function Login({
                   </button>
                 ))}
               </div>
-              <small>共用裝置上的其他人也能使用快速登入。</small>
+              {quickAccounts.some((account) => account.requiresPassword === false) && <small>共用裝置請勿開啟快速登入。</small>}
             </section>
           )}
-          <div className="login-tabs" role="group" aria-label="帳號操作">
-            <button type="button" aria-pressed={mode === "new"} disabled={saving} onClick={() => setMode("new")}>首次使用</button>
-            <button type="button" aria-pressed={mode === "recover"} disabled={saving} onClick={() => setMode("recover")}>取回帳號</button>
-          </div>
           <form
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              if (mode === "new") createGuest(input);
-              else recover(input, code);
+              if (saving) return;
+              setError("");
+              try {
+                await submitLogin(mode, input, password, code, rememberDevice && !adminCode);
+              } catch (reason) {
+                const message = reason instanceof Error ? reason.message : "暫時無法登入";
+                if (mode === "login" && message === "幹部登入還需要有效的復原碼") setAdminCode(true);
+                setError(message);
+              }
             }}
           >
-            <label htmlFor="login-account-name">帳號名稱</label>
-            <input id="login-account-name" value={input} onChange={(e) => setInput(e.target.value)} aria-describedby={mode === "new" ? "login-name-note" : undefined} maxLength={40} required autoComplete="username" />
-            {mode === "new" ? (
-              <p id="login-name-note" className="login-name-note">建立後無法更改。</p>
-            ) : (
-              <>
-                <label htmlFor="login-recovery-code">認領碼或復原碼</label>
-                <input id="login-recovery-code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="XXXX-XXXX-XXXX-XXXX" maxLength={19} required autoComplete="one-time-code" />
-              </>
+            <label htmlFor="login-account-name">帳號</label>
+            <input id="login-account-name" name="username" value={input} onChange={(e) => { setInput(e.target.value); setAdminCode(false); setCode(""); setError(""); }} maxLength={40} required autoComplete="username" />
+            {mode !== "legacy" && <>
+              <label htmlFor="login-password">{mode === "setup" ? "新密碼" : "密碼"}</label>
+              <input id="login-password" name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={newPassword ? 8 : undefined} maxLength={128} required autoComplete={newPassword ? "new-password" : "current-password"} />
+            </>}
+            {mode === "setup" && <p className="login-help">可用舊認領碼或復原碼。沒有碼，請聯絡幹部核對身分。</p>}
+            {codeNeeded && <>
+              <label htmlFor="login-recovery-code">{mode === "login" ? "幹部復原碼" : "設定碼／復原碼"}</label>
+              <input id="login-recovery-code" name="code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} maxLength={19} required autoComplete="one-time-code" />
+            </>}
+            {mode !== "legacy" && !adminCode && (
+              <label className="login-remember">
+                <input type="checkbox" checked={rememberDevice} onChange={(e) => setRememberDevice(e.target.checked)} />
+                在此裝置快速登入（30 天）
+              </label>
             )}
-            <button className="primary" disabled={saving}>{mode === "new" ? "建立帳號" : "取回帳號"}</button>
+            {error && <p role="alert" className="login-error">{error}</p>}
+            <button className="primary" disabled={saving}>{actions[mode]}</button>
           </form>
+          <div className="login-actions" role="group" aria-label="帳號操作">
+            {mode !== "login" && <button type="button" className="link" disabled={saving} onClick={() => go("login")}>返回登入</button>}
+            {mode === "login" && <button type="button" className="link" disabled={saving} onClick={() => go("register")}>建立帳號</button>}
+            {mode !== "setup" && <button type="button" className="link" disabled={saving} onClick={() => go("setup")}>設定／重設密碼</button>}
+            {mode === "setup" && <button type="button" className="link" disabled={saving} onClick={() => go("legacy")}>用舊碼登入</button>}
+          </div>
           <div role="status" className="login-progress">{saving ? "處理中…" : ""}</div>
         </section>
       </div>
@@ -1809,11 +1856,337 @@ function CodeNotice({ notice, onClose, notifySite }: { notice: { title: string; 
   );
 }
 
+function ProfileEditIcon({ className = "" }: { className?: string }) {
+  return <span className={`profile-edit-icon ${className}`.trim()} aria-hidden="true">
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 5l4 4M4 20l5-1L21 7l-4-4L5 15z" /></svg>
+  </span>;
+}
+
+function MemberAvatar({ person, className, lazy = false }: { person: Pick<Person, "id" | "name" | "avatarVersion">; className: string; lazy?: boolean }) {
+  const [failedVersion, setFailedVersion] = useState<string | null>(null);
+  const version = person.avatarVersion;
+  return <span className={`${className} member-avatar`} aria-hidden="true">
+    {version && failedVersion !== version
+      ? <Image unoptimized src={`/api/avatar?memberId=${encodeURIComponent(person.id)}&v=${encodeURIComponent(version)}`}
+          width={256} height={256} alt="" loading={lazy ? "lazy" : "eager"} onError={() => setFailedVersion(version)} />
+      : Array.from(person.name)[0] ?? "球"}
+  </span>;
+}
+
+function avatarCropRect(width: number, height: number, centerX: number, centerY: number, zoom: number) {
+  const edge = Math.min(width, height) / zoom;
+  return {
+    x: Math.max(0, Math.min(width - edge, centerX - edge / 2)),
+    y: Math.max(0, Math.min(height - edge, centerY - edge / 2)),
+    edge,
+  };
+}
+
+function AvatarCrop({ bitmap, apply, cancel }: { bitmap: ImageBitmap; apply: (source: { x: number; y: number; edge: number }) => void; cancel: () => void }) {
+  const preview = useRef<HTMLCanvasElement>(null);
+  const drag = useRef<{ id: number; x: number; y: number } | null>(null);
+  const [crop, setCrop] = useState({ x: bitmap.width / 2, y: bitmap.height / 2, zoom: 1 });
+  function adjust(dx: number, dy: number, zoom?: number) {
+    setCrop((current) => {
+      const nextZoom = zoom ?? current.zoom;
+      const rect = avatarCropRect(bitmap.width, bitmap.height, current.x + dx, current.y + dy, nextZoom);
+      return { x: rect.x + rect.edge / 2, y: rect.y + rect.edge / 2, zoom: nextZoom };
+    });
+  }
+  useEffect(() => {
+    const ctx = preview.current?.getContext("2d");
+    if (!ctx) return;
+    const { x, y, edge } = avatarCropRect(bitmap.width, bitmap.height, crop.x, crop.y, crop.zoom);
+    ctx.clearRect(0, 0, 256, 256);
+    ctx.drawImage(bitmap, x, y, edge, edge, 0, 0, 256, 256);
+  }, [bitmap, crop]);
+
+  return <div className="avatar-crop">
+    <div className="avatar-crop-instructions" id="avatar-crop-help">拖曳照片選擇要保留的範圍</div>
+    <canvas className="avatar-paint-canvas avatar-crop-preview" ref={preview} width={256} height={256} tabIndex={0}
+      aria-label="裁切預覽" aria-describedby="avatar-crop-help"
+      onPointerDown={(event) => {
+        if (event.button !== 0 || drag.current) return;
+        event.currentTarget.focus({ preventScroll: true });
+        event.currentTarget.setPointerCapture(event.pointerId);
+        drag.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
+      }}
+      onPointerMove={(event) => {
+        const previous = drag.current;
+        if (previous?.id !== event.pointerId) return;
+        const ratio = Math.min(bitmap.width, bitmap.height) / crop.zoom / event.currentTarget.getBoundingClientRect().width;
+        adjust((previous.x - event.clientX) * ratio, (previous.y - event.clientY) * ratio);
+        drag.current = { id: previous.id, x: event.clientX, y: event.clientY };
+      }}
+      onLostPointerCapture={() => { drag.current = null; }}
+      onPointerUp={() => { drag.current = null; }}
+      onPointerCancel={() => { drag.current = null; }}
+      onKeyDown={(event) => {
+        const step = Math.min(bitmap.width, bitmap.height) / crop.zoom * (event.shiftKey ? 0.2 : 0.04);
+        const steps: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+        const delta = steps[event.key];
+        if (delta) { event.preventDefault(); adjust(...delta); }
+      }} />
+    <label className="avatar-crop-zoom">縮放
+      <input type="range" min={1} max={4} step={0.05} value={crop.zoom}
+        aria-label="照片縮放" onChange={(event) => adjust(0, 0, Number(event.target.value))} />
+      <output>{Math.round(crop.zoom * 100)}%</output>
+    </label>
+    <div className="avatar-crop-actions">
+      <button type="button" className="secondary" onClick={cancel}>取消裁切</button>
+      <button type="button" className="primary" onClick={() => apply(avatarCropRect(bitmap.width, bitmap.height, crop.x, crop.y, crop.zoom))}>套用裁切</button>
+    </div>
+  </div>;
+}
+
+function AvatarCanvas({ active, imageUrl, saving, save, remove }: {
+  active: boolean; imageUrl?: string; saving: boolean;
+  save: (file: File) => Promise<void>; remove?: () => void;
+}) {
+  const size = 256;
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const cropSource = useRef<ImageBitmap | null>(null);
+  const [cropBitmap, setCropBitmap] = useState<ImageBitmap | null>(null);
+  const history = useRef<ImageData[]>([]);
+  const stroke = useRef<{ id: number; x: number; y: number } | null>(null);
+  const generation = useRef(0);
+  const busy = useRef(false);
+  const [loading, setLoading] = useState(Boolean(imageUrl));
+  const [dirty, setDirty] = useState(false);
+  const [color, setColor] = useState("#15554e");
+  const [brush, setBrush] = useState(8);
+  const [erasing, setErasing] = useState(false);
+  const [error, setError] = useState("");
+  const paintBase = (ctx: CanvasRenderingContext2D) => {
+    ctx.clearRect(0, 0, size, size);
+  };
+
+  useEffect(() => {
+    if (!active) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d", { willReadFrequently: true });
+    if (!canvas || !ctx) return;
+    const id = ++generation.current;
+    busy.current = Boolean(imageUrl);
+    history.current = [];
+    stroke.current = null;
+    ctx.clearRect(0, 0, size, size);
+    canvas.focus({ preventScroll: true });
+    if (imageUrl) {
+      const image = new window.Image();
+      image.onload = () => {
+        if (generation.current !== id) return;
+        ctx.drawImage(image, 0, 0, size, size);
+        busy.current = false;
+        setLoading(false);
+      };
+      image.onerror = () => {
+        if (generation.current !== id) return;
+        busy.current = false;
+        setLoading(false);
+        setError("原頭貼載入失敗，可畫一張新的或選擇照片");
+      };
+      image.src = imageUrl;
+    } else {
+      busy.current = false;
+      setLoading(false);
+    }
+    return () => {
+      generation.current++;
+      busy.current = false;
+      cropSource.current?.close();
+      cropSource.current = null;
+    };
+  }, [active, imageUrl]);
+
+  function remember(ctx: CanvasRenderingContext2D) {
+    history.current.push(ctx.getImageData(0, 0, size, size));
+    if (history.current.length > 16) history.current.shift();
+    setDirty(true);
+  }
+
+  function undo() {
+    if (busy.current || saving || stroke.current) return;
+    const ctx = canvasRef.current?.getContext("2d");
+    const snapshot = history.current.pop();
+    if (ctx && snapshot) ctx.putImageData(snapshot, 0, 0);
+    // Once old undo steps have fallen off the stack, the canvas may still differ
+    // from the saved avatar even if the remaining history has been used up.
+    setDirty(Boolean(history.current.length) || clippedHistory.current);
+    setUndoCount(history.current.length);
+  }
+
+  const clippedHistory = useRef(false);
+  const [undoCount, setUndoCount] = useState(0);
+  const rememberStep = (ctx: CanvasRenderingContext2D) => {
+    if (history.current.length >= 16) clippedHistory.current = true;
+    remember(ctx);
+    setUndoCount(history.current.length);
+  };
+  function point(canvas: HTMLCanvasElement, clientX: number, clientY: number) {
+    const r = canvas.getBoundingClientRect();
+    return { x: (clientX - r.left) * size / r.width, y: (clientY - r.top) * size / r.height };
+  }
+  function draw(ctx: CanvasRenderingContext2D, from: { x: number; y: number }, to: { x: number; y: number }) {
+    ctx.save();
+    ctx.globalCompositeOperation = erasing ? "destination-out" : "source-over";
+    ctx.fillStyle = ctx.strokeStyle = color;
+    ctx.lineWidth = brush;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    if (from.x === to.x && from.y === to.y) {
+      ctx.arc(to.x, to.y, brush / 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  async function importPhoto(getImage: () => Promise<Blob>) {
+    if (busy.current || saving || stroke.current) return;
+    const id = generation.current;
+    busy.current = true;
+    setLoading(true);
+    setError("");
+    try {
+      const blob = await getImage();
+      if (!["image/jpeg", "image/png", "image/webp"].includes(blob.type)) throw new Error("請選擇 JPG、PNG 或 WebP 圖片");
+      if (blob.size > 20 * 1024 * 1024) throw new Error("請選擇小於 20 MB 的圖片");
+      const bitmap = await createImageBitmap(blob).catch(() => { throw new Error("無法讀取圖片"); });
+      if (id !== generation.current) { bitmap.close(); return; }
+      cropSource.current?.close();
+      cropSource.current = bitmap;
+      setCropBitmap(bitmap);
+    } catch (reason) {
+      if (id === generation.current) setError(reason instanceof Error && reason.name === "Error" ? reason.message : "無法貼上，請試試 Ctrl / ⌘ + V，或選擇照片");
+    } finally {
+      if (id === generation.current) { busy.current = false; setLoading(false); }
+    }
+  }
+
+  function closeCrop(source?: { x: number; y: number; edge: number }) {
+    const bitmap = cropSource.current;
+    const ctx = canvasRef.current?.getContext("2d");
+    if (source && bitmap && ctx) {
+      rememberStep(ctx);
+      paintBase(ctx);
+      ctx.drawImage(bitmap, source.x, source.y, source.edge, source.edge, 0, 0, size, size);
+    }
+    cropSource.current = null;
+    bitmap?.close();
+    setCropBitmap(null);
+    requestAnimationFrame(() => canvasRef.current?.focus({ preventScroll: true }));
+  }
+
+  async function saveCanvas() {
+    const canvas = canvasRef.current;
+    if (!canvas || !dirty || busy.current || saving || stroke.current) return;
+    const id = generation.current;
+    busy.current = true;
+    setLoading(true);
+    setError("");
+    try {
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/webp", 0.92));
+      if (id !== generation.current) return;
+      if (!blob) throw new Error("無法輸出畫布，請重試");
+      await save(new File([blob], "avatar", { type: blob.type }));
+    } catch {
+      if (id === generation.current) setError("無法儲存畫布，請再試一次");
+    } finally {
+      if (id === generation.current) { busy.current = false; setLoading(false); }
+    }
+  }
+
+  const blocked = saving || loading;
+  return <div className="avatar-studio"
+    onPaste={(event) => {
+      const image = Array.from(event.clipboardData.files).find((file) => file.type.startsWith("image/"))
+        ?? Array.from(event.clipboardData.items).find((item) => item.kind === "file" && item.type.startsWith("image/"))?.getAsFile();
+      event.preventDefault();
+      if (cropSource.current) return;
+      if (image) void importPhoto(async () => image);
+      else setError("剪貼簿沒有可貼上的圖片");
+    }}>
+    {cropBitmap && <AvatarCrop bitmap={cropBitmap} apply={(source) => closeCrop(source)} cancel={() => closeCrop()} />}
+    <div className="avatar-drawing-view" hidden={Boolean(cropBitmap)}>
+    <div className="avatar-import">
+      <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" aria-label="選取頭貼照片" hidden
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          event.currentTarget.value = "";
+          if (file) void importPhoto(async () => file);
+        }} />
+      <button type="button" className="secondary small" disabled={blocked} onClick={() => fileRef.current?.click()}>選擇照片</button>
+      <button type="button" className="secondary small" disabled={blocked} onClick={() => void importPhoto(async () => {
+        if (!navigator.clipboard?.read) throw new Error("請用 Ctrl / ⌘ + V 貼上，或選擇照片");
+        const items = await navigator.clipboard.read();
+        for (const item of items) {
+          const type = item.types.find((entry) => ["image/png", "image/jpeg", "image/webp"].includes(entry));
+          if (type) return item.getType(type);
+        }
+        throw new Error("剪貼簿沒有可貼上的圖片");
+      })}>貼上圖片</button>
+    </div>
+    <canvas ref={canvasRef} className="avatar-paint-canvas" width={size} height={size} tabIndex={0}
+      aria-label="頭貼畫布"
+      onPointerDown={(event) => {
+        if (busy.current || saving || event.button !== 0 || stroke.current) return;
+        const canvas = event.currentTarget;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        event.preventDefault();
+        canvas.focus({ preventScroll: true });
+        canvas.setPointerCapture(event.pointerId);
+        const p = point(canvas, event.clientX, event.clientY);
+        stroke.current = { id: event.pointerId, ...p };
+        rememberStep(ctx);
+        draw(ctx, p, p);
+      }}
+      onPointerMove={(event) => {
+        const last = stroke.current;
+        if (!last || last.id !== event.pointerId) return;
+        const ctx = event.currentTarget.getContext("2d");
+        if (!ctx) return;
+        const next = point(event.currentTarget, event.clientX, event.clientY);
+        draw(ctx, last, next);
+        stroke.current = { id: last.id, ...next };
+      }}
+      onLostPointerCapture={(event) => { if (stroke.current?.id === event.pointerId) stroke.current = null; }}
+      onPointerUp={(event) => { if (stroke.current?.id === event.pointerId) stroke.current = null; }}
+      onPointerCancel={(event) => { if (stroke.current?.id === event.pointerId) stroke.current = null; }}
+      onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); undo(); } }} />
+    <div className="avatar-brush-tools">
+      <label className="avatar-color-picker">顏色<input type="color" aria-label="畫筆顏色" value={color} disabled={blocked}
+        onChange={(event) => { setColor(event.target.value); setErasing(false); }} /></label>
+      <label className="avatar-brush-size">粗細<select aria-label="畫筆粗細" value={brush} disabled={blocked} onChange={(event) => setBrush(Number(event.target.value))}>
+        <option value={4}>細</option><option value={8}>中</option><option value={16}>粗</option>
+      </select></label>
+      <button type="button" className="secondary small" disabled={blocked} aria-pressed={erasing} onClick={() => setErasing(!erasing)}>橡皮擦</button>
+    </div>
+    <div className="avatar-canvas-actions">
+      <button type="button" className="link" disabled={blocked || !undoCount} onClick={undo}>復原</button>
+      <button type="button" className="link" disabled={blocked} onClick={() => {
+        const ctx = canvasRef.current?.getContext("2d");
+        if (ctx && !stroke.current && !busy.current) { rememberStep(ctx); paintBase(ctx); }
+      }}>清空</button>
+      {remove && <button type="button" className="link" disabled={blocked} onClick={remove}>移除頭貼</button>}
+      <button type="button" className="primary" disabled={blocked || !dirty} onClick={() => void saveCanvas()}>{saving ? "儲存中…" : "儲存"}</button>
+    </div>
+    </div>
+    {error && <small role="alert" className="profile-photo-error">{error}</small>}
+  </div>;
+}
+
 function AccountProfile({
   viewer,
   user,
   profileSaving = false,
   saveDisplayName = (form: FormEvent<HTMLFormElement>) => { form.preventDefault(); return false; },
+  saveAvatar,
   recoverySaving,
   passkeySaving,
   membershipSaving,
@@ -1830,6 +2203,7 @@ function AccountProfile({
   user: Person;
   profileSaving?: boolean;
   saveDisplayName?: (form: FormEvent<HTMLFormElement>) => boolean | Promise<boolean>;
+  saveAvatar?: (file: File | null) => Promise<void>;
   recoverySaving: boolean;
   passkeySaving: boolean;
   membershipSaving: boolean;
@@ -1840,7 +2214,7 @@ function AccountProfile({
   createRecoveryCode: () => void;
   registerPasskey: () => void;
   requestMembershipChange: (kind: "JOIN" | "EXIT") => void;
-  logout: () => void;
+  logout: (forgetDevice?: boolean) => void;
 }) {
   const accountTypeLabels: Record<Viewer["accountType"], string> = {
     guest: "裝置訪客帳號",
@@ -1850,6 +2224,45 @@ function AccountProfile({
   };
   const shortId = viewer.id.length > 16 ? `${viewer.id.slice(0, 8)}…${viewer.id.slice(-4)}` : viewer.id;
   const [editingName, setEditingName] = useState(false);
+  const nameEditor = useRef<HTMLFormElement>(null);
+  const namePointerType = useRef("");
+  const lastNameTap = useRef<{ time: number; x: number; y: number } | null>(null);
+  const startNameEdit = () => {
+    lastNameTap.current = null;
+    setEditingName(true);
+  };
+  useEffect(() => {
+    if (!editingName || profileSaving) return;
+    const cancelOutside = (event: MouseEvent) => {
+      const form = nameEditor.current;
+      if (form && !event.composedPath().includes(form)) setEditingName(false);
+    };
+    document.addEventListener("click", cancelOutside, true);
+    return () => document.removeEventListener("click", cancelOutside, true);
+  }, [editingName, profileSaving]);
+  const [avatarSaving, setAvatarSaving] = useState(false);
+  const [avatarError, setAvatarError] = useState("");
+  const [avatarDraft, setAvatarDraft] = useState<{ imageUrl?: string } | null>(null);
+  const avatarDialog = useRef<HTMLDialogElement>(null);
+  const avatarBackdropPress = useRef(false);
+  const isAvatarBackdrop = (event: { target: EventTarget; currentTarget: HTMLDialogElement; clientX: number; clientY: number }) => {
+    if (event.target !== event.currentTarget) return false;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return event.clientX < bounds.left || event.clientX >= bounds.right || event.clientY < bounds.top || event.clientY >= bounds.bottom;
+  };
+  const changeAvatar = async (file: File | null) => {
+    if (!saveAvatar || avatarSaving) return;
+    setAvatarSaving(true);
+    setAvatarError("");
+    try {
+      await saveAvatar(file);
+      avatarDialog.current?.close();
+    } catch (reason) {
+      setAvatarError(reason instanceof Error && reason.name === "Error" ? reason.message : "無法儲存頭貼，請稍後再試");
+    } finally {
+      setAvatarSaving(false);
+    }
+  };
   const editNameButton = useRef<HTMLButtonElement>(null);
   const finishNameEdit = () => {
     setEditingName(false);
@@ -1871,26 +2284,74 @@ function AccountProfile({
     <section className="account-page">
       <section className="account-card identity-card" aria-labelledby="profile-identity-title">
         <h2 id="profile-identity-title" className="account-card-title">個人資料</h2>
-        {editingName ? (
-          <form className="display-name-form" onSubmit={async (form) => { if (await saveDisplayName(form)) finishNameEdit(); }}>
-            <label htmlFor="profile-display-name">顯示名稱</label>
-            <input key={viewer.id + ":" + viewer.name} id="profile-display-name" name="displayName" defaultValue={viewer.name} maxLength={40} required autoComplete="nickname" autoFocus aria-describedby="profile-display-name-help" disabled={profileSaving} />
-            <small id="profile-display-name-help">最多 40 字，不會變更固定的帳號名稱。</small>
-            <div className="display-name-actions">
-              <button type="button" className="secondary" disabled={profileSaving} onClick={finishNameEdit}>取消</button>
-              <button type="submit" className="primary" disabled={profileSaving}>{profileSaving ? "儲存中…" : "儲存"}</button>
-            </div>
-          </form>
-        ) : (
-          <div className="account-hero">
-            <span className="account-avatar" aria-hidden="true">{Array.from(viewer.name)[0] ?? "球"}</span>
-            <div className="account-hero-copy">
-              <strong>{viewer.name}</strong>
-              <span>{clubIdentityLabel(viewer)}</span>
-            </div>
-            <button ref={editNameButton} type="button" className="link display-name-edit" aria-label="修改顯示名稱" onClick={() => setEditingName(true)}>改顯示名稱</button>
+        <div className="account-hero">
+          {saveAvatar ? <button type="button" className="profile-photo-trigger" aria-label="編輯頭貼" aria-haspopup="dialog"
+            onClick={() => {
+              setAvatarError("");
+              avatarBackdropPress.current = false;
+              setAvatarDraft({ imageUrl: viewer.avatarVersion ? `/api/avatar?memberId=${encodeURIComponent(viewer.id)}&v=${encodeURIComponent(viewer.avatarVersion)}` : undefined });
+              avatarDialog.current?.showModal();
+            }}>
+            <MemberAvatar className="account-avatar" person={viewer} />
+            <ProfileEditIcon className="profile-photo-edit-icon" />
+          </button> : <MemberAvatar className="account-avatar" person={viewer} />}
+          <div className="account-hero-copy">
+            {editingName ? (
+              <form ref={nameEditor} className="account-name-row display-name-form"
+                onSubmit={async (form) => { if (await saveDisplayName(form)) finishNameEdit(); }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape" && !event.nativeEvent.isComposing && !profileSaving) {
+                    event.preventDefault();
+                    finishNameEdit();
+                  }
+                }}>
+                <input id="profile-display-name" name="displayName" aria-label="顯示名稱" defaultValue={viewer.name}
+                  maxLength={40} required autoComplete="nickname" autoFocus readOnly={profileSaving} />
+                <button type="submit" className="display-name-action" aria-label="儲存" title="儲存" disabled={profileSaving}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6" /></svg>
+                </button>
+                <button type="button" className="display-name-action" aria-label="取消" title="取消" disabled={profileSaving} onClick={finishNameEdit}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+                </button>
+              </form>
+            ) : (
+              <div className="account-name-row">
+                <strong title={viewer.name}
+                  onPointerDown={(event) => { namePointerType.current = event.pointerType; }}
+                  onDoubleClick={() => { if (namePointerType.current !== "touch") startNameEdit(); }}
+                  onClick={(event) => {
+                    if (namePointerType.current !== "touch") return;
+                    const tap = { time: performance.now(), x: event.clientX, y: event.clientY };
+                    const last = lastNameTap.current;
+                    if (last && tap.time - last.time <= 400 && Math.hypot(tap.x - last.x, tap.y - last.y) <= 24) startNameEdit();
+                    else lastNameTap.current = tap;
+                  }}>{viewer.name}</strong>
+                <button ref={editNameButton} type="button" className="display-name-edit" aria-label="修改顯示名稱" onClick={startNameEdit}>
+                  <ProfileEditIcon />
+                </button>
+              </div>
+            )}
+            <span>{clubIdentityLabel(viewer)}</span>
           </div>
-        )}
+        </div>
+        {saveAvatar && <dialog ref={avatarDialog} className="modal profile-photo-dialog" aria-labelledby="profile-photo-title"
+          onCancel={(event) => { if (avatarSaving) event.preventDefault(); }}
+          onClose={() => setAvatarDraft(null)}
+          onPointerDown={(event) => { avatarBackdropPress.current = event.button === 0 && isAvatarBackdrop(event); }}
+          onPointerCancel={() => { avatarBackdropPress.current = false; }}
+          onClick={(event) => {
+            const dismiss = avatarBackdropPress.current && isAvatarBackdrop(event);
+            avatarBackdropPress.current = false;
+            if (dismiss && !avatarSaving) event.currentTarget.close();
+          }}>
+          <h2 id="profile-photo-title">編輯頭貼</h2>
+          <button type="button" className="profile-photo-close" aria-label="關閉頭貼編輯" disabled={avatarSaving} onClick={() => avatarDialog.current?.close()}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
+          {avatarDraft && <AvatarCanvas active imageUrl={avatarDraft.imageUrl} saving={avatarSaving}
+            save={(file) => changeAvatar(file)} remove={viewer.avatarVersion ? () => void changeAvatar(null) : undefined} />}
+          {avatarError && <small role="alert" className="profile-photo-error">{avatarError}</small>}
+        </dialog>}
         <dl className="account-details">
           <div><dt>帳號名稱 <span>（固定）</span></dt><dd><code>{viewer.accountName ?? viewer.name}</code></dd></div>
           <div><dt>部門</dt><dd>{user.department || "未填寫"}</dd></div>
@@ -1958,8 +2419,8 @@ function AccountProfile({
 
       <section className="account-card security-card" aria-labelledby="profile-security-title">
         <h2 id="profile-security-title" className="account-card-title">登入與安全</h2>
-        {!viewer.hasRecoveryCode && !viewer.hasPasskey && (
-          <p className="recovery-reminder">還沒設定取回帳號的方式。建議先建立 Passkey 或復原碼，以免換裝置後無法登入。</p>
+        {!viewer.hasPassword && (
+          <p className="recovery-reminder">要改用密碼登入？先取得復原碼，再從登入頁選擇「設定／重設密碼」。</p>
         )}
 
         <article className="security-method">
@@ -1984,14 +2445,15 @@ function AccountProfile({
 
         <article className="security-method">
           <div className="security-copy">
-            <div><strong>此裝置快速登入</strong><Badge tone="blue">已記住</Badge></div>
-            <p>登出後仍可在這台裝置選擇此帳號。</p>
+            <div><strong>此裝置</strong><Badge tone="blue">已記住</Badge></div>
+            <p>{viewer.hasPassword ? "登出後保留帳號；若有開啟快速登入，在有效期內不必再輸入密碼。" : "登出後仍可在這台裝置快速登入。"}</p>
           </div>
         </article>
       </section>
 
       <footer className="account-session">
-        <button type="button" className="secondary" onClick={logout}>登出</button>
+        <button type="button" className="secondary" onClick={() => logout()}>登出</button>
+        <button type="button" className="link" onClick={() => logout(true)}>登出並清除此裝置的帳號</button>
       </footer>
     </section>
   );
@@ -3268,7 +3730,7 @@ function Members({
           <ul className="roster-grid" aria-label={`${activeLabel}名單`} role="list">
             {visibleMembers.map((person) => (
               <li className="roster-card" key={person.id}>
-                <span className="roster-avatar" aria-hidden="true">{Array.from(person.name)[0] ?? "球"}</span>
+                <MemberAvatar className="roster-avatar" person={person} lazy />
                 <div className="roster-person">
                   <div className="roster-person-title">
                     <strong>{person.name}{person.id === currentUser.id && <small>（你）</small>}</strong>

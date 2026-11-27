@@ -250,7 +250,7 @@ function setup() {
   const database = loadSource("src/lib/firestore-database.ts");
   const roles = loadSource("src/lib/club-roles.ts");
   const passkeys = loadSource("src/lib/passkey-auth.ts");
-  return { db, names, auth, database, roles, passkeys, webauthnCalls };
+  return { db, names, auth, database, roles, passkeys, webauthnCalls, loadSource };
 }
 
 function targetMembers(s, name) {
@@ -901,3 +901,177 @@ test("president status follows immutable account identity and explicit flags", (
 // quotas, or automatic SDK conversions beyond the Timestamp/FieldValue methods
 // exercised here. Firebase Admin initialization is replaced before any module
 // is evaluated; no environment file, credentials, emulator or network is used.
+
+const FIRST_PASSWORD = "Club1!xy";
+const SECOND_PASSWORD = "Club test passphrase 2!";
+
+test("password registration and login preserve local remembered account names without enabling password bypass", async () => {
+  const s = setup();
+  const legacy = await s.auth.createGuestDeviceAccount("Legacy remembered player");
+  await assert.rejects(s.auth.createGuestDeviceAccount("Club Player", legacy.token, undefined, FIRST_PASSWORD.slice(1)), /請輸入 8 至 128 個字元/);
+  const entry = await s.auth.createGuestDeviceAccount("Club Player", legacy.token, undefined, FIRST_PASSWORD);
+  const id = entry.viewer.id;
+  const member = s.db.data("members/" + id);
+  assert.equal(entry.viewer.hasPassword, true);
+  assert.equal(member.passwordHash.length, 64);
+  assert.notEqual(member.passwordHash, FIRST_PASSWORD);
+  assert.equal(JSON.stringify(entry).includes("passwordHash"), false);
+  assert.equal(JSON.stringify(s.db.documents("members")).includes(FIRST_PASSWORD), false);
+  assert.notEqual(entry.token, legacy.token);
+  assert.equal(await s.auth.viewerForDeviceToken(legacy.token), null);
+  await assert.rejects(s.auth.loginWithPassword("Club Player", "not the password", ""), /帳號或密碼不正確/);
+  await assert.rejects(s.auth.loginWithPassword("Missing player", FIRST_PASSWORD, ""), /帳號或密碼不正確/);
+  await s.auth.deactivateDeviceToken(entry.token);
+  assert.equal(await s.auth.viewerForDeviceToken(entry.token), null);
+  const retained = await s.auth.deviceAccountsForToken(entry.token);
+  assert.deepEqual(retained.map((account) => [account.accountName, account.requiresPassword]), [["Club Player", true], ["Legacy remembered player", false]]);
+  await assert.rejects(s.auth.activateDeviceAccount(entry.token, id), /請輸入密碼/);
+  const loggedIn = await s.auth.loginWithPassword("ＣＬＵＢ　ＰＬＡＹＥＲ", FIRST_PASSWORD, "", entry.token);
+  assert.equal((await s.auth.viewerForDeviceToken(loggedIn.token)).id, id);
+  assert.notEqual(loggedIn.token, entry.token);
+});
+
+test("one-time setup preserves the original user and resetting revokes old browser sessions", async () => {
+  const s = setup();
+  const original = await s.auth.createGuestDeviceAccount("Existing player");
+  const memberPath = "members/" + original.viewer.id;
+  await s.db.doc(memberPath).update({ creditBalance: 175, membershipStatus: "MEMBER" });
+  const backup = await s.auth.createRecoveryCode(original.viewer.id);
+  await assert.rejects(s.auth.setPasswordWithCode("Existing player", FIRST_PASSWORD.slice(1), backup), /請輸入 8 至 128 個字元/);
+  const first = await s.auth.setPasswordWithCode("Existing player", FIRST_PASSWORD, backup);
+  assert.equal(first.viewer.id, original.viewer.id);
+  assert.equal(first.viewer.creditBalance, 175);
+  assert.equal(first.viewer.membershipStatus, "MEMBER");
+  assert.equal(await s.auth.viewerForDeviceToken(original.token), null);
+  assert.equal(s.db.documents("members").length, 1);
+  await assert.rejects(s.auth.setPasswordWithCode("Existing player", SECOND_PASSWORD, backup), /已使用/);
+  await assert.rejects(s.auth.loginWithRecoveryOrClaimCode("Existing player", backup), /不正確/);
+  const newCode = s.auth.createClaimCodeRecord();
+  const saveCode = (date) => s.db.doc(memberPath).update({ claimCodeSalt: newCode.salt, claimCodeHash: newCode.hash, claimCodeCreatedAt: date });
+  await saveCode(new Date(Date.now() - 31 * 60 * 1000));
+  await assert.rejects(s.auth.setPasswordWithCode("Existing player", SECOND_PASSWORD, newCode.code), /已過期/);
+  await saveCode(new Date());
+  const outcomes = await Promise.allSettled([
+    s.auth.setPasswordWithCode("Existing player", SECOND_PASSWORD, newCode.code),
+    s.auth.setPasswordWithCode("Existing player", SECOND_PASSWORD, newCode.code),
+  ]);
+  const winners = outcomes.filter((result) => result.status === "fulfilled");
+  assert.equal(winners.length, 1);
+  assert.equal(winners[0].value.viewer.id, first.viewer.id);
+  assert.equal(await s.auth.viewerForDeviceToken(first.token), null);
+  assert.equal((await s.auth.viewerForDeviceToken(winners[0].value.token)).id, first.viewer.id);
+  await assert.rejects(s.auth.loginWithPassword("Existing player", FIRST_PASSWORD, ""), /不正確/);
+  assert.equal((await s.auth.loginWithPassword("Existing player", SECOND_PASSWORD, "")).viewer.id, first.viewer.id);
+});
+
+test("a promoted password account needs the extra recovery code and cannot reuse its member session", async () => {
+  const s = setup();
+  const first = await s.auth.createGuestDeviceAccount("Future administrator", null, undefined, FIRST_PASSWORD);
+  await assert.rejects(s.auth.createRecoveryCode(first.viewer.id), /登入已失效/);
+  const code = await s.auth.createRecoveryCode(first.viewer.id, first.token);
+  await s.db.doc("members/" + first.viewer.id).update({ role: "ADMIN", primaryAdmin: true });
+  assert.equal(await s.auth.viewerForDeviceToken(first.token), null);
+  await assert.rejects(s.auth.loginWithPassword("Future administrator", FIRST_PASSWORD, ""), /還需要有效的復原碼/);
+  await assert.rejects(s.auth.loginWithRecoveryOrClaimCode("Future administrator", code), /不正確/);
+  const login = await s.auth.loginWithPassword("Future administrator", FIRST_PASSWORD, code);
+  assert.equal((await s.auth.viewerForDeviceToken(login.token)).primaryAdmin, true);
+});
+
+test("the same normalized account shares a persistent login throttle across browsers", async () => {
+  const s = setup();
+  for (let step = 0; step < 8; step++) {
+    await assert.rejects(s.auth.loginWithPassword(step % 2 ? "Nobody" : "ＮＯＢＯＤＹ", FIRST_PASSWORD, "", null, "198.51.100." + step), /帳號或密碼不正確/);
+  }
+  await assert.rejects(s.auth.loginWithPassword(" nobody ", FIRST_PASSWORD, "", null, "198.51.100.25"), /嘗試次數過多/);
+});
+
+test("trusted password accounts can resume after logout only on an explicitly remembered device", async () => {
+  const s = setup();
+  const first = await s.auth.createGuestDeviceAccount("Trusted player", null, undefined, FIRST_PASSWORD, undefined, true);
+  const id = first.viewer.id;
+  const external = await s.auth.loginWithPassword("Trusted player", FIRST_PASSWORD, "");
+  await s.auth.deactivateDeviceToken(external.token);
+  await assert.rejects(s.auth.activateDeviceAccount(external.token, id), /請輸入密碼/);
+  await assert.rejects(s.auth.activateDeviceAccount(null, id), /沒有記住/);
+
+  const other = await s.auth.createGuestDeviceAccount("Second trusted player", first.token, undefined, FIRST_PASSWORD, undefined, true);
+  assert.deepEqual((await s.auth.deviceAccountsForToken(other.token)).map((account) => account.requiresPassword), [false, false]);
+  await s.auth.deactivateDeviceToken(other.token);
+  assert.equal(await s.auth.viewerForDeviceToken(other.token), null);
+  await s.auth.activateDeviceAccount(other.token, id);
+  assert.equal((await s.auth.viewerForDeviceToken(other.token)).id, id);
+  await assert.rejects(s.auth.createRecoveryCode(id, other.token), /先用密碼登入/);
+
+  const record = s.db.doc("deviceCredentials/" + other.token.split(".")[0]);
+  await record.update({ quickSessionExpiresAtMs: Date.now() - 1, rememberedLogins: [{ userId: id, passwordVersion: s.db.data("members/" + id).passwordVersion, expiresAtMs: Date.now() - 1 }] });
+  assert.equal(await s.auth.viewerForDeviceToken(other.token), null);
+  assert.equal((await s.auth.deviceAccountsForToken(other.token)).find((entry) => entry.id === id).requiresPassword, true);
+  await assert.rejects(s.auth.activateDeviceAccount(other.token, id), /請輸入密碼/);
+
+  const revived = await s.auth.loginWithPassword("Trusted player", FIRST_PASSWORD, "", other.token, undefined, true);
+  await s.auth.revokeDeviceToken(revived.token);
+  assert.deepEqual(await s.auth.deviceAccountsForToken(revived.token), []);
+  await assert.rejects(s.auth.activateDeviceAccount(revived.token, id), /沒有記住/);
+});
+
+test("trust never bypasses administrator authentication or survives a reset on another device", async () => {
+  const s = setup();
+  const original = await s.auth.createGuestDeviceAccount("Reset trusted player", null, undefined, FIRST_PASSWORD, undefined, true);
+  const memberPath = "members/" + original.viewer.id;
+  const code = await s.auth.createRecoveryCode(original.viewer.id, original.token);
+  const reset = await s.auth.setPasswordWithCode("Reset trusted player", SECOND_PASSWORD, code, null, undefined, true);
+  await assert.rejects(s.auth.activateDeviceAccount(original.token, original.viewer.id), /請輸入密碼/);
+  assert.equal((await s.auth.deviceAccountsForToken(reset.token))[0].requiresPassword, false);
+
+  const newCode = await s.auth.createRecoveryCode(original.viewer.id, reset.token);
+  await s.db.doc(memberPath).update({ role: "ADMIN", primaryAdmin: true });
+  assert.equal((await s.auth.deviceAccountsForToken(reset.token))[0].requiresPassword, true);
+  await assert.rejects(s.auth.activateDeviceAccount(reset.token, original.viewer.id), /請輸入密碼/);
+  const admin = await s.auth.loginWithPassword("Reset trusted player", SECOND_PASSWORD, newCode, reset.token, undefined, true);
+  await s.auth.deactivateDeviceToken(admin.token);
+  await assert.rejects(s.auth.activateDeviceAccount(admin.token, original.viewer.id), /請輸入密碼/);
+});
+
+test("avatar upload normalizes images, persists by account, and refuses anonymous or cross-account writes", async () => {
+  const s = setup();
+  const { NextRequest } = require("next/server");
+  const sharp = require("sharp");
+  const route = s.loadSource("src/app/api/avatar/route.ts");
+  const owner = await s.auth.createGuestDeviceAccount("Avatar Owner");
+  const other = await s.auth.createGuestDeviceAccount("Other Avatar Player");
+  const png = await sharp({ create: { width: 180, height: 100, channels: 3, background: "#12745e" } }).png().toBuffer();
+  const origin = "https://example.test";
+  function request(action, { account, subject = owner.viewer.id, version, type = "image/png", body, requestOrigin = origin } = {}) {
+    const url = new URL("/api/avatar", origin);
+    if (version) { url.searchParams.set("memberId", subject); url.searchParams.set("v", version); }
+    const headers = { origin: requestOrigin, "X-Avatar-Owner": subject };
+    if (account) headers.cookie = "badminton_device=" + account.token;
+    return route[action](new NextRequest(url, { method: action, headers: { ...headers, ...(body ? { "Content-Type": type } : {}) }, body }));
+  }
+  assert.equal((await request("POST", { body: png })).status, 401);
+  assert.equal((await request("POST", { account: other, body: png })).status, 409);
+  assert.equal((await request("POST", { account: owner, body: png, requestOrigin: "https://outside.test" })).status, 403);
+  assert.equal((await request("POST", { account: owner, body: png, type: "image/svg+xml" })).status, 415);
+  assert.equal((await request("POST", { account: owner, body: png, type: "image/jpeg" })).status, 415);
+  assert.equal((await request("POST", { account: owner, body: Buffer.from("not a photo") })).status, 422);
+  assert.equal((await request("POST", { account: owner, body: Buffer.alloc(1024 * 1024 + 1) })).status, 413);
+  const upload = await request("POST", { account: owner, body: png });
+  assert.equal(upload.status, 200);
+  const { avatarVersion: version } = await upload.json();
+  assert.equal((await s.auth.viewerForDeviceToken(owner.token)).avatarVersion, version);
+  assert.equal((await request("GET", { version })).status, 401);
+  const fetched = await request("GET", { account: other, version });
+  assert.equal(fetched.headers.get("content-type"), "image/webp");
+  assert.equal(fetched.headers.get("cache-control"), "private, no-store");
+  const encoded = await sharp(Buffer.from(await fetched.arrayBuffer())).metadata();
+  assert.deepEqual([encoded.format, encoded.width, encoded.height, encoded.exif], ["webp", 256, 256, undefined]);
+  assert.equal((await request("DELETE", { account: other })).status, 409);
+  const replacement = await request("POST", { account: owner, body: png });
+  assert.equal(replacement.status, 200);
+  const { avatarVersion: nextVersion } = await replacement.json();
+  assert.notEqual(nextVersion, version);
+  assert.equal((await request("GET", { account: owner, version })).status, 404);
+  assert.deepEqual(await (await request("DELETE", { account: owner })).json(), { avatarVersion: null });
+  assert.equal((await request("GET", { account: owner, version: nextVersion })).status, 404);
+  assert.equal(s.db.data("profileAvatars/" + owner.viewer.id), undefined);
+});

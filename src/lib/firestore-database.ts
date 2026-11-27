@@ -693,6 +693,7 @@ export async function readState(viewer: Viewer | null = null) {
         id: document.id,
         name,
         accountName: memberAccountName(member),
+        ...(typeof member.avatarVersion === "string" ? { avatarVersion: member.avatarVersion } : {}),
         department: member.department ? String(member.department) : null,
         role: String(member.role ?? "MEMBER"),
         membershipStatus,
@@ -701,6 +702,7 @@ export async function readState(viewer: Viewer | null = null) {
         primaryAdmin: isClubPresident(member),
         canReceivePresidency: !isClubPresident(member) && member.membershipStatus === "MEMBER" && !member.endingAt
           && ["guest", "recoverable", "verified"].includes(String(member.accountType))
+          && (!member.passwordVersion || Boolean(member.recoveryCodeHash))
           && !(membershipRequestSnapshot?.docs ?? []).some((request) => request.data().memberId === document.id && request.data().kind === "EXIT" && request.data().status === "PENDING"),
       };
     })
@@ -2776,6 +2778,7 @@ async function transferPresident(input: Record<string, string>, actor: Viewer) {
     if (!target) throw new Error("找不到接任社員");
     if (target.membershipStatus !== "MEMBER" || target.endingAt) throw new Error("接任者必須是未排定退出的有效社員");
     if (!["guest", "recoverable", "verified"].includes(String(target.accountType))) throw new Error("請先讓接任社員完成帳號認領或建立帳號");
+    if (target.passwordVersion && !target.recoveryCodeHash) throw new Error("請先讓接任社員在個人資訊建立復原碼");
     if (lock.data()?.kind === "EXIT" || requests.docs.some((entry) => entry.data().kind === "EXIT" && entry.data().status === "PENDING")) throw new Error("接任社員有待審核的退出申請，請先處理申請");
 
     transaction.update(currentRef, { role: "MEMBER", primaryAdmin: false, membershipStatus: "MEMBER", endingAt: null, updatedAt: now });
