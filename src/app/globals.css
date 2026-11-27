@@ -120,10 +120,11 @@ select {
 }
 .login {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   min-height: 100vh;
   padding: clamp(12px, 4vw, 48px);
+  padding-block-start: clamp(20px, 13svh, 128px);
   background: radial-gradient(circle at 80% 10%, #ddf09d 0 8%, transparent 26%), #eff7f4;
 }
 .login-card {
@@ -203,42 +204,46 @@ select {
   display: flex;
   flex-direction: column;
 }
-.login form > div {
-  display: flex;
-  gap: 9px;
-}
 .login input {
   width: 100%;
   margin-bottom: 14px;
+}
+.login form .login-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+.login .login-remember input {
+  width: 1rem;
+  height: 1rem;
+  min-height: 0;
+  margin: 0;
 }
 .login form > .primary {
   width: 100%;
   min-height: 44px;
   margin-top: 4px;
 }
-.login-tabs {
+.login-actions {
   display: flex;
-  gap: 6px;
-  margin: 0 0 14px;
-  padding: 4px;
-  border-radius: 12px;
-  background: #eef3f1;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  column-gap: 16px;
+  margin-top: 8px;
 }
-.login-tabs button {
-  flex: 1;
+.login-actions button {
   min-height: 40px;
-  padding: 7px 8px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--muted);
-  font-weight: 700;
+  white-space: nowrap;
 }
-.login-tabs button[aria-pressed="true"] {
-  background: #fff;
-  color: var(--green);
-  box-shadow: 0 3px 10px #163f3714;
+.login-help,
+.login-error {
+  margin: 0 0 10px;
+  font-size: 13px;
 }
+.login-help { color: #586978; }
+.login-error { color: #9a3426; }
 .quick-accounts {
   display: flex;
   flex-direction: column;
@@ -303,11 +308,6 @@ select {
   color: var(--green);
   font-size: 22px;
   line-height: 1;
-}
-.login-name-note {
-  margin: -7px 0 12px;
-  color: #586978;
-  font-size: 12px;
 }
 .login-progress:not(:empty) {
   margin-top: 8px;
@@ -2781,10 +2781,6 @@ dialog.event-dialog {
   }
   .news-layout {
     display: block;
-  }
-  .login form > div {
-    display: flex;
-    flex-direction: column;
   }
   .login form button {
     width: 100%;

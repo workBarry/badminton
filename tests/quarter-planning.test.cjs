@@ -1259,10 +1259,10 @@ test("personal profile prioritizes three sections, shows current identity withou
   assert.match(html, /<details class="account-disclosure"><summary>更多帳號資訊<\/summary>/);
   assert.match(html, /<details class="account-disclosure"><summary>申請紀錄<\/summary>/);
   assert.match(html, /修改顯示名稱|重新產生復原碼/);
-  assert.match(html, /<footer[^>]*><button[^>]*>登出<\/button><\/footer>/);
+  assert.match(html, /<footer[^>]*><button[^>]*>登出<\/button><button[^>]*>登出並清除此裝置的帳號<\/button><\/footer>/);
 });
 
-test("profile warns only without an account recovery method and retains guest join and both security actions", () => {
+test("profile offers password setup only for legacy accounts and retains guest join and both security actions", () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
   const { AccountProfileForTest } = accountComponentsForTest();
@@ -1271,13 +1271,14 @@ test("profile warns only without an account recovery method and retains guest jo
   props.user = { ...props.user, role: "member", member: false, membershipStatus: "GUEST" };
   const render = () => renderToStaticMarkup(React.createElement(AccountProfileForTest, props));
   const html = render();
-  assert.match(html, /還沒設定取回帳號的方式/);
+  assert.match(html, /要改用密碼登入/);
   assert.match(html, />申請加入社員<\/button>/);
   assert.match(html, />建立 Passkey<\/button>/);
   assert.match(html, />建立復原碼<\/button>/);
   props.viewer.hasPasskey = true;
+  props.viewer.hasPassword = true;
   const recovered = render();
-  assert.doesNotMatch(recovered, /還沒設定取回帳號的方式/);
+  assert.doesNotMatch(recovered, /要改用密碼登入/);
   assert.match(recovered, />新增 Passkey<\/button>/);
 });
 

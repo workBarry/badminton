@@ -74,6 +74,7 @@ type Viewer = {
   accountType: "guest" | "recoverable" | "verified" | "unclaimed";
   hasRecoveryCode: boolean;
   hasPasskey: boolean;
+  hasPassword?: boolean;
 };
 type GuestSettlement = { memberId: string; status: "ISSUED" | "SKIPPED" | "LEGACY"; amount: number | null };
 type GuestSettlementReceipt = { issued: number; skipped: number };
@@ -84,7 +85,8 @@ type EventCancellationPreview = {
   pendingCreditAmount: number; pendingCashRefundAmount?: number; legacyReviewAmount?: number;
 };
 type ActionResult = Partial<GuestSettlementReceipt & QuarterInvoicePreview & EventCancellationPreview> & { creditBalance?: number; memberId?: string; adjustmentInvoiceId?: string; results?: { id: string; success: boolean; error?: string }[]; invoiceId?: string; planId?: string; recoveryCode?: string; claimCode?: string; recipientName?: string; invoiceCount?: number; invoiceIds?: string[]; eventIds?: string[]; eventCount?: number; totalAmount?: number; periodLabel?: string; createdDate?: string | null; targetDate?: string; status?: string; skippedDates?: string[]; skippedEventIds?: string[]; periodId?: string; recorded?: number; alreadyRecorded?: number; joined?: boolean; amount?: number; singleInvoiceCount?: number; replacedGuestBillCount?: number };
-type DeviceAccount = { id: string; name: string; accountName: string; role: "ADMIN" | "MEMBER"; membershipStatus: string; primaryAdmin: boolean };
+type LoginMode = "login" | "register" | "setup" | "legacy";
+type DeviceAccount = { requiresPassword?: boolean; id: string; name: string; accountName: string; role: "ADMIN" | "MEMBER"; membershipStatus: string; primaryAdmin: boolean };
 type ClubEvent = {
   id: string;
   memberBilling?: string;
@@ -380,23 +382,14 @@ export default function Home() {
   const invoice = personalInvoices.find((item) => item.status === "PENDING")
     ?? personalInvoices.find((item) => item.status === "REPORTED")
     ?? personalInvoices.find((item) => item.status === "CONFIRMED");
-  const createGuest = async (candidate: string) => {
-    const clean = candidate.trim();
-    if (!clean) return;
+  const submitLogin = async (mode: LoginMode, candidate: string, password: string, code: string, rememberDevice: boolean) => {
+    const actions = { login: "loginPassword", register: "registerPassword", setup: "setPasswordWithCode", legacy: "recover" };
     setAuthSaving(true);
     try {
-      const created = await execute("createGuest", { accountName: clean });
-      if (created) setInput("");
-    } finally {
-      setAuthSaving(false);
-    }
-  };
-  const recover = async (candidate: string, code: string) => {
-    setAuthSaving(true);
-    try {
-      const payload = await execute("recover", { accountName: candidate.trim(), code: code.trim() });
+      const payload = await execute(actions[mode], { accountName: candidate.trim(), password, code: code.trim(), rememberDevice: String(rememberDevice) }, true);
+      setInput("");
       if (payload?.actionResult?.recoveryCode) {
-        setCodeNotice({ title: "請保存新的復原碼", body: "舊的認領碼或復原碼已失效。這組新碼只會顯示一次，請放在安全的地方。", code: payload.actionResult.recoveryCode });
+        setCodeNotice({ title: "請保存新的復原碼", body: "舊碼已失效。新碼只顯示一次，請妥善保存。", code: payload.actionResult.recoveryCode });
       }
     } finally {
       setAuthSaving(false);
@@ -405,7 +398,7 @@ export default function Home() {
   const quickLogin = async (userId: string) => {
     setAuthSaving(true);
     try {
-      await execute("quickLogin", { userId });
+      await execute("quickLogin", { userId }, true);
     } finally {
       setAuthSaving(false);
     }
@@ -428,7 +421,7 @@ export default function Home() {
       setPasskeySaving(false);
     }
   };
-  const logout = async () => { await execute("logout", {}); setTab("總覽"); setNotificationOpen(false); };
+  const logout = async (forgetDevice = false) => { await execute("logout", { forgetDevice: String(forgetDevice) }); setTab("總覽"); setNotificationOpen(false); };
   const makeRecoveryCode = async (replaceExisting: boolean) => {
     if (replaceExisting && !(await askSiteConfirmation({ title: "重新產生復原碼？", message: "原本的復原碼會立即失效，新碼只會顯示一次。", action: "重新產生" }))) return;
     setRecoverySaving(true);
@@ -472,8 +465,8 @@ export default function Home() {
       const payload = await execute("issueClaimCode", { memberId: person.id });
       if (payload?.actionResult?.claimCode) {
         setCodeNotice({
-          title: `請將認領碼交給${person.name}`,
-          body: `使用者可在登入頁選擇「取回帳號」，輸入帳號名稱「${person.accountName ?? person.name}」與此碼。代碼只會顯示一次，請透過可信任的方式交付。`,
+          title: `請將設定碼交給${person.name}`,
+          body: `使用者可在登入頁選擇「設定／重設密碼」，輸入帳號「${person.accountName ?? person.name}」和這組設定碼。請確認本人後再交付；已設定密碼的帳號須於 30 分鐘內使用。`,
           code: payload.actionResult.claimCode,
         });
       }
@@ -493,7 +486,7 @@ export default function Home() {
       setRecipient("");
       setTransferEventId(null);
       if (payload.actionResult?.claimCode) {
-        setCodeNotice({ title: "請將認領碼交給接手者", body: `請在登入頁輸入帳號名稱「${clean}」與這組認領碼開啟帳號。此碼只會顯示一次。`, code: payload.actionResult.claimCode });
+        setCodeNotice({ title: "請將認領碼交給接手者", body: `請在登入頁選擇「設定／重設密碼」，輸入帳號「${clean}」和這組認領碼。此碼只會顯示一次。`, code: payload.actionResult.claimCode });
       }
     }
   };
@@ -794,7 +787,7 @@ export default function Home() {
     description={sessionError ? "連線逾時或暫時無法取得資料，請檢查網路後再試一次。" : "正在讀取活動與帳號資訊，請稍候。"}
     onRetry={() => { setSessionError(false); void refresh(); }}
   />;
-  if (!viewer) return <><Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving} events={events} />{transientMessage}</>;
+  if (!viewer) return <><Login input={input} setInput={setInput} submitLogin={submitLogin} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving} events={events} />{transientMessage}</>;
   const isAdmin = user.role === "admin";
   const detailId = eventDetails?.viewerId === viewer.id ? eventDetails.eventId : null;
   const detailInvoices = detailId ? invoices.filter((invoice) => isPrincipal(invoice) && (isAdmin || invoice.member_id === viewer.id) && (invoice.event_id === detailId || invoice.event_ids?.includes(detailId))) : [];
@@ -982,7 +975,7 @@ export default function Home() {
             createRecoveryCode={() => void makeRecoveryCode(viewer.hasRecoveryCode)}
             registerPasskey={() => void registerPasskey()}
             requestMembershipChange={(kind) => void requestMembershipChange(kind)}
-            logout={() => void logout()}
+            logout={(forgetDevice) => void logout(forgetDevice)}
           />
         )}
       </main>
@@ -1426,8 +1419,8 @@ function MemberManagerModal({
                       accountMenu.current.querySelector("summary")?.focus();
                     }
                     void issueClaimCode(member);
-                  }}>{claimCodeSaving ? "產生中…" : "產生認領碼"}</button>
-                  <small>供使用者在其他裝置找回帳號。新碼會取代舊認領碼，只顯示一次。</small>
+                  }}>{claimCodeSaving ? "產生中…" : "產生密碼設定碼"}</button>
+                  <small>確認是本人後再交付。新碼會取代舊碼，只顯示一次。</small>
                 </>
               )}
             </div>
@@ -1628,8 +1621,7 @@ function BillingManagerModal({
 function Login({
   input,
   setInput,
-  createGuest,
-  recover,
+  submitLogin,
   quickAccounts,
   quickLogin,
   saving,
@@ -1637,15 +1629,29 @@ function Login({
 }: {
   input: string;
   setInput: (value: string) => void;
-  createGuest: (accountName: string) => void;
-  recover: (accountName: string, code: string) => void;
+  submitLogin: (mode: LoginMode, accountName: string, password: string, code: string, rememberDevice: boolean) => Promise<void>;
   quickAccounts: DeviceAccount[];
-  quickLogin: (userId: string) => void;
+  quickLogin: (userId: string) => Promise<void>;
   saving: boolean;
   events: ClubEvent[];
 }) {
-  const [mode, setMode] = useState<"new" | "recover">("new");
+  const [mode, setMode] = useState<LoginMode>("login");
+  const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [adminCode, setAdminCode] = useState(false);
+  const [rememberDevice, setRememberDevice] = useState(false);
+  const actions = { login: "登入", register: "建立帳號", setup: "儲存新密碼", legacy: "用舊碼登入" };
+  const codeNeeded = mode === "setup" || mode === "legacy" || adminCode;
+  const newPassword = mode === "register" || mode === "setup";
+  const go = (next: LoginMode) => {
+    setMode(next);
+    setRememberDevice(false);
+    setPassword("");
+    setCode("");
+    setError("");
+    setAdminCode(false);
+  };
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
@@ -1675,10 +1681,16 @@ function Login({
           </header>
           {quickAccounts.length > 0 && (
             <section className="quick-accounts" aria-labelledby="quick-login-title">
-              <h2 id="quick-login-title">快速登入</h2>
+              <h2 id="quick-login-title">此裝置記住的帳號</h2>
               <div>
                 {quickAccounts.map((account) => (
-                  <button type="button" key={account.id} disabled={saving} onClick={() => quickLogin(account.id)}>
+                  <button type="button" key={account.id} disabled={saving} onClick={() => {
+                    go("login");
+                    setInput(account.accountName || account.name);
+                    if (account.requiresPassword === false) {
+                      void quickLogin(account.id).catch((reason) => setError(reason instanceof Error ? reason.message : "暫時無法快速登入"));
+                    }
+                  }}>
                     <i aria-hidden="true">{account.name.slice(0, 1)}</i>
                     <span>
                       <b>{account.name}</b>
@@ -1688,32 +1700,49 @@ function Login({
                   </button>
                 ))}
               </div>
-              <small>共用裝置上的其他人也能使用快速登入。</small>
+              {quickAccounts.some((account) => account.requiresPassword === false) && <small>共用裝置請勿開啟快速登入。</small>}
             </section>
           )}
-          <div className="login-tabs" role="group" aria-label="帳號操作">
-            <button type="button" aria-pressed={mode === "new"} disabled={saving} onClick={() => setMode("new")}>首次使用</button>
-            <button type="button" aria-pressed={mode === "recover"} disabled={saving} onClick={() => setMode("recover")}>取回帳號</button>
-          </div>
           <form
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              if (mode === "new") createGuest(input);
-              else recover(input, code);
+              if (saving) return;
+              setError("");
+              try {
+                await submitLogin(mode, input, password, code, rememberDevice && !adminCode);
+              } catch (reason) {
+                const message = reason instanceof Error ? reason.message : "暫時無法登入";
+                if (mode === "login" && message === "幹部登入還需要有效的復原碼") setAdminCode(true);
+                setError(message);
+              }
             }}
           >
-            <label htmlFor="login-account-name">帳號名稱</label>
-            <input id="login-account-name" value={input} onChange={(e) => setInput(e.target.value)} aria-describedby={mode === "new" ? "login-name-note" : undefined} maxLength={40} required autoComplete="username" />
-            {mode === "new" ? (
-              <p id="login-name-note" className="login-name-note">建立後無法更改。</p>
-            ) : (
-              <>
-                <label htmlFor="login-recovery-code">認領碼或復原碼</label>
-                <input id="login-recovery-code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="XXXX-XXXX-XXXX-XXXX" maxLength={19} required autoComplete="one-time-code" />
-              </>
+            <label htmlFor="login-account-name">帳號</label>
+            <input id="login-account-name" name="username" value={input} onChange={(e) => { setInput(e.target.value); setAdminCode(false); setCode(""); setError(""); }} maxLength={40} required autoComplete="username" />
+            {mode !== "legacy" && <>
+              <label htmlFor="login-password">{mode === "setup" ? "新密碼" : "密碼"}</label>
+              <input id="login-password" name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={newPassword ? 8 : undefined} maxLength={128} required autoComplete={newPassword ? "new-password" : "current-password"} />
+            </>}
+            {mode === "setup" && <p className="login-help">可用舊認領碼或復原碼。沒有碼，請聯絡幹部核對身分。</p>}
+            {codeNeeded && <>
+              <label htmlFor="login-recovery-code">{mode === "login" ? "幹部復原碼" : "設定碼／復原碼"}</label>
+              <input id="login-recovery-code" name="code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} maxLength={19} required autoComplete="one-time-code" />
+            </>}
+            {mode !== "legacy" && !adminCode && (
+              <label className="login-remember">
+                <input type="checkbox" checked={rememberDevice} onChange={(e) => setRememberDevice(e.target.checked)} />
+                在此裝置快速登入（30 天）
+              </label>
             )}
-            <button className="primary" disabled={saving}>{mode === "new" ? "建立帳號" : "取回帳號"}</button>
+            {error && <p role="alert" className="login-error">{error}</p>}
+            <button className="primary" disabled={saving}>{actions[mode]}</button>
           </form>
+          <div className="login-actions" role="group" aria-label="帳號操作">
+            {mode !== "login" && <button type="button" className="link" disabled={saving} onClick={() => go("login")}>返回登入</button>}
+            {mode === "login" && <button type="button" className="link" disabled={saving} onClick={() => go("register")}>建立帳號</button>}
+            {mode !== "setup" && <button type="button" className="link" disabled={saving} onClick={() => go("setup")}>設定／重設密碼</button>}
+            {mode === "setup" && <button type="button" className="link" disabled={saving} onClick={() => go("legacy")}>用舊碼登入</button>}
+          </div>
           <div role="status" className="login-progress">{saving ? "處理中…" : ""}</div>
         </section>
       </div>
@@ -1840,7 +1869,7 @@ function AccountProfile({
   createRecoveryCode: () => void;
   registerPasskey: () => void;
   requestMembershipChange: (kind: "JOIN" | "EXIT") => void;
-  logout: () => void;
+  logout: (forgetDevice?: boolean) => void;
 }) {
   const accountTypeLabels: Record<Viewer["accountType"], string> = {
     guest: "裝置訪客帳號",
@@ -1958,8 +1987,8 @@ function AccountProfile({
 
       <section className="account-card security-card" aria-labelledby="profile-security-title">
         <h2 id="profile-security-title" className="account-card-title">登入與安全</h2>
-        {!viewer.hasRecoveryCode && !viewer.hasPasskey && (
-          <p className="recovery-reminder">還沒設定取回帳號的方式。建議先建立 Passkey 或復原碼，以免換裝置後無法登入。</p>
+        {!viewer.hasPassword && (
+          <p className="recovery-reminder">要改用密碼登入？先取得復原碼，再從登入頁選擇「設定／重設密碼」。</p>
         )}
 
         <article className="security-method">
@@ -1984,14 +2013,15 @@ function AccountProfile({
 
         <article className="security-method">
           <div className="security-copy">
-            <div><strong>此裝置快速登入</strong><Badge tone="blue">已記住</Badge></div>
-            <p>登出後仍可在這台裝置選擇此帳號。</p>
+            <div><strong>此裝置</strong><Badge tone="blue">已記住</Badge></div>
+            <p>{viewer.hasPassword ? "登出後保留帳號；若有開啟快速登入，在有效期內不必再輸入密碼。" : "登出後仍可在這台裝置快速登入。"}</p>
           </div>
         </article>
       </section>
 
       <footer className="account-session">
-        <button type="button" className="secondary" onClick={logout}>登出</button>
+        <button type="button" className="secondary" onClick={() => logout()}>登出</button>
+        <button type="button" className="link" onClick={() => logout(true)}>登出並清除此裝置的帳號</button>
       </footer>
     </section>
   );

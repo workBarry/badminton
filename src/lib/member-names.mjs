@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const NAME_IN_USE_MESSAGE = "這個帳號名稱已被使用。若是你的帳號，請使用快速登入或「取回既有帳號」；新帳號請改用其他帳號名稱。";
+export const NAME_IN_USE_MESSAGE = "這個帳號名稱已被使用。若是你的帳號，請登入或選擇「設定／重設密碼」；新帳號請改用其他帳號名稱。";
 
 /** @param {unknown} value */
 export function memberNameKey(value) {

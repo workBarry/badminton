@@ -103,6 +103,7 @@ function routeFor(reader, viewer = actor) {
   const { BalanceHistoryError } = setup();
   const route = load("src/app/api/club/route.ts", {
     "next/server": { NextResponse: response },
+    "node:net": require("node:net"),
     "@/lib/device-auth": { DEVICE_COOKIE: "device", viewerForDeviceToken: async () => viewer },
     "@/lib/firestore-database": { readState() { stateCalls += 1; throw new Error("Full state should not be loaded"); } },
     "@/lib/member-balance-history": { readMemberBalanceHistory: reader, BalanceHistoryError },
