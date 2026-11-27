@@ -2,10 +2,10 @@
 
 import { type ComponentProps, type CSSProperties, FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
+import { startRegistration } from "@simplewebauthn/browser";
 import QuarterPlanner, { QuarterPeriodCreator, defaultBillingPeriod } from "@/app/quarter-planner";
 import LoadingScreen from "@/app/loading-screen";
-import ShuttleArt from "@/app/shuttle-art";
+import { ShuttleLogo } from "@/app/shuttle-art";
 import BillingDashboard, { type BillingProps } from "@/app/billing-dashboard";
 import BalanceHistoryDialog, { type BalanceAdjustmentInput } from "@/app/balance-history-dialog";
 import FloatingNotifications from "@/app/floating-notifications";
@@ -14,9 +14,7 @@ import type { CalendarNotices, OfficialClosure } from "@/lib/official-closures";
 import type { QuarterPlan, QuarterBillingPeriod } from "@/lib/quarter-planning";
 import { clubIdentityLabel } from "@/lib/club-roles";
 import type {
-  AuthenticationResponseJSON,
   PublicKeyCredentialCreationOptionsJSON,
-  PublicKeyCredentialRequestOptionsJSON,
   RegistrationResponseJSON,
 } from "@simplewebauthn/server";
 
@@ -25,12 +23,12 @@ type Tab = "總覽" | "活動" | "公告" | "球友名單" | "費用管理" | "�
 const sectionDescriptions: Record<Tab, string> = {
   總覽: "",
   活動: "",
-  公告: "查看球友會的最新消息與重要通知。",
+  公告: "",
   球友名單: "",
-  費用管理: "查看付款狀態、應繳費用與帳單紀錄。",
+  費用管理: "",
   個人資訊: "管理顯示名稱、社員身分與帳號安全。",
 };
-const sidebarItems: { label: Exclude<Tab, "個人資訊">; icon: ReactNode }[] = [
+const sidebarItems: { label: Exclude<Tab, "個人資訊">; navLabel?: string; icon: ReactNode }[] = [
   {
     label: "總覽",
     icon: <><path d="m3 10 9-6.5 9 6.5M5.5 9v9.5A1.5 1.5 0 0 0 7 20h10a1.5 1.5 0 0 0 1.5-1.5V9" /><path d="M9.5 20v-5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v5" /></>,
@@ -45,10 +43,12 @@ const sidebarItems: { label: Exclude<Tab, "個人資訊">; icon: ReactNode }[] =
   },
   {
     label: "球友名單",
+    navLabel: "名單",
     icon: <><circle cx="9" cy="8" r="3" /><circle cx="17.5" cy="9" r="2.5" /><path d="M3 20v-1a5 5 0 0 1 5-5h2a5 5 0 0 1 5 5v1m2-5h.5a3.5 3.5 0 0 1 3.5 3.5V20" /></>,
   },
   {
     label: "費用管理",
+    navLabel: "費用",
     icon: <><path d="M19 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-2M4 8h15a2 2 0 0 1 2 2v2" /><path d="M21 12h-5a2 2 0 0 0 0 4h5v-4Zm-5 2h.01" /></>,
   },
 ];
@@ -357,7 +357,7 @@ export default function Home() {
     return payload;
   };
 
-  const passkeyRequest = async <T,>(action: string, response?: RegistrationResponseJSON | AuthenticationResponseJSON) => {
+  const passkeyRequest = async <T,>(action: string, response?: RegistrationResponseJSON) => {
     const request = await fetch("/api/passkey", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -375,7 +375,6 @@ export default function Home() {
     [viewer],
   );
   const event = events.find((item) => !item.endsAt || new Date(item.endsAt) > new Date());
-  const headerDate = event?.startsAt ? new Intl.DateTimeFormat("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "long" }).format(new Date(event.startsAt)) : "台北時間 · UTC+8";
   const booking = event?.bookings.find((item) => item.memberId === viewer?.id);
   const personalInvoices = invoices.filter((item) => item.member_id === viewer?.id && isPrincipal(item));
   const invoice = personalInvoices.find((item) => item.status === "PENDING")
@@ -409,23 +408,6 @@ export default function Home() {
       await execute("quickLogin", { userId });
     } finally {
       setAuthSaving(false);
-    }
-  };
-  const loginWithPasskey = async () => {
-    if (typeof PublicKeyCredential === "undefined") {
-      notifySite("這個瀏覽器或裝置不支援 Passkey");
-      return;
-    }
-    setPasskeySaving(true);
-    try {
-      const start = await passkeyRequest<{ options: PublicKeyCredentialRequestOptionsJSON }>("authenticationOptions");
-      const credential = await startAuthentication({ optionsJSON: start.options });
-      const state = await passkeyRequest<ApiState>("verifyAuthentication", credential);
-      applyState(state);
-    } catch (error) {
-      notifySite(error instanceof Error && error.name === "NotAllowedError" ? "已取消 Passkey 登入" : error instanceof Error ? error.message : "Passkey 登入失敗");
-    } finally {
-      setPasskeySaving(false);
     }
   };
   const registerPasskey = async () => {
@@ -491,7 +473,7 @@ export default function Home() {
       if (payload?.actionResult?.claimCode) {
         setCodeNotice({
           title: `請將認領碼交給${person.name}`,
-          body: `使用者可在登入頁選擇「取回既有帳號」，輸入帳號名稱「${person.accountName ?? person.name}」與此碼。代碼只會顯示一次，請透過可信任的方式交付。`,
+          body: `使用者可在登入頁選擇「取回帳號」，輸入帳號名稱「${person.accountName ?? person.name}」與此碼。代碼只會顯示一次，請透過可信任的方式交付。`,
           code: payload.actionResult.claimCode,
         });
       }
@@ -812,26 +794,27 @@ export default function Home() {
     description={sessionError ? "連線逾時或暫時無法取得資料，請檢查網路後再試一次。" : "正在讀取活動與帳號資訊，請稍候。"}
     onRetry={() => { setSessionError(false); void refresh(); }}
   />;
-  if (!viewer) return <><AnnouncementTicker news={news.slice(0, 3)} /><Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} passkeyLogin={loginWithPasskey} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving || passkeySaving} events={events} news={news} />{transientMessage}</>;
+  if (!viewer) return <><Login input={input} setInput={setInput} createGuest={createGuest} recover={recover} quickAccounts={quickAccounts} quickLogin={quickLogin} saving={authSaving} events={events} />{transientMessage}</>;
   const isAdmin = user.role === "admin";
   const detailId = eventDetails?.viewerId === viewer.id ? eventDetails.eventId : null;
   const detailInvoices = detailId ? invoices.filter((invoice) => isPrincipal(invoice) && (isAdmin || invoice.member_id === viewer.id) && (invoice.event_id === detailId || invoice.event_ids?.includes(detailId))) : [];
   const selectedEvent = detailId ? events.find((item) => item.id === detailId)
     ?? archivedClubEvent(detailInvoices.flatMap((invoice) => invoice.event_schedules ?? []).find((entry) => entry.id === detailId) ?? eventDetails?.archived) : undefined;
   const openEventDetails = (eventId: string) => setEventDetails({ eventId, viewerId: viewer.id });
-  const toggleQuarterBillingEvent = (event: ClubEvent) => {
-    const eligible = (item: ClubEvent) => hasBillToIssue(calendarBillingOptions(item, invoices, quarterBillingPeriods, Date.now()));
-    const selection = calendarPickedIds.filter((id) => events.some((item) => item.id === id && eligible(item)));
-    if (selection.includes(event.id)) { setCalendarPickedIds(selection.filter((id) => id !== event.id)); return ""; }
-    if (!eligible(event)) return "本場目前沒有可開立的帳單。";
-    setCalendarPickedIds([...selection, event.id]);
+  const toggleQuarterBillingEvents = (targets: ClubEvent[]) => {
+    const now = Date.now();
+    const eligibleIds = new Set(events.filter((item) =>
+      hasBillToIssue(calendarBillingOptions(item, invoices, quarterBillingPeriods, now)),
+    ).map((item) => item.id));
+    const targetIds = [...new Set(targets.map((item) => item.id))].filter((id) => eligibleIds.has(id));
+    if (!targetIds.length) return "目前沒有可開立的帳單。";
+    setCalendarPickedIds((previous) => toggleCalendarEventIds(previous.filter((id) => eligibleIds.has(id)), targetIds));
     return "";
   };
   const closeEventDetails = () => setEventDetails(null);
   return (
     <>
       <a className="skip-to-content" href="#club-main">跳至主要內容</a>
-      <AnnouncementTicker news={news} placement="desktop" />
       <div className="app">
       <aside className={`sidebar${sidebarCollapsed ? " collapsed" : ""}`}>
         <button
@@ -845,11 +828,7 @@ export default function Home() {
         </button>
         <div className="brand">
           <b role="img" aria-label="羽球">
-            <svg viewBox="-8 -4 84 88" fill="none" aria-hidden="true" focusable="false">
-              <g transform="rotate(-18 32 40)">
-                <ShuttleArt />
-              </g>
-            </svg>
+            <ShuttleLogo />
           </b>
           <span>
             <strong>球友會</strong>
@@ -857,20 +836,20 @@ export default function Home() {
           </span>
         </div>
         <nav aria-label="球友會導覽">
-          {sidebarItems.map(({ label, icon }) => (
+          {sidebarItems.map(({ label, navLabel = label, icon }) => (
             <button
               key={label}
               type="button"
               className={tab === label ? "nav-active" : ""}
-              aria-label={label}
+              aria-label={navLabel}
               aria-current={tab === label ? "page" : undefined}
-              title={sidebarCollapsed ? label : undefined}
+              title={sidebarCollapsed ? navLabel : undefined}
               onClick={() => { if (label === "費用管理") setBillingFocus(null); setTab(label); setNotificationOpen(false); }}
             >
               <svg className="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
                 {icon}
               </svg>
-              <span>{label}</span>
+              <span>{navLabel}</span>
             </button>
           ))}
         </nav>
@@ -888,19 +867,19 @@ export default function Home() {
               <strong title={user.name}>{user.name}</strong>
               <small>{clubIdentityLabel(user)}</small>
             </span>
-            <span className="profile-mobile-label" aria-hidden="true">帳號</span>
           </button>
         </div>
       </aside>
       <AnnouncementTicker news={news} placement="mobile" />
       <main id="club-main" tabIndex={-1}>
-        <header className={tab === "活動" ? "activity-page-header" : tab === "總覽" ? "overview-page-header" : undefined}>
+        <AnnouncementTicker news={news} placement="desktop" />
+        <PageClock />
+        <header className={tab === "活動" ? "activity-page-header" : tab === "總覽" ? "overview-page-header" : tab === "公告" ? "news-page-header" : undefined}>
           <div className="page-heading">
-            {tab === "總覽" ? <OverviewClock /> : <p className="page-eyebrow">{headerDate}</p>}
-            <div className="page-title-row">
+            {tab === "總覽" ? <h1 className="sr-only">{tab}</h1> : <div className="page-title-row">
               <h1>{tab}</h1>
               {tab === "活動" && <ActivityViewSwitch upcoming={mobileCalendarUpcoming} setUpcoming={setMobileCalendarUpcoming} />}
-            </div>
+            </div>}
             {sectionDescriptions[tab] && <p className="page-description">{sectionDescriptions[tab]}</p>}
           </div>
           <div className="header-actions">
@@ -951,14 +930,14 @@ export default function Home() {
               quarterMode={isAdmin && calendarQuarterMode}
               pickedIds={calendarPickedIds}
               setPickedIds={setCalendarPickedIds}
-              toggleQuarterEvent={toggleQuarterBillingEvent}
+              toggleQuarterEvents={toggleQuarterBillingEvents}
               periods={isAdmin ? quarterBillingPeriods : []}
               createOnDate={isAdmin ? (date) => { setManagerDate(date); setManagerTab("single"); setManagerOpen(true); } : undefined}
             /></div>
             <div id="calendar-upcoming-activities" className="mobile-upcoming-view">
               {mobileCalendarUpcoming && (isAdmin && calendarQuarterMode
                 ? <ActivityBillingList list={events} invoices={invoices} periods={quarterBillingPeriods} pickedIds={calendarPickedIds}
-                    toggleEvent={toggleQuarterBillingEvent} clear={() => setCalendarPickedIds([])} openIssue={() => setCalendarIssueOpen(true)} />
+                    toggleEvent={(item) => toggleQuarterBillingEvents([item])} clear={() => setCalendarPickedIds([])} openIssue={() => setCalendarIssueOpen(true)} />
                 : <UpcomingActivities list={events} openEvent={openEventDetails} />)}
             </div>
           </div>
@@ -1025,7 +1004,8 @@ export default function Home() {
         <EventDetailsDialog
           key={selectedEvent.id}
           event={selectedEvent}
-          billingInvoices={isAdmin ? detailInvoices : undefined}
+          billingInvoices={isAdmin ? invoices : undefined}
+          billingPeriods={isAdmin ? quarterBillingPeriods : undefined}
           viewerId={viewer.id}
           user={user}
           isAdmin={isAdmin}
@@ -1101,7 +1081,7 @@ export default function Home() {
       {isAdmin && tab === "活動" && calendarIssueOpen && !billingManagerOpen && (
         <CalendarIssueDialog
           events={events.filter((item) => calendarPickedIds.includes(item.id))}
-          invoices={invoices} periods={quarterBillingPeriods} calendarEvents={events}
+          invoices={invoices} periods={quarterBillingPeriods}
           close={() => setCalendarIssueOpen(false)}
           request={async (action, data) => (await execute(action, data, true))?.actionResult ?? null}
           refresh={async () => { await refresh(); }}
@@ -1650,108 +1630,91 @@ function Login({
   setInput,
   createGuest,
   recover,
-  passkeyLogin,
   quickAccounts,
   quickLogin,
   saving,
   events,
-  news,
 }: {
   input: string;
   setInput: (value: string) => void;
   createGuest: (accountName: string) => void;
   recover: (accountName: string, code: string) => void;
-  passkeyLogin: () => void;
   quickAccounts: DeviceAccount[];
   quickLogin: (userId: string) => void;
   saving: boolean;
   events: ClubEvent[];
-  news: NewsItem[];
 }) {
   const [mode, setMode] = useState<"new" | "recover">("new");
   const [code, setCode] = useState("");
-  const upcomingEvents = events.filter((event) => !event.endsAt || new Date(event.endsAt) > new Date()).slice(0, 3);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  // The club API supplies events in ascending start time.
+  const nextEvent = events.find((event) =>
+    event.status !== "CANCELLED" && event.status !== "ARCHIVED" && Date.parse(event.startsAt ?? "") > now,
+  );
   return (
-    <main className="login public-login">
-      <div className="public-shell">
-        <section className="public-preview">
-          <section className="public-section">
-            <div className="public-section-heading"><div><small>UPCOMING</small><h2>近期活動</h2></div><span>{upcomingEvents.length} 場</span></div>
-            <div className="public-event-list">
-              {upcomingEvents.length === 0 ? <p className="public-empty">目前尚未公布新活動</p> : upcomingEvents.map((event) => (
-                <article key={event.id}>
-                  <div><strong>{event.date}</strong><small>{event.weekday}</small></div>
-                  <span><strong>{event.time}</strong><small>{event.courts}</small></span>
-                  <Badge tone="green">尚有 {Math.max(0, event.regular - event.regularBooked) + Math.max(0, event.wait - event.waitBooked)} 位</Badge>
-                </article>
-              ))}
+    <main className="login">
+      <div className="login-shell">
+        {nextEvent && (
+          <section className="login-next-event" aria-labelledby="login-next-event-title">
+            <h2 id="login-next-event-title">下一場活動</h2>
+            <div className="login-event-info">
+              <div className="login-event-date"><strong>{nextEvent.date}</strong><span>{nextEvent.weekday}</span></div>
+              <div className="login-event-details"><strong>{nextEvent.time}</strong><span>{nextEvent.courts}</span></div>
+              <Badge tone="green">尚有 {Math.max(0, nextEvent.regular - nextEvent.regularBooked) + Math.max(0, nextEvent.wait - nextEvent.waitBooked)} 位</Badge>
             </div>
           </section>
-          <section className="public-section">
-            <div className="public-section-heading"><div><small>NOTICE</small><h2>最新公告</h2></div></div>
-            <div className="public-news-list">
-              {news.length === 0 ? <p className="public-empty">目前沒有公告</p> : news.slice(0, 3).map((item) => (
-                <article key={item.id}><span><strong>{item.title}</strong><small>{item.date}</small></span><p>{item.content}</p>{item.linkUrl && <a href={item.linkUrl} target="_blank" rel="noreferrer">開啟連結 →</a>}</article>
-              ))}
-            </div>
-          </section>
-        </section>
-        <section className="login-card" id="guest-account">
-        <div className="login-logo">羽</div>
-        <p>COMPANY BADMINTON CLUB</p>
-        <h1>下班，一起上場。</h1>
-        <span>{mode === "new" ? "第一次使用只需設定一個不重複的帳號名稱，建立後固定不變。顯示名稱初始相同，登入後可自行修改。" : "輸入原本固定的帳號名稱與認領碼或復原碼，即可在這台裝置取回帳號。"}</span>
-        {quickAccounts.length > 0 && (
-          <aside className="quick-accounts">
-            <strong>這台裝置的快速登入</strong>
-            <div>
-              {quickAccounts.map((account) => (
-                <button type="button" key={account.id} disabled={saving} onClick={() => quickLogin(account.id)}>
-                  <i>{account.name.slice(0, 1)}</i>
-                  <span>
-                    <b>{account.name}</b>
-                    <small>帳號：{account.accountName ?? account.name}</small>
-                    <small>{clubIdentityLabel(account)}</small>
-                  </span>
-                  <em>登入</em>
-                </button>
-              ))}
-            </div>
-            <small>共享裝置上的其他人也能使用快速登入；共用電腦請使用獨立瀏覽器設定檔。</small>
-          </aside>
         )}
-        {quickAccounts.length > 0 && <div className="login-divider"><span>使用其他帳號</span></div>}
-        <div className="login-tabs" role="tablist" aria-label="登入方式">
-          <button type="button" role="tab" aria-selected={mode === "new"} className={mode === "new" ? "active" : ""} onClick={() => setMode("new")}>第一次使用</button>
-          <button type="button" role="tab" aria-selected={mode === "recover"} className={mode === "recover" ? "active" : ""} onClick={() => setMode("recover")}>取回既有帳號</button>
-        </div>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (mode === "new") createGuest(input);
-            else recover(input, code);
-          }}
-        >
-          <label htmlFor="login-account-name">帳號名稱</label>
-          <input id="login-account-name" value={input} onChange={(e) => setInput(e.target.value)} placeholder="輸入固定的帳號名稱" maxLength={40} required autoComplete="username" />
-          {mode === "recover" && (
-            <>
-              <label htmlFor="login-recovery-code">認領碼或復原碼</label>
-              <input id="login-recovery-code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="XXXX-XXXX-XXXX-XXXX" maxLength={19} required autoComplete="one-time-code" />
-            </>
+        <section className="login-card" id="guest-account" aria-labelledby="login-title">
+          <header className="login-heading">
+            <div className="login-logo" aria-hidden="true"><ShuttleLogo /></div>
+            <h1 id="login-title">羽球社</h1>
+          </header>
+          {quickAccounts.length > 0 && (
+            <section className="quick-accounts" aria-labelledby="quick-login-title">
+              <h2 id="quick-login-title">快速登入</h2>
+              <div>
+                {quickAccounts.map((account) => (
+                  <button type="button" key={account.id} disabled={saving} onClick={() => quickLogin(account.id)}>
+                    <i aria-hidden="true">{account.name.slice(0, 1)}</i>
+                    <span>
+                      <b>{account.name}</b>
+                      {account.accountName && account.accountName !== account.name && <small>{account.accountName}</small>}
+                    </span>
+                    <span className="quick-login-arrow" aria-hidden="true">›</span>
+                  </button>
+                ))}
+              </div>
+              <small>共用裝置上的其他人也能使用快速登入。</small>
+            </section>
           )}
-          <button className="primary" disabled={saving}>{saving ? "處理中…" : mode === "new" ? "建立這台裝置的帳號" : "取回帳號"}</button>
-        </form>
-        <div className="login-divider"><span>或</span></div>
-        <button type="button" className="passkey-button" disabled={saving} onClick={passkeyLogin}>
-          <strong>使用 Passkey 登入</strong>
-          <span>使用指紋、臉部辨識或裝置 PIN</span>
-        </button>
-        {saving && <LoadingScreen compact title="正在處理登入…" description="若出現裝置驗證視窗，請依提示完成。" />}
-        <aside className="notice">
-          <strong>測試版帳號提醒</strong>
-          <span>帳號名稱固定且不得重複（英文大小寫、全半形與多餘空白視為相同）；顯示名稱可自行修改，也可與他人相同。已有帳號請使用快速登入、Passkey 或復原碼。建議先在「個人資訊 → 登入與安全」設定至少一種復原方式。</span>
-        </aside>
+          <div className="login-tabs" role="group" aria-label="帳號操作">
+            <button type="button" aria-pressed={mode === "new"} disabled={saving} onClick={() => setMode("new")}>首次使用</button>
+            <button type="button" aria-pressed={mode === "recover"} disabled={saving} onClick={() => setMode("recover")}>取回帳號</button>
+          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (mode === "new") createGuest(input);
+              else recover(input, code);
+            }}
+          >
+            <label htmlFor="login-account-name">帳號名稱</label>
+            <input id="login-account-name" value={input} onChange={(e) => setInput(e.target.value)} aria-describedby={mode === "new" ? "login-name-note" : undefined} maxLength={40} required autoComplete="username" />
+            {mode === "new" ? (
+              <p id="login-name-note" className="login-name-note">建立後無法更改。</p>
+            ) : (
+              <>
+                <label htmlFor="login-recovery-code">認領碼或復原碼</label>
+                <input id="login-recovery-code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="XXXX-XXXX-XXXX-XXXX" maxLength={19} required autoComplete="one-time-code" />
+              </>
+            )}
+            <button className="primary" disabled={saving}>{mode === "new" ? "建立帳號" : "取回帳號"}</button>
+          </form>
+          <div role="status" className="login-progress">{saving ? "處理中…" : ""}</div>
         </section>
       </div>
     </main>
@@ -2034,7 +1997,7 @@ function AccountProfile({
   );
 }
 
-function OverviewClock() {
+function PageClock() {
   const minuteMs = 60_000;
   const [time, setTime] = useState(() => Math.floor(Date.now() / minuteMs) * minuteMs);
   useEffect(() => {
@@ -2119,7 +2082,7 @@ function Overview({
             <h2 id="next-event-title">{event.time}</h2>
             <p>⌖ {event.courts}</p>
           </div>
-          <div className="attendance-summary" role="group" aria-label="本場參加人數">
+          <div className="attendance-summary" role="group" aria-label="本場參加人數與我的狀態">
             <div>
               <small>正取</small>
               <strong>{regular}<span>／{displayedRegularCapacity}</span></strong>
@@ -2128,15 +2091,15 @@ function Overview({
               <small>候補</small>
               <strong>{wait}<span>／{event.wait}</span></strong>
             </div>
+            <div className="attendance-personal">
+              <span className="sr-only">我的參加狀態：</span>
+              <Badge tone={booking ? (booking.rank === "正取" ? "green" : "orange") : "gray"}>{booking?.rank ?? "未參加"}</Badge>
+            </div>
           </div>
         </div>
-        <div className="next-event-footer">
-          <div className="next-event-status">
-            <span>我的參加狀態</span>
-            <Badge tone={booking ? (booking.rank === "正取" ? "green" : "orange") : "gray"}>{booking?.rank ?? "未參加"}</Badge>
-          </div>
-          {!booking && <div className="next-event-actions"><button type="button" className="primary small activity-detail-action" onClick={join}>{user.member ? "參加" : "我要報名"}</button></div>}
-        </div>
+        {!booking && <div className="next-event-footer">
+          <div className="next-event-actions"><button type="button" className="primary small activity-detail-action" onClick={join}>{user.member ? "參加" : "我要報名"}</button></div>
+        </div>}
       </section> : <section className="overview-empty" aria-labelledby="next-event-title">
         <b aria-hidden="true">◷</b>
         <h2 id="next-event-title">目前沒有已排程的活動</h2>
@@ -2204,6 +2167,12 @@ const calendarFeeStatuses = [
   { id: "unpaid", label: "未收齊" },
   { id: "reported", label: "待確認" },
 ] as const;
+type CalendarFeeStatus = (typeof calendarFeeStatuses)[number]["id"];
+
+function calendarFeeTone(statuses?: ReadonlySet<CalendarFeeStatus>) {
+  if (statuses?.has("unbilled")) return "unbilled";
+  if (statuses?.has("unpaid") || statuses?.has("reported")) return "outstanding";
+}
 
 function isLiveInvoice(invoice: Invoice) {
   return !["VOID", "CREDITED", "REFUNDED"].includes(invoice.status);
@@ -2252,25 +2221,62 @@ function calendarBillingOptions(event: ClubEvent, invoices: Invoice[], periods: 
   const canBill = allowsGuestBilling(event);
   const hasMemberBill = bills.some((bill) => bill.type !== "SINGLE_EVENT" && bill.type !== "MEMBER_SINGLE");
   const guests = canBill ? event.bookings.filter((booking) =>
-    (booking.kind === "非社員" ? event.guestFee > 0 : event.eventKind === "OTHER" && event.memberFee > 0) && booking.rank === "正取" && !booking.transferred && !covered.has(booking.memberId)
+    (booking.kind === "非社員" ? event.guestFee > 0 : event.eventKind === "OTHER" && event.memberFee > 0) && !booking.transferred && !covered.has(booking.memberId)
     && !event.guestSettlements?.some((item) => item.memberId === booking.memberId)) : [];
   const quarter = canSelectQuarterEvent(event, periods) && event.memberBilling !== "NO_CHARGE" && !hasMemberBill;
   const day = taipeiInputDate(event.startsAt);
   const active = periods.find((period) => period.status === "ACTIVE" && period.startDate <= day && day <= period.endDate);
   const links = periods.filter((period) => period.eventIds.includes(event.id));
   const excludedMembers = new Set(invoices.filter((bill) => isPrincipal(bill) && referencesEvent(bill, event.id) && (["REFUNDED", "CREDITED"].includes(bill.status) || bill.status === "VOID" && bill.type !== "SINGLE_EVENT")).map((bill) => bill.member_id));
-  const hasUncoveredMember = event.bookings.some((booking) => booking.kind === "社員" && booking.rank === "正取" && !booking.transferred && !covered.has(booking.memberId) && !excludedMembers.has(booking.memberId));
+  const hasUncoveredMember = event.bookings.some((booking) => booking.kind === "社員" && !booking.transferred && !covered.has(booking.memberId) && !excludedMembers.has(booking.memberId));
   const supplement = event.eventKind !== "OTHER" && canBill && Boolean(active) && (event.memberBilling ?? "NORMAL") === "NORMAL"
     && links.every((period) => period.status === "ACTIVE") && hasUncoveredMember;
   const extra = event.eventKind !== "OTHER" && !quarter && canBill && !hasMemberBill && Boolean(event.startsAt && Date.parse(event.startsAt) > now)
     && !periods.some((period) => period.eventIds.includes(event.id))
     && !event.billingLabel?.includes("季度社費") && ["NORMAL", "NO_CHARGE"].includes(event.memberBilling ?? "NORMAL")
-    && event.bookings.some((booking) => booking.kind === "社員" && booking.rank === "正取" && !booking.transferred && !covered.has(booking.memberId));
-  return { bills, quarter, extra: extra || supplement, supplement, guests };
+    && event.bookings.some((booking) => booking.kind === "社員" && !booking.transferred && !covered.has(booking.memberId));
+  const single = canBill ? event.bookings.filter((booking) =>
+    !booking.transferred && !covered.has(booking.memberId) && !excludedMembers.has(booking.memberId)
+    && !event.guestSettlements?.some((item) => item.memberId === booking.memberId)
+    && (booking.kind === "社員" ? event.memberFee > 0 : event.guestFee > 0)) : [];
+  return { bills, quarter, extra: extra || supplement, supplement, guests, single };
+}
+
+function eventBillingSummary(entry: ClubEvent, periods: QuarterBillingPeriod[], plan: ReturnType<typeof calendarBillingOptions>) {
+  const statuses = new Set<CalendarFeeStatus>();
+  const bills = plan.bills;
+  const linked = periods.find((period) => period.eventIds.includes(entry.id));
+  const memberBills = bills.filter((bill) => bill.type !== "SINGLE_EVENT");
+  const guestBills = bills.filter((bill) => bill.type === "SINGLE_EVENT");
+  const pendingMemberBill = plan.quarter || plan.single.some((person) => person.kind === "社員");
+  const pendingGuestBill = plan.single.some((person) => person.kind === "非社員");
+  if (pendingGuestBill || pendingMemberBill) statuses.add("unbilled");
+  for (const bill of bills) {
+    if (bill.amount <= 0) continue;
+    if (bill.status === "PENDING") statuses.add("unpaid");
+    if (bill.status === "REPORTED") statuses.add("reported");
+  }
+  const paymentLabel = (group: Invoice[], unbilled: boolean, fallback: string) => [
+    unbilled && "未開單",
+    group.some((bill) => bill.status === "PENDING" && bill.amount > 0) && "未收齊",
+    group.some((bill) => bill.status === "REPORTED" && bill.amount > 0) && "待確認",
+  ].filter(Boolean).join("、") || (group.some((bill) => bill.status === "CONFIRMED") ? "已結清" : fallback);
+  const memberFallback = linked?.status === "GENERATING" ? "開單中"
+    : linked?.status === "ACTIVE" ? "已納入季費"
+    : entry.memberBilling === "NO_CHARGE" ? "本場不另收"
+    : linked?.status === "PLANNED" ? "季費草稿"
+    : memberBills.length ? "已開單" : "無";
+  const guestFallback = guestBills.length || entry.guestSettlements?.some((item) => item.status !== "SKIPPED") ? "有帳務紀錄"
+    : entry.guestSettlements?.length ? "免收" : "無應收名單";
+  const nonBillable = entry.billingPaused ? "不再開單" : entry.status === "CANCELLED" || entry.status === "ARCHIVED" ? "不適用" : "免費";
+  return { statuses, payment: {
+    member: paymentLabel(memberBills, pendingMemberBill, allowsGuestBilling(entry) ? memberFallback : nonBillable),
+    guest: paymentLabel(guestBills, pendingGuestBill, allowsGuestBilling(entry) ? guestFallback : nonBillable),
+  } };
 }
 
 function hasBillToIssue(options?: ReturnType<typeof calendarBillingOptions>) {
-  return Boolean(options && (options.quarter || options.extra || options.guests.length));
+  return Boolean(options && (options.quarter || options.single.length));
 }
 
 const activityTitle = (event: ClubEvent) => event.eventKind === "OTHER"
@@ -2404,7 +2410,15 @@ function ActivityBillingList({ list, invoices, periods, pickedIds, toggleEvent, 
   </>;
 }
 
-function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterMode, pickedIds, setPickedIds, toggleQuarterEvent, periods, createOnDate }: {
+function toggleCalendarEventIds(selected: string[], targets: string[]) {
+  const targetSet = new Set(targets);
+  const picked = new Set(selected);
+  return targets.every((id) => picked.has(id))
+    ? selected.filter((id) => !targetSet.has(id))
+    : [...new Set([...selected, ...targets])];
+}
+
+function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterMode, pickedIds, setPickedIds, toggleQuarterEvents, periods, createOnDate }: {
   list: ClubEvent[];
   jump?: {date: string} | null;
   invoices: Invoice[];
@@ -2413,7 +2427,7 @@ function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterM
   quarterMode: boolean;
   pickedIds: string[];
   setPickedIds: (ids: string[]) => void;
-  toggleQuarterEvent: (event: ClubEvent) => string;
+  toggleQuarterEvents: (events: ClubEvent[]) => string;
   periods: QuarterBillingPeriod[];
   createOnDate?: (date: string) => void;
 }) {
@@ -2486,43 +2500,13 @@ function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterM
   const options = new Map(admin && quarterMode ? list.map((item) => [item.id, calendarBillingOptions(item, invoices, periods, calendarNow)]) : []);
   const selectable = (event: ClubEvent) => hasBillToIssue(options.get(event.id));
   const selection = pickedIds.filter((id) => hasBillToIssue(options.get(id)));
-  type FeeStatus = (typeof calendarFeeStatuses)[number]["id"];
-  const feeStatusByEvent = new Map<string, Set<FeeStatus>>();
+  const feeStatusByEvent = new Map<string, Set<CalendarFeeStatus>>();
   const paymentByEvent = new Map<string, { member: string; guest: string }>();
   if (admin && quarterMode) {
     for (const dayEvents of eventsByDay.values()) for (const entry of dayEvents) {
-      const statuses = new Set<FeeStatus>();
+      const { statuses, payment } = eventBillingSummary(entry, periods, options.get(entry.id)!);
       feeStatusByEvent.set(entry.id, statuses);
-      const plan = options.get(entry.id)!;
-      const bills = plan.bills;
-      const linked = periods.find((period) => period.eventIds.includes(entry.id));
-      const memberBills = bills.filter((bill) => bill.type !== "SINGLE_EVENT");
-      const guestBills = bills.filter((bill) => bill.type === "SINGLE_EVENT");
-      const pendingMemberBill = plan.quarter || plan.extra || plan.guests.some((person) => person.kind === "社員");
-      const pendingGuestBill = plan.guests.some((person) => person.kind === "非社員");
-      if (pendingGuestBill || pendingMemberBill) statuses.add("unbilled");
-      for (const bill of bills) {
-        if (bill.amount <= 0) continue;
-        if (bill.status === "PENDING") statuses.add("unpaid");
-        if (bill.status === "REPORTED") statuses.add("reported");
-      }
-      const paymentLabel = (group: Invoice[], unbilled: boolean, fallback: string) => [
-        unbilled && "未開單",
-        group.some((bill) => bill.status === "PENDING" && bill.amount > 0) && "未收齊",
-        group.some((bill) => bill.status === "REPORTED" && bill.amount > 0) && "待確認",
-      ].filter(Boolean).join("、") || (group.some((bill) => bill.status === "CONFIRMED") ? "已結清" : fallback);
-      const memberFallback = linked?.status === "GENERATING" ? "開單中"
-        : linked?.status === "ACTIVE" ? "已納入季費"
-        : entry.memberBilling === "NO_CHARGE" ? "本場不另收"
-        : linked?.status === "PLANNED" ? "季費草稿"
-        : memberBills.length ? "已開單" : "無";
-      const guestFallback = guestBills.length || entry.guestSettlements?.some((item) => item.status !== "SKIPPED") ? "有帳務紀錄"
-        : entry.guestSettlements?.length ? "免收" : "無應收名單";
-      const nonBillable = entry.billingPaused ? "不再開單" : entry.status === "CANCELLED" || entry.status === "ARCHIVED" ? "不適用" : "免費";
-      paymentByEvent.set(entry.id, {
-        member: paymentLabel(memberBills, pendingMemberBill, allowsGuestBilling(entry) ? memberFallback : nonBillable),
-        guest: paymentLabel(guestBills, pendingGuestBill, allowsGuestBilling(entry) ? guestFallback : nonBillable),
-      });
+      paymentByEvent.set(entry.id, payment);
     }
   }
   return (
@@ -2564,24 +2548,26 @@ function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterM
           const feeStatuses = new Set(dayEvents.flatMap((event) => [...(feeStatusByEvent.get(event.id) ?? [])]));
           const daySummary = [...dayEvents.map((event) => activityTitle(event) + " " + event.time),
             ...calendarFeeStatuses.filter(({ id }) => feeStatuses.has(id)).map(({ label }) => label)];
-          const singleCandidate = admin && quarterMode ? dayEvents.filter(selectable) : [];
-          const directSelection = singleCandidate.length === 1 ? singleCandidate[0] : undefined;
+          const candidates = admin && quarterMode ? dayEvents.filter(selectable) : [];
+          const hasSelection = candidates.length > 0;
+          const checkedCount = candidates.filter((event) => selection.includes(event.id)).length;
+          const checked = !hasSelection ? undefined : checkedCount === candidates.length ? true : checkedCount > 0 ? "mixed" : false;
           const hasUnbilled = feeStatuses.has("unbilled");
           const hasOutstanding = feeStatuses.has("unpaid") || feeStatuses.has("reported");
-          const feeTone = hasUnbilled ? "unbilled" : hasOutstanding ? "outstanding" : undefined;
+          const feeTone = calendarFeeTone(feeStatuses);
           return <button type="button" key={day} className={`calendar-day calendar-date-picker${dayEvents.length ? " has-event" : ""}${isToday ? " today" : ""}`}
             data-fee-tone={feeTone}
             title={feeTone ? [hasUnbilled && "未開單", hasOutstanding && "未收齊"].filter(Boolean).join("、") : undefined}
-            role={directSelection ? "checkbox" : undefined}
-            aria-checked={directSelection ? selection.includes(directSelection.id) : undefined}
-            aria-pressed={directSelection ? undefined : selectedDate === dateKey}
+            role={hasSelection ? "checkbox" : undefined}
+            aria-checked={checked}
+            aria-pressed={hasSelection ? undefined : selectedDate === dateKey}
             data-active-date={selectedDate === dateKey}
-            aria-label={[dateKey, ...daySummary, ...dayNotices.map((notice) => notice.name), directSelection && "選取開單"].filter(Boolean).join("，")}
+            aria-label={[dateKey, ...daySummary, ...dayNotices.map((notice) => notice.name), hasSelection && (candidates.length === 1 ? "選取開單" : `選取開單（當天 ${candidates.length} 場）`)].filter(Boolean).join("，")}
             onClick={() => {
               setPickedDate(dateKey);
-              setQuarterSelectionError(directSelection ? toggleQuarterEvent(directSelection) : "");
+              setQuarterSelectionError(hasSelection ? toggleQuarterEvents(candidates) : "");
             }}>
-            {directSelection && <span aria-hidden="true" className="calendar-checked-mark" />}
+            {hasSelection && <span aria-hidden="true" className="calendar-checked-mark" />}
             <span className="calendar-day-number">{day}{isToday && <i>今天</i>}</span>{noticeLabels}
             {firstEvent && <span className="calendar-day-event">
               <span className="calendar-day-event-name" title={activityTitle(firstEvent)}>{activityTitle(firstEvent)}</span>
@@ -2603,18 +2589,21 @@ function ActivityCalendar({ list, jump, invoices, openEvent, openIssue, quarterM
       {!selectedEvents.length && !quarterMode && createOnDate && selectedDate >= todayKey && <button type="button" className="secondary" onClick={() => createOnDate(selectedDate)}>新增當天活動</button>}
       {selectedEvents.map((event) => {
         const payment = paymentByEvent.get(event.id);
-        const chooseInCard = admin && quarterMode && selectable(event) && selectedEvents.filter(selectable).length > 1;
-        return <article key={event.id} className="calendar-session activity-detail-card">
+        const chooseInCard = admin && quarterMode && selectable(event);
+        const feeTone = admin && quarterMode ? calendarFeeTone(feeStatusByEvent.get(event.id)) ?? "clear" : undefined;
+        return <article key={event.id} className="calendar-session activity-detail-card" data-fee-tone={feeTone}>
           <button type="button" className="activity-detail-hit" aria-label={`查看活動：${activityTitle(event)} ${event.time}`} aria-haspopup="dialog" onClick={() => openEvent(event.id)} />
           <div className="calendar-session-heading"><h3>{activityTitle(event)}</h3></div>
           <p>{event.time}</p>
-          {payment && <dl className="calendar-payment-summary" aria-label="本場繳費狀態">
-            <div><dt>社員</dt><dd>{payment.member}</dd></div>
-            <div><dt>非社員</dt><dd>{payment.guest}</dd></div>
-          </dl>}
-          {chooseInCard && <label className="calendar-session-check activity-detail-action">
-            <input type="checkbox" checked={selection.includes(event.id)} onChange={() => setQuarterSelectionError(toggleQuarterEvent(event))} />選取開單
-          </label>}
+          {(payment || chooseInCard) && <div className="calendar-session-billing" data-selectable={chooseInCard || undefined}>
+            {payment && <dl className="calendar-payment-summary" aria-label="本場繳費狀態">
+              <div><dt>社員</dt><dd>{payment.member}</dd></div>
+              <div><dt>非社員</dt><dd>{payment.guest}</dd></div>
+            </dl>}
+            {chooseInCard && <label className="calendar-session-check">
+              <input type="checkbox" checked={selection.includes(event.id)} onChange={() => setQuarterSelectionError(toggleQuarterEvents([event]))} />選取開單
+            </label>}
+          </div>}
         </article>;
       })}
     </aside>
@@ -2639,9 +2628,10 @@ function taipeiTime(value: string) {
   return new Date(value).toLocaleTimeString("zh-TW", { timeZone: "Asia/Taipei", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 }
 
-function EventDetailsDialog({ event, billingInvoices = [], viewerId, user, isAdmin, close, join, cancel, transfer, edit, invoiceLabel, showEventBills, openInvoice, previewCancellation, cancelEvent }: {
+function EventDetailsDialog({ event, billingInvoices = [], billingPeriods = [], viewerId, user, isAdmin, close, join, cancel, transfer, edit, invoiceLabel, showEventBills, openInvoice, previewCancellation, cancelEvent }: {
   event: ClubEvent;
   billingInvoices?: Invoice[];
+  billingPeriods?: QuarterBillingPeriod[];
   viewerId: string;
   user: Person;
   isAdmin: boolean;
@@ -2681,6 +2671,7 @@ function EventDetailsDialog({ event, billingInvoices = [], viewerId, user, isAdm
       if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
     };
   }, []);
+  const payment = isAdmin ? eventBillingSummary(event, billingPeriods, calendarBillingOptions(event, billingInvoices, billingPeriods, now)).payment : null;
   const payers = isAdmin ? eventPayers(event, billingInvoices) : [];
   const paymentStatus = new Map(payers.map((person) => [person.id, person]));
   const otherOutstanding = payers.filter((person) => person.status !== "CONFIRMED" && !event.bookings.some((booking) => booking.memberId === person.id));
@@ -2691,10 +2682,10 @@ function EventDetailsDialog({ event, billingInvoices = [], viewerId, user, isAdm
   const archived = event.status === "CANCELLED" || event.status === "ARCHIVED";
   const canManage = isAdmin && !ended && !archived;
   const renderRosterRow = (name: string, payer?: (typeof payers)[number], booking?: Booking) => {
-    const person = <span>{name}{booking?.memberId === viewerId ? "（我）" : ""}{booking && <small>{booking.accountName ? `帳號：${booking.accountName} · ` : ""}{booking.kind}</small>}</span>;
+    const person = <span>{name}{booking?.memberId === viewerId ? "（我）" : ""}{booking && <small>{booking.kind}</small>}</span>;
     const badges = <span className="event-roster-badges">
-      {booking && (!ended || booking.rank === "候補") && <Badge tone={booking.rank === "正取" ? "green" : "orange"}>{booking.rank}</Badge>}
-      {payer && paymentBadge(payer.status)}
+      <span>{payer && paymentBadge(payer.status)}</span>
+      <span>{booking && (!ended || booking.rank === "候補") && <Badge tone={booking.rank === "正取" ? "green" : "orange"}>{booking.rank}</Badge>}</span>
     </span>;
     return payer?.status === "REPORTED" && openInvoice ? <li className="event-roster-link-row" key={booking?.memberId ?? payer.id}>
       <button type="button" className="event-roster-invoice-link" aria-label={name + "，待確認，前往帳單"} onClick={() => openInvoice(payer.invoiceId)}>
@@ -2794,7 +2785,10 @@ function EventDetailsDialog({ event, billingInvoices = [], viewerId, user, isAdm
       <dl className="event-dialog-facts">
         <div><dt>時間</dt><dd>{event.time}</dd></div>
         <div><dt>場地</dt><dd>{event.courts}</dd></div>
-        <div><dt>收費歸屬</dt><dd>{archived ? "活動已取消／封存" : event.billingPaused ? (invoiceLabel ? invoiceLabel + "（不再開單）" : "不收費") : invoiceLabel ?? event.billingLabel ?? (event.memberBilling === "FREE" ? "全員免費" : event.memberBilling === "NO_CHARGE" ? "本場不另計社員費" : "尚未出帳")}</dd></div>
+        {payment && !archived ? <>
+          <div><dt>社員</dt><dd>{payment.member}</dd></div>
+          <div><dt>非社員</dt><dd>{payment.guest}</dd></div>
+        </> : <div><dt>收費歸屬</dt><dd>{archived ? "活動已取消／封存" : event.billingPaused ? (invoiceLabel ? invoiceLabel + "（不再開單）" : "不收費") : invoiceLabel ?? event.billingLabel ?? (event.memberBilling === "FREE" ? "全員免費" : event.memberBilling === "NO_CHARGE" ? "本場不另計社員費" : "尚未出帳")}</dd></div>}
         {!archived && event.eventKind === "OTHER" && event.memberBilling === "NORMAL" && <div><dt>每人費用</dt><dd>社員 NT$ {event.memberFee.toLocaleString("zh-TW")} · 非社員 NT$ {event.guestFee.toLocaleString("zh-TW")}</dd></div>}
         {!archived && event.eventKind !== "OTHER" && event.memberBilling !== "FREE" && <div><dt>零打費</dt><dd>NT$ {event.guestFee.toLocaleString("zh-TW")}／人</dd></div>}
       </dl>
@@ -2863,19 +2857,17 @@ function EventDetailsDialog({ event, billingInvoices = [], viewerId, user, isAdm
 type ReviewTask = {
   key: string;
   label: string;
-  kind: "quarter" | "newQuarter" | "guest" | "extra";
+  kind: "quarter" | "newQuarter" | "guest";
   input: Record<string, string>;
 };
 const reviewActions = {
   quarter: ["previewQuarterlyInvoices", "createQuarterlyInvoices"],
   newQuarter: ["previewCalendarQuarter", "publishCalendarQuarter"],
   guest: ["previewGuestEventBills", "publishGuestEventBills"],
-  extra: ["previewMemberExtraBills", "publishMemberExtraBills"],
 } as const;
 
-function CalendarIssueDialog({ events, calendarEvents = events, invoices, periods, close, request, refresh, openIssued, onCompleted }: {
+function CalendarIssueDialog({ events, invoices, periods, close, request, refresh, openIssued, onCompleted }: {
   events: ClubEvent[];
-  calendarEvents?: ClubEvent[];
   invoices: Invoice[];
   periods: QuarterBillingPeriod[];
   close: () => void;
@@ -2892,8 +2884,7 @@ function CalendarIssueDialog({ events, calendarEvents = events, invoices, period
   const [draftNonce] = useState(() => crypto.randomUUID());
   const today = taipeiInputDate(new Date().toISOString());
   const [choices, setChoices] = useState<Record<string, "BILL" | "SKIP" | "LATER">>({});
-  const [extra, setExtra] = useState<Record<string, boolean>>({});
-  const [reasons, setReasons] = useState<Record<string, string>>({});
+  const [mode, setMode] = useState<"quarter" | "single" | null>(null);
   const [issuing, setIssuing] = useState(false);
   const [notice, setNotice] = useState("");
   const [blocked, setBlocked] = useState("");
@@ -2912,53 +2903,48 @@ function CalendarIssueDialog({ events, calendarEvents = events, invoices, period
   }, []);
 
   const rows = events.map((event) => ({ event, ...calendarBillingOptions(event, invoices, periods, Date.now()) }))
-    .filter(hasBillToIssue).sort((a, b) => (a.event.startsAt ?? "").localeCompare(b.event.startsAt ?? "") || a.event.id.localeCompare(b.event.id));
-  const quarters = new Map<string, typeof rows>();
-  for (const row of rows.filter((row) => row.quarter)) {
-    const key = quarterKeyForEvent(row.event, periods);
-    quarters.set(key, [...(quarters.get(key) ?? []), row]);
-  }
+    .sort((a, b) => (a.event.startsAt ?? "").localeCompare(b.event.startsAt ?? "") || a.event.id.localeCompare(b.event.id));
   const label = (event: ClubEvent) => [taipeiInputDate(event.startsAt) || event.date, event.time, event.courts].filter(Boolean).join(" · ");
   const money = (amount: number) => "NT$ " + amount.toLocaleString("zh-TW");
   const guestChoice = (eventId: string, personId: string) => choices[JSON.stringify([eventId, personId])] ?? "BILL";
-  const guestGroups = rows.filter((row) => row.guests.length && !done["guest:" + row.event.id]).map(({ event, guests }) => ({
+  const guestGroups = mode === "single" ? rows.filter((row) => row.single.length && !done["guest:" + row.event.id]).map(({ event, single: guests }) => ({
     event, guests, key: "guest:" + event.id,
     decisions: guests.flatMap(({ memberId }) => {
       const decision = guestChoice(event.id, memberId);
       return decision === "LATER" ? [] : [{ memberId, decision }];
     }),
-  }));
-  const quarterGroups = [...quarters].map(([key, group]) => {
-    const id = "quarter:" + key;
-    // A period can only be opened as a whole. Include its existing draft events
-    // and avoid silently adding selected events that the manager hasn't saved.
-    const selected = group.map((row) => row.event.id);
-    const period = periods.find((period) => period.id === key && period.status === "PLANNED");
-    const configured = Boolean(period && selected.every((id) => period.eventIds.includes(id)));
-    const defaults = period ?? defaultBillingPeriod(taipeiInputDate(group[0].event.startsAt));
-    const included = [...new Set([...(period?.eventIds ?? []), ...selected])];
-    return { id, period, configured, defaults, included, dueDate: defaultDue };
-  }).filter(({ id }) => !done[id]);
-  const extraGroups = rows.filter(({ event, extra: allowed }) => allowed && !done["extra:" + event.id]);
+  })) : [];
+  const firstDate = taipeiInputDate(rows[0]?.event.startsAt);
+  const lastDate = taipeiInputDate(rows.at(-1)?.event.startsAt);
+  const overlapping = periods.filter((period) => period.startDate <= lastDate && firstDate <= period.endDate);
+  const period = overlapping.length === 1 && overlapping[0].status === "PLANNED" ? overlapping[0] : undefined;
+  const selected = rows.map(({ event }) => event.id);
+  const inactiveDays = rows.filter((row) => !row.quarter);
+  const configured = Boolean(period && period.eventIds.length === selected.length && period.eventIds.every((id) => selected.includes(id)));
+  const quarterId = "quarter:selection";
+  const modeError = mode !== "quarter" || done[quarterId] ? "" : inactiveDays.length
+    ? "以下場次不能納入季費：" + inactiveDays.map(({ event }) => label(event)).join("、")
+    : !firstDate || !lastDate || rows.length > 32 || Date.parse(lastDate) - Date.parse(firstDate) > 99 * 86_400_000
+      ? "季費每期可選 1 至 32 場，日期範圍最多 100 天。"
+      : overlapping.length > 0 && (!period || !configured || firstDate < period.startDate || lastDate > period.endDate)
+        ? "所選場次與既有計費期間重疊。若要開立已存草稿，請選取該草稿的全部場次。"
+        : "";
+  const defaults = period ?? { ...defaultBillingPeriod(firstDate || undefined), startDate: firstDate, endDate: lastDate,
+    ...(firstDate && lastDate && quarterKeyForEvent(rows[0].event, []) !== quarterKeyForEvent(rows[rows.length - 1].event, []) ? { label: firstDate + " 至 " + lastDate + " 季費" } : {}) };
+  const showQuarter = mode === "quarter" && !modeError && !done[quarterId];
   const tasks: ReviewTask[] = [];
-  for (const group of quarterGroups) if (group.dueDate >= today) {
-    const { period, defaults, dueDate } = group;
-    tasks.push({
-      key: group.id, label: defaults.label, kind: group.configured && period ? "quarter" : "newQuarter",
-      input: group.configured && period ? { planId: period.id, dueDate } : {
-        periodId: period?.id ?? (draftNonce + "-" + group.id.slice("quarter:".length)),
-        label: defaults.label, startDate: defaults.startDate, endDate: defaults.endDate,
-        eventIds: JSON.stringify(group.included), dueDate,
-        ...(period?.revision ? { expectedRevision: period.revision } : {}),
+  if (showQuarter && defaultDue >= today) {
+    tasks.push({ key: quarterId, label: defaults.label, kind: configured && period ? "quarter" : "newQuarter",
+      input: configured && period ? { planId: period.id, dueDate: defaultDue } : {
+        periodId: draftNonce, label: defaults.label, startDate: defaults.startDate, endDate: defaults.endDate,
+        eventIds: JSON.stringify(selected), dueDate: defaultDue,
       },
     });
   }
   for (const group of guestGroups) if (group.decisions.length) {
     tasks.push({ key: group.key, label: label(group.event), kind: "guest",
-      input: { eventId: group.event.id, decisions: JSON.stringify(group.decisions), reviewedGuestFee: String(group.event.guestFee), ...(group.event.eventKind === "OTHER" ? { reviewedMemberFee: String(group.event.memberFee) } : {}) } });
-  }
-  for (const { event, supplement } of extraGroups) if (supplement || extra[event.id]) {
-    tasks.push({ key: "extra:" + event.id, label: label(event) + " 社員單場費", kind: "extra", input: { eventId: event.id, ...(supplement ? {uncovered: "true"} : {}) } });
+      input: { eventId: group.event.id, billingMode: "single", decisions: JSON.stringify(group.decisions),
+        reviewedGuestFee: String(group.event.guestFee), reviewedMemberFee: String(group.event.memberFee) } });
   }
   const token = JSON.stringify({ tasks, revision });
   useEffect(() => {
@@ -2991,11 +2977,10 @@ function CalendarIssueDialog({ events, calendarEvents = events, invoices, period
   const waived = guestGroups.reduce((count, group) => count + group.decisions.filter(({ decision }) => decision === "SKIP").length, 0);
   const count = tasks.reduce((n, task) => n + (quoteAt(task.key)?.rows.length ?? 0), 0);
   const total = tasks.reduce((n, task) => n + (quoteAt(task.key)?.totalAmount ?? 0), 0);
-  const missing = quarterGroups.some((q) => q.dueDate < today);
+  const missing = showQuarter && defaultDue < today;
   const quoteError = tasks.some((task) => Boolean(errorAt(task.key)));
   const noPayers = (task: ReviewTask) => task.kind !== "guest" && quoteAt(task.key)?.rows.length === 0;
-  const ready = !busy && !blocked && !loading && !quoteError && !missing &&
-    !tasks.some((task) => task.kind === "extra" && task.input.uncovered !== "true" && quoteAt(task.key)?.rows.length && !reasons[task.input.eventId]?.trim()) &&
+  const ready = !busy && !blocked && !loading && !quoteError && !missing && !modeError &&
     (count > 0 || waived > 0);
   const confirm = async () => {
     if (!ready) return;
@@ -3011,7 +2996,6 @@ function CalendarIssueDialog({ events, calendarEvents = events, invoices, period
         current = task;
         const result = await request(reviewActions[task.kind][1], {
           ...task.input, previewKey: quoteAt(task.key)!.previewKey, includeInvoiceIds: "true",
-          ...(task.kind === "extra" && task.input.uncovered !== "true" ? { reason: reasons[task.input.eventId].trim() } : {}),
         });
         const n = task.kind === "guest" ? result?.issued : result?.invoiceCount;
         if (typeof n !== "number" || typeof result?.totalAmount !== "number") throw new Error("暫時無法確認結果");
@@ -3038,11 +3022,6 @@ function CalendarIssueDialog({ events, calendarEvents = events, invoices, period
       <li key={row.memberId}><span>{row.name}{row.eventCount > 1 && <small>{row.eventCount} 場</small>}{row.creditApplied > 0 && <small>抵扣 {money(row.creditApplied)}</small>}</span><strong>{money(row.amount)}</strong></li>
     )}</ul> : <p className="form-note">沒有符合開單條件的人員。</p>
   );
-  const extraFields = (event: ClubEvent) => <>
-    <label className="issue-due">補收原因<input maxLength={200} disabled={busy} value={reasons[event.id] ?? ""}
-      onChange={(e) => setReasons((previous) => ({ ...previous, [event.id]: e.target.value }))} /></label>
-    {errorLine("extra:" + event.id)}{roster(quoteAt("extra:" + event.id))}
-  </>;
   const clearError = async () => {
     setIssuing(true);
     try {
@@ -3063,48 +3042,45 @@ function CalendarIssueDialog({ events, calendarEvents = events, invoices, period
     <div className="issue-review-body">
       {(notice || receipt.issued > 0 || receipt.waived > 0) && <p className="issue-review-result" role="status">已開單 {receipt.issued} 筆{receipt.issued > 0 && ` · ${money(receipt.totalAmount)}`}{receipt.waived > 0 && ` · 已免收 ${receipt.waived} 人`}。</p>}
       {blocked && <div className="guest-settlement-error" role="alert">{blocked} <button type="button" className="link" disabled={busy} onClick={() => void clearError()}>重新核對</button></div>}
-      {!quarterGroups.length && !guestGroups.length && !extraGroups.length && !notice && !blocked && <p>所選場次沒有待開帳單。</p>}
-      {quarterGroups.map(({ id, defaults, included }) => {
-        const quote = quoteAt(id);
-        return <details className="issue-review-group" key={id}>
-          <summary><span><strong>季費</strong><small>{defaults.label}</small></span>
-            <span className="issue-review-metrics">{`${included.length} 場${quote ? ` · ${quote.rows.length} 人` : ""}`}</span></summary>
-          <div className="issue-review-detail">
-            <ul className="issue-review-roster" aria-label="包含場次">{included.map((id) => {
-              const event = calendarEvents.find((item) => item.id === id);
-              return event && <li key={id}>{label(event)}</li>;
-            })}</ul>
-            {errorLine(id)}
-            {roster(quote)}
-          </div>
-        </details>;
-      })}
+      {!notice && <div className="issue-mode-picker" role="group" aria-label="帳單類型">
+        <button type="button" className={mode === "quarter" ? "primary" : "secondary"} aria-pressed={mode === "quarter"} disabled={busy || Boolean(blocked) || !rows.some((row) => row.quarter)} onClick={() => setMode("quarter")}>季費</button>
+        <button type="button" className={mode === "single" ? "primary" : "secondary"} aria-pressed={mode === "single"} disabled={busy || Boolean(blocked) || !rows.some((row) => row.single.length)} onClick={() => setMode("single")}>單場活動費</button>
+      </div>}
+      {modeError && <p className="guest-settlement-error" role="alert">{modeError}</p>}
+      {mode === "single" && !guestGroups.length && !notice && !blocked && <p>所選場次沒有待開帳單。</p>}
+      {showQuarter && <details className="issue-review-group">
+        <summary><span><strong>季費</strong><small>{defaults.label}</small></span>
+          <span className="issue-review-metrics">{`${selected.length} 場${quoteAt(quarterId) ? ` · ${quoteAt(quarterId)!.rows.length} 人` : ""}`}</span></summary>
+        <div className="issue-review-detail">
+          <ul className="issue-review-roster" aria-label="包含場次">{rows.map(({ event }) => <li key={event.id}>{label(event)}</li>)}</ul>
+          {errorLine(quarterId)}
+          {roster(quoteAt(quarterId))}
+        </div>
+      </details>}
       {guestGroups.length > 0 && <details className="issue-review-group">
-        <summary><span><strong>{guestGroups.some((group) => group.event.eventKind === "OTHER") ? "單場活動費" : "零打"}</strong></span><span className="issue-review-metrics">{guestGroups.length} 場 · {new Set(guestGroups.flatMap((group) => group.decisions.filter((row) => row.decision === "BILL").map((row) => row.memberId))).size} 人</span></summary>
+        <summary><span><strong>單場活動費</strong></span><span className="issue-review-metrics">{guestGroups.length} 場 · {new Set(guestGroups.flatMap((group) => group.decisions.filter((row) => row.decision === "BILL").map((row) => row.memberId))).size} 人</span></summary>
         <div className="issue-review-detail">{guestGroups.map(({ event, guests, key }) => <section key={key} className="issue-review-event">
           <h3>{label(event)}</h3>{errorLine(key)}
-          <ul className="issue-review-roster">{guests.map((guest) => {
+          {(["社員", "非社員"] as const).map((kind) => {
+            const people = guests.filter((person) => {
+              const payerKind = quoteAt(key)?.rows.find((row) => row.memberId === person.memberId)?.payerKind;
+              return (payerKind === "MEMBER" ? "社員" : payerKind === "GUEST" ? "非社員" : person.kind) === kind;
+            });
+            return people.length ? <div className="issue-review-payer-group" key={kind}><h4>{kind}</h4><ul className="issue-review-roster">{people.map((guest) => {
             const choice = guestChoice(event.id, guest.memberId);
             const quote = quoteAt(key)?.rows.find((row) => row.memberId === guest.memberId);
             return <li key={guest.memberId}>
               <label className="issue-check"><input type="checkbox" checked={choice === "BILL"} disabled={busy} onChange={(e) =>
                 setChoices((previous) => ({ ...previous, [JSON.stringify([event.id, guest.memberId])]: e.target.checked ? "BILL" : "LATER" }))} />
-                <span>{guest.name}{(guest.accountName || event.eventKind === "OTHER") && <small>{event.eventKind === "OTHER" ? [quote?.payerKind === "MEMBER" ? "社員" : quote?.payerKind === "GUEST" ? "非社員" : guest.kind, guest.accountName].filter(Boolean).join(" · ") : guest.accountName}</small>}</span></label>
+                <span>{guest.name}</span></label>
               {choice === "BILL" ? <strong>{quote ? money(quote.amount) : "—"}</strong> :
                 <select aria-label={guest.name + "收費方式"} value={choice} disabled={busy} onChange={(e) => {
                   const value = e.target.value === "SKIP" ? "SKIP" : "LATER";
                   setChoices((previous) => ({ ...previous, [JSON.stringify([event.id, guest.memberId])]: value }));
                 }}><option value="LATER">本次不開</option><option value="SKIP">免收</option></select>}
             </li>;
-          })}</ul>
-        </section>)}</div>
-      </details>}
-      {extraGroups.length > 0 && <details className="issue-review-group">
-        <summary><span><strong>社員單場費</strong><small>只向尚未有本場帳單的社員開單</small></span></summary>
-        <div className="issue-review-detail">{extraGroups.map(({ event, supplement }) => <section className="issue-review-event" key={event.id}>
-          {supplement ? <><h3>{label(event)}</h3>{errorLine("extra:" + event.id)}{roster(quoteAt("extra:" + event.id))}</> : <><label className="issue-check"><input type="checkbox" checked={Boolean(extra[event.id])} disabled={busy} onChange={(e) =>
-            setExtra((previous) => ({ ...previous, [event.id]: e.target.checked }))} />{label(event)} 社員單場收費</label>
-          {extra[event.id] && extraFields(event)}</>}
+          })}</ul></div> : null;
+          })}
         </section>)}</div>
       </details>}
       {quoteError && <p className="form-note" role="status">請展開明細查看無法開單的原因。</p>}
@@ -3112,8 +3088,8 @@ function CalendarIssueDialog({ events, calendarEvents = events, invoices, period
     </div>
     <footer className="issue-review-footer">
       <div aria-live="polite">
-        <strong>{issuing ? "處理中…" : loading ? "核對中…" : blocked || missing ? "請重新核對" : quoteError ? "部分帳單無法核對" : notice && !count ? "已完成" : `${count} 筆 · ${money(total)}`}</strong>
-        {!loading && !blocked && !missing && !quoteError && (!notice || count > 0) && <small>抵扣後合計{waived > 0 ? ` · 免收 ${waived} 人` : ""}</small>}
+        <strong>{issuing ? "處理中…" : loading ? "核對中…" : blocked || missing ? "請重新核對" : quoteError ? "部分帳單無法核對" : notice && !count ? "已完成" : !mode ? "請選擇帳單類型" : `${count} 筆 · ${money(total)}`}</strong>
+        {mode && !loading && !blocked && !missing && !quoteError && !modeError && (!notice || count > 0) && <small>抵扣後合計{waived > 0 ? ` · 免收 ${waived} 人` : ""}</small>}
       </div>
       <div className="issue-review-actions">
         {openIssued && receipt.invoiceIds.length > 0 && !busy && <button type="button" className="secondary" onClick={() => openIssued(receipt.invoiceIds)}>查看本批帳單</button>}
@@ -3134,12 +3110,19 @@ function AnnouncementTicker({ news, placement }: {
     setHeldPointer((held) => held === event.pointerId ? null : held);
   };
   // The announcement feed already puts pinned items first, then newest.
-  const headlines = news.filter((item) => item.title.trim()).slice(0, 5);
-  if (!headlines.length) return null;
+  const announcements = news.filter((item) => item.title.trim()).slice(0, 5).map((item) => ({
+    id: item.id,
+    title: item.title.trim(),
+    content: item.content.trim().replace(/\s+/g, " "),
+  }));
+  if (!announcements.length) return null;
 
-  const duration = Math.max(20, headlines.reduce((sum, item) => sum + item.title.length, 0) * .45 + headlines.length * 2);
+  const duration = Math.max(20, announcements.reduce((sum, item) => sum + item.title.length * .45 + item.content.length * .25, 0) + announcements.length * 2);
   const track = (copy = false) => <span className="announcement-ticker-set" aria-hidden={copy || undefined}>
-    {headlines.map((item) => <span key={item.id}><span aria-hidden="true">◆</span>{item.title}</span>)}
+    {announcements.map((item) => <span className="announcement-ticker-item" key={item.id}>
+      <span className="announcement-ticker-marker" aria-hidden="true">◆</span>
+      <span className="announcement-ticker-text"><strong>{item.title}</strong>{item.content && <>：{item.content}</>}</span>
+    </span>)}
   </span>;
   return <section className="announcement-ticker" aria-label="最新公告" aria-description="按住跑馬燈或空白鍵可暫停"
     tabIndex={0} data-placement={placement} data-paused={heldPointer !== null || heldSpace}
@@ -3287,14 +3270,17 @@ function Members({
               <li className="roster-card" key={person.id}>
                 <span className="roster-avatar" aria-hidden="true">{Array.from(person.name)[0] ?? "球"}</span>
                 <div className="roster-person">
-                  <strong>{person.name}{person.id === currentUser.id && <small>（你）</small>}</strong>
-                  {person.department && <span>{person.department}</span>}
-                  {person.accountName && <small>帳號：{person.accountName}</small>}
+                  <div className="roster-person-title">
+                    <strong>{person.name}{person.id === currentUser.id && <small>（你）</small>}</strong>
+                    <Badge tone={person.role === "admin" ? "blue" : person.member ? "green" : "gray"}>{clubIdentityLabel(person)}</Badge>
+                  </div>
+                  {(person.department || person.accountName) && <span className="roster-person-meta">
+                    {person.department && <span className="roster-person-department" title={person.department}>{person.department}</span>}
+                    {person.department && person.accountName && <span className="roster-person-meta-separator" aria-hidden="true">·</span>}
+                    {person.accountName && <span title={"帳號：" + person.accountName}>帳號：{person.accountName}</span>}
+                  </span>}
                 </div>
-                <div className="roster-card-actions">
-                  <Badge tone={person.role === "admin" ? "blue" : person.member ? "green" : "gray"}>{clubIdentityLabel(person)}</Badge>
-                  {admin && <button type="button" className="link" disabled={saving} aria-label={`編輯 ${person.name}`} onClick={() => manageMember(person)}>編輯</button>}
-                </div>
+                {admin && <button type="button" className="link roster-card-edit" disabled={saving} aria-label={`編輯 ${person.name}`} onClick={() => manageMember(person)}>編輯</button>}
               </li>
             ))}
           </ul>

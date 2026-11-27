@@ -16,3 +16,13 @@ export default function ShuttleArt({ monochrome = false }: { monochrome?: boolea
     </g>
   );
 }
+
+export function ShuttleLogo() {
+  return (
+    <svg viewBox="-8 -4 84 88" fill="none" aria-hidden="true" focusable="false">
+      <g transform="rotate(-18 32 40)">
+        <ShuttleArt />
+      </g>
+    </svg>
+  );
+}

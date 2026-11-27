@@ -58,7 +58,9 @@ for (const [role, viewer, other, amount, reported, overdue] of [
     assert.match(html, new RegExp(`含逾期未繳 NT\\$ ${overdue}`));
     assert.match(html, /回報已轉帳（選用）/);
     assert.doesNotMatch(html, /確認收款/);
-    const activity = render(viewer, false, "activities");
+    const activity = render(viewer, false, "activities", {
+      invoices: invoices.map((entry) => ({ ...entry, status: "CONFIRMED", period_label: entry.member_id })),
+    });
     assert.match(activity, /球場/);
     assert.match(activity, new RegExp(viewer));
     assert.doesNotMatch(activity, new RegExp(other));
@@ -66,17 +68,25 @@ for (const [role, viewer, other, amount, reported, overdue] of [
   });
 }
 
-test("幹部以同一清單直接登記未回報與已回報的款，活動檢視保留人數", () => {
+test("幹部以同一清單直接登記未回報與已回報的款，未完成不進活動紀錄", () => {
   const queue = render("admin", true);
   assert.match(queue, /待收款總額<\/span><strong>NT\$ 960/);
-  assert.equal((queue.match(/>確認收款<span/g) ?? []).length, 5);
-  assert.equal((queue.match(/type="checkbox"/g) ?? []).length, 5);
+  assert.doesNotMatch(queue, />收到<span|>確認收款<span/);
+  assert.match(queue, /billing-queue-title"><strong>零打活動費<\/strong><span class="billing-pill/);
+  assert.match(queue, /billing-queue-amount"><strong>NT\$ [^<]+<\/strong><div class="billing-more"/);
+  assert.equal((queue.match(/type="checkbox"/g) ?? []).length, 3);
+  assert.match(queue, /aria-pressed="true">待繳/);
+  assert.doesNotMatch(queue, /billing-pill reported/);
+  const reported = render("admin", true, "people", {}, { PENDING: "REPORTED" });
+  assert.equal((reported.match(/type="checkbox"/g) ?? []).length, 2);
+  assert.match(reported, /billing-pill reported/);
   assert.match(queue, /待確認/);
   assert.match(queue, /<button[^>]+class="billing-more-trigger"[^>]+popoverTarget=/i);
   assert.match(queue, /popover="auto" class="billing-more-actions"/);
   assert.doesNotMatch(queue, /<details class="billing-more">/);
   const html = render("admin", true, "activities");
-  assert.match(html, /未繳 2 人/);
+  assert.match(html, /沒有符合條件的紀錄/);
+  assert.doesNotMatch(html, /未繳 2 人|羽球場館/);
 });
 
 
@@ -86,12 +96,12 @@ test("待收款用會員 ID 分組，同名不同帳號不合併；篩選後重�
   const other = { ...invoices[3], memberName: "同名球友", memberAccountName: "other" };
   const props = { invoices: [first, other, second] };
   const all = render("admin", true, "people", props);
-  assert.match(all, /2 人 · 3 筆帳單/);
-  assert.match(all, /billing-queue-item"><strong>季度社員費<\/strong><small>2026\/11\/30\s+18:00 · 第二球場<\/small>/);
+  assert.match(all, /2 人 · 2 筆帳單/);
+  assert.match(all, /billing-queue-item"><div class="billing-queue-title"><strong>季度社員費<\/strong>.*?<\/div><small>2026\/11\/30\s+18:00 · 第二球場<\/small>/);
   assert.equal((all.match(/class="billing-person-group"/g) ?? []).length, 2);
-  assert.match(all, /<strong>同名球友<\/strong><small>first<\/small>.*?<strong>NT\$ 180<\/strong><small>2 筆/);
+  assert.match(all, /<strong>同名球友<\/strong><small>first<\/small>.*?<strong>NT\$ 120<\/strong><small>1 筆/);
   assert.match(all, /<strong>同名球友<\/strong><small>other<\/small>.*?<strong>NT\$ 300<\/strong><small>1 筆/);
-  const reported = render("admin", true, "people", props, { ALL: "REPORTED" });
+  const reported = render("admin", true, "people", props, { PENDING: "REPORTED" });
   assert.match(reported, /1 人 · 1 筆帳單/);
   assert.match(reported, /billing-person-group" open=""/);
   assert.match(reported, /<strong>NT\$ 60<\/strong><small>1 筆/);
@@ -104,14 +114,17 @@ test("幹部的退款與帳務紀錄按人分組，指定帳單不必展開分�
   const open = invoices[0];
   const refund = { ...invoice(open.member_id, "CREDIT", "AWAITING_OFFLINE_REFUND", -40, 0), pending_refund_amount: 40 };
   const unconfirmed = { ...refund, id: "refund-2", status: "AWAITING_PAYMENT_CONFIRMATION", pending_refund_amount: 60 };
-  const props = { invoices: [open, refund, unconfirmed, invoices[3]] };
+  const settled = invoice("已收款球友", "SINGLE_EVENT", "CONFIRMED", 200, 0);
+  const props = { invoices: [open, refund, unconfirmed, invoices[3], settled] };
   const refunds = render("admin", true, "refunds", props);
   assert.match(refunds, /class="billing-person-group" open=""/);
   assert.match(refunds, /<strong>NT\$ 40<\/strong><small>2 筆/);
   assert.match(refunds, /確認退款/);
   assert.match(refunds, /核對原付款/);
   const records = render("admin", true, "records", props);
-  assert.equal((records.match(/class="billing-person-group"/g) ?? []).length, 2);
+  assert.equal((records.match(/class="billing-person-group"/g) ?? []).length, 1);
+  assert.match(records, /已收款球友/);
+  assert.doesNotMatch(records, /club-member|club-guest|待確認|待退款清單/);
   assert.match(records, /按活動查看/);
   const focused = render("admin", true, "people", { ...props, focusInvoiceIds: [open.id], focusInvoice: { invoiceId: open.id } });
   assert.match(focused, /billing-invoice-target/);
@@ -133,7 +146,7 @@ test("活動收費模式可從月曆直接選季費，單場帳務只有一個�
     courts: court, guestFee: 180, quarterEligible: true, bookings: [{ rank: "正取", kind: "非社員", name: "測試球友", memberId: "guest" }] };
   const noop = () => {};
   const renderCard = (quarterMode, activity = event, existingBills = [], admin = true, periods = [], pickedIds = []) => renderToStaticMarkup(React.createElement(ActivityCalendar,
-    { list: activity ? [activity] : [], invoices: existingBills, openEvent: noop, openIssue: admin ? noop : undefined, quarterMode, pickedIds, setPickedIds: noop, toggleQuarterEvent: noop, periods }));
+    { list: activity ? [activity] : [], invoices: existingBills, openEvent: noop, openIssue: admin ? noop : undefined, quarterMode, pickedIds, setPickedIds: noop, toggleQuarterEvents: noop, periods }));
   const dateCell = (markup) => markup.match(new RegExp('<button[^>]*class="calendar-day calendar-date-picker[^"]*"[^>]*aria-label="' + date + '，.*?</button>'))?.[0] ?? "";
   const draft = { id: "draft", status: "PLANNED", revision: "1", startDate: date, endDate: date, eventIds: [event.id] };
   const draftCalendar = renderCard(true, { ...event, bookings: [] }, [], true, [draft], [event.id]);
@@ -153,7 +166,8 @@ test("活動收費模式可從月曆直接選季費，單場帳務只有一個�
   assert.doesNotMatch(renderCard(true), />管理本場帳單</);
   assert.match(dateCell(renderCard(true, { ...event, quarterEligible: false })), /role="checkbox".*選取開單/);
   assert.match(renderCard(true), /activity-detail-hit[^>]+aria-label="查看活動：羽球 · 測試球場 18:00–20:00"[^>]*aria-haspopup="dialog"/);
-  assert.doesNotMatch(renderCard(true), /<input type="checkbox"/);
+  assert.match(renderCard(true), /calendar-session-billing[^>]*>.*calendar-payment-summary.*calendar-session-check[^>]*><input type="checkbox"/);
+  assert.doesNotMatch(card, /<input type="checkbox"/);
   assert.match(dateCell(renderCard(true)), /role="checkbox" aria-checked="false".*選取開單.*calendar-checked-mark/);
   const checkedCard = renderCard(true, event, [], true, [], [event.id]);
   assert.match(dateCell(checkedCard), /role="checkbox" aria-checked="true".*calendar-checked-mark/);
@@ -190,16 +204,27 @@ test("活動收費模式可從月曆直接選季費，單場帳務只有一個�
   assert.doesNotMatch(dateCell(card), /calendar-fee-tag|data-fee-tone/);
   assert.doesNotMatch(dateCell(renderCard(true, event, [], false)), /calendar-fee-tag|data-fee-tone/);
   assert.doesNotMatch(dateCell(renderCard(true, { ...event, memberBilling: "FREE" })), /calendar-fee-tag|data-fee-tone/);
-  assert.doesNotMatch(dateCell(renderCard(true, { ...event, quarterEligible: false, bookings: [{ ...event.bookings[0], rank: "候補" }] })), /calendar-fee-tag|data-fee-tone/);
+  assert.match(dateCell(renderCard(true, { ...event, quarterEligible: false, bookings: [{ ...event.bookings[0], rank: "候補" }] })), /data-fee-tone="unbilled"/);
   assert.doesNotMatch(dateCell(renderCard(true, { ...event, quarterEligible: false, guestSettlements: [{ memberId: "guest", status: "SKIPPED" }] })), /calendar-fee-tag|data-fee-tone/);
   const bills = [
     { ...invoice("guest", "SINGLE_EVENT", "PENDING", 180, 7), event_id: event.id },
     { ...invoice("another", "MEMBER_EXTRA", "REPORTED", 150, 7), event_id: event.id },
   ];
   assert.match(dateCell(renderCard(true, event, bills)), /data-fee-tone="outstanding".*aria-label="[^"]*，未收齊，待確認[^"]*"/);
+  const sessionTone = (markup) => markup.match(/<article class="calendar-session activity-detail-card" data-fee-tone="([^"]+)"/)?.[1];
+  assert.equal(sessionTone(card), undefined);
+  assert.equal(sessionTone(renderCard(true, { ...event, memberBilling: "FREE" })), "clear");
+  assert.equal(sessionTone(renderCard(true, event, bills)), "outstanding");
+  assert.equal(sessionTone(renderCard(true, event, [bills[0]])), "unbilled");
   assert.doesNotMatch(dateCell(renderCard(true, event, bills)), /未開單|>未收齊<|>待確認</);
   assert.match(renderCard(true, event, bills), /<dt>社員<\/dt><dd>待確認<\/dd>.*<dt>非社員<\/dt><dd>未收齊<\/dd>/);
   assert.match(dateCell(renderCard(true, event, [bills[0]])), /data-fee-tone="unbilled".*title="未開單、未收齊"/);
+  const mixedBilling = /<dt>社員<\/dt><dd>未開單<\/dd>.*<dt>非社員<\/dt><dd>未收齊<\/dd>/;
+  assert.match(renderCard(true, event, [bills[0]]), mixedBilling);
+  const mixedDetail = renderDialog({ billingInvoices: [bills[0]], invoiceLabel: "已開單" });
+  assert.match(mixedDetail, mixedBilling);
+  assert.doesNotMatch(mixedDetail, /<dt>收費歸屬<\/dt>/);
+  assert.doesNotMatch(renderDialog({ isAdmin: false, billingInvoices: [bills[0]] }), mixedBilling);
   assert.match(dateCell(renderCard(true, { ...event, bookings: [] })), /data-fee-tone="unbilled"/);
   assert.match(dateCell(renderCard(true, { ...event, quarterEligible: false }, [{ ...bills[0], status: "REPORTED" }])), /data-fee-tone="outstanding"/);
   const payerBills = [
@@ -267,8 +292,8 @@ test("活動收費模式可從月曆直接選季費，單場帳務只有一個�
     events: [event, mixed, guestOnly, fullyBilled], invoices: [settledBill, mixedExisting], periods: [], request: noop,
   }));
   assert.match(issue, />核對帳單<\/h2>/);
-  assert.match(issue, /<summary>.*?<strong>季費<\/strong>.*?2 場<\/span><\/summary>/);
-  assert.match(issue, /<summary><span><strong>零打<\/strong><\/span>.*?>2 場 · 1 人<\/span><\/summary>/);
+  assert.match(issue, /aria-label="帳單類型".*aria-pressed="false">季費<\/button>.*aria-pressed="false">單場活動費<\/button>/);
+  assert.doesNotMatch(issue, /class="issue-review-group"/);
   assert.equal((issue.match(/>確認開單<\/button>/g) ?? []).length, 1);
   assert.doesNotMatch(issue, /<details[^>]+ open|預覽季費|核對零打名單|改為單場補收|本次開季費|繳費期限/);
   const paid = { ...bills[1], status: "CONFIRMED" };
@@ -295,15 +320,15 @@ function calendarInteraction(list, quarterMode = true) {
     openEvent: (...args) => calls.opened.push(args),
     openIssue: () => calls.previewed.push([...props.pickedIds]),
     setPickedIds: (ids) => { props.pickedIds = ids; },
-    toggleQuarterEvent: (event) => {
-      calls.toggled.push(event.id);
+    toggleQuarterEvents: (events) => {
+      const ids = events.map((event) => event.id);
+      calls.toggled.push(...ids);
       if (selectionError) return selectionError;
-      props.pickedIds = props.pickedIds.includes(event.id)
-        ? props.pickedIds.filter((id) => id !== event.id) : [...props.pickedIds, event.id];
+      props.pickedIds = toggleCalendarEventIds(props.pickedIds, ids);
       return "";
     },
   };
-  const { ActivityCalendar } = load("src/app/page.tsx", {
+  const { ActivityCalendar, toggleCalendarEventIds } = load("src/app/page.tsx", {
     react: {
       ...React,
       useEffect: () => {},
@@ -316,7 +341,7 @@ function calendarInteraction(list, quarterMode = true) {
     "@/lib/billing-view": billingView,
     "@/lib/club-roles": load("src/lib/club-roles.ts"),
     ...Object.fromEntries(["quarter-planner", "loading-screen", "shuttle-art", "billing-dashboard", "balance-history-dialog", "floating-notifications"].map((name) => ["@/app/" + name, {}])),
-  }, "\nexport { ActivityCalendar };\n");
+  }, "\nexport { ActivityCalendar, toggleCalendarEventIds };\n");
   function render(overrides = {}) {
     props = { ...props, ...overrides };
     hookIndex = 0;
@@ -355,7 +380,7 @@ function todayActivity(id = "first") {
 const isCardHit = (node) => node.type === "button" && node.props.className === "activity-detail-hit";
 const isSelectionInput = (node) => node.type === "input" && node.props.type === "checkbox";
 
-test("單場日期格勾選季費，收費模式的卡片只開詳情", () => {
+test("單場日期格和卡片勾選同步，點卡片本身仍開詳情", () => {
   const event = todayActivity();
   const calendar = calendarInteraction([event]);
   const dateButton = () => calendar.one((node) => node.type === "button" && node.props["aria-label"]?.startsWith(event.date + "，"));
@@ -366,38 +391,52 @@ test("單場日期格勾選季費，收費模式的卡片只開詳情", () => {
   const hit = calendar.one(isCardHit, calendar.card(event.id));
   assert.equal(hit.props.role, undefined);
   assert.equal(hit.props["aria-haspopup"], "dialog");
-  assert.equal(calendar.all(isSelectionInput).length, 0);
+  const checkbox = () => calendar.one(isSelectionInput, calendar.card(event.id));
+  assert.equal(checkbox().props.checked, true);
   hit.props.onClick();
   assert.deepEqual(calendar.calls.opened, [[event.id]]);
   assert.deepEqual(calendar.calls.toggled, [event.id]);
   assert.deepEqual(calendar.pickedIds(), [event.id]);
-  dateButton().props.onClick();
+  checkbox().props.onChange();
   calendar.render();
   assert.deepEqual(calendar.pickedIds(), []);
   assert.equal(dateButton().props["aria-checked"], false);
+  checkbox().props.onChange();
+  calendar.render();
+  assert.equal(dateButton().props["aria-checked"], true);
+  dateButton().props.onClick();
+  calendar.render();
+  assert.equal(checkbox().props.checked, false);
 });
 
-test("同日多場用各自的勾選框，卡片仍可看詳情", () => {
+test("同日多場可一次全選或取消，部分勾選顯示混合狀態", () => {
   const first = todayActivity("first");
   const second = todayActivity("second");
-  const calendar = calendarInteraction([first, second]);
-  calendar.one((node) => node.type === "button" && node.props["aria-label"]?.startsWith(first.date + "，")).props.onClick();
-  calendar.render();
-  calendar.one(isCardHit, calendar.card(first.id)).props.onClick();
-  assert.deepEqual(calendar.calls.opened, [[first.id]]);
-  assert.deepEqual(calendar.calls.toggled, []);
+  const free = { ...todayActivity("free"), memberBilling: "FREE", quarterEligible: false };
+  const calendar = calendarInteraction([first, second, free]);
+  calendar.render({ pickedIds: ["elsewhere"] });
+  const dateButton = () => calendar.one((node) => node.type === "button" && node.props["aria-label"]?.startsWith(first.date + "，"));
   const checkbox = (id) => calendar.one(isSelectionInput, calendar.card(id));
-  checkbox(first.id).props.onChange();
+  assert.equal(dateButton().props["aria-checked"], false);
+  dateButton().props.onClick();
   calendar.render();
-  checkbox(second.id).props.onChange();
-  calendar.render();
-  assert.deepEqual(calendar.pickedIds(), [first.id, second.id]);
+  assert.deepEqual(calendar.pickedIds(), ["elsewhere", first.id, second.id]);
+  assert.equal(dateButton().props["aria-checked"], true);
   assert.equal(checkbox(first.id).props.checked, true);
   assert.equal(checkbox(second.id).props.checked, true);
+  assert.equal(calendar.all(isSelectionInput, calendar.card(free.id)).length, 0);
+  calendar.one(isCardHit, calendar.card(first.id)).props.onClick();
+  assert.deepEqual(calendar.calls.opened, [[first.id]]);
   checkbox(first.id).props.onChange();
   calendar.render();
-  assert.deepEqual(calendar.pickedIds(), [second.id]);
-  assert.deepEqual(calendar.calls.toggled, [first.id, second.id, first.id]);
+  assert.equal(dateButton().props["aria-checked"], "mixed");
+  dateButton().props.onClick();
+  calendar.render();
+  assert.equal(dateButton().props["aria-checked"], true);
+  dateButton().props.onClick();
+  calendar.render();
+  assert.deepEqual(calendar.pickedIds(), ["elsewhere"]);
+  assert.equal(dateButton().props["aria-checked"], false);
 });
 
 test("一般模式與不可納入季費的活動維持開啟詳情，管理帳單不改變選擇", () => {
@@ -523,7 +562,7 @@ test("公告跑馬燈沒有公告時不佔空間，副本不重複朗讀", () =>
     "@/lib/club-roles": load("src/lib/club-roles.ts"),
     ...Object.fromEntries(["quarter-planner", "loading-screen", "shuttle-art", "billing-dashboard", "balance-history-dialog", "floating-notifications"].map((name) => ["@/app/" + name, {}])),
   }, "\nexport { AnnouncementTicker };");
-  const news = ["置頂通知", "最新活動", "場地調整", "球友聚餐", "本週提醒", "較早的公告"].map((title, id) => ({ id: String(id), title }));
+  const news = ["置頂通知", "最新活動", "場地調整", "球友聚餐", "本週提醒", "較早的公告"].map((title, id) => ({ id: String(id), title, content: id === 0 ? "球館維修，\n改到第二球館。  " : "" }));
   const show = (props) => renderToStaticMarkup(React.createElement(AnnouncementTicker, props));
   assert.equal(show({ news: [] }), "");
   const html = show({ news, placement: "desktop" });
@@ -532,6 +571,8 @@ test("公告跑馬燈沒有公告時不佔空間，副本不重複朗讀", () =>
   assert.match(html, /aria-description="按住跑馬燈或空白鍵可暫停"/);
   assert.match(html, /announcement-ticker-set" aria-hidden="true"/);
   assert.match(html, /置頂通知.*最新活動.*場地調整/);
+  assert.equal((html.match(/<strong>置頂通知<\/strong>：球館維修， 改到第二球館。/g) ?? []).length, 2);
+  assert.doesNotMatch(html, /最新活動<\/strong>：/);
   assert.doesNotMatch(html, /較早的公告/);
   for (const placement of ["desktop", "mobile", undefined]) {
     assert.doesNotMatch(show({ news, placement }), /查看公告|暫停跑馬燈|<a\s|<button/);
@@ -613,16 +654,101 @@ test("活動收費列表共用可開單規則，可勾選已結束場次但不�
   assert.doesNotMatch(html, /已取消活動/);
 });
 
-test("總覽時鐘顯示台北日期到分鐘，午夜後不沿用上一天", () => {
+test("分頁時鐘顯示台北日期到分鐘，午夜後不沿用上一天", () => {
   let now = "2026-12-31T15:59:59.000Z";
-  const { OverviewClock } = load("src/app/page.tsx", {
+  const { PageClock } = load("src/app/page.tsx", {
     react: { ...React, useState: () => React.useState(Date.parse(now)) },
     "@/lib/billing-view": billingView,
     "@/lib/club-roles": load("src/lib/club-roles.ts"),
     ...Object.fromEntries(["quarter-planner", "loading-screen", "shuttle-art", "billing-dashboard", "balance-history-dialog", "floating-notifications"].map((name) => ["@/app/" + name, {}])),
-  }, "\nexport { OverviewClock };");
-  const markup = () => renderToStaticMarkup(React.createElement(OverviewClock));
+  }, "\nexport { PageClock };");
+  const markup = () => renderToStaticMarkup(React.createElement(PageClock));
   assert.match(markup(), /2026年12月31日 23:59/);
   now = "2026-12-31T16:00:00.000Z";
   assert.match(markup(), /2027年1月1日 00:00/);
+});
+
+test("作廢只提供目前待收款中的未繳帳單，預設不選取", () => {
+  const rows = [
+    { ...invoice("未繳球友", "SINGLE_EVENT", "PENDING", 180, 7), period_label: "週五練習" },
+    invoice("已回報球友", "SINGLE_EVENT", "REPORTED", 160, 7),
+    invoice("已繳球友", "SINGLE_EVENT", "CONFIRMED", 150, 7),
+    invoice("退款球友", "CREDIT", "CONFIRMED", 120, 7),
+  ];
+  const shown = render("admin", true, "people", { invoices: rows }, { false: true });
+  const picker = shown.match(/<dialog[^>]+aria-labelledby="billing-void-picker-title"[^>]*>.*?<\/dialog>/)?.[0] ?? "";
+  assert.match(shown, />作廢未繳帳單<\/button>/);
+  assert.doesNotMatch(shown, /批次作廢未繳帳單/);
+  assert.match(picker, /未繳球友.*週五練習/);
+  assert.doesNotMatch(picker, /已回報球友|已繳球友|退款球友|checked=""/);
+  assert.match(picker, /已選 0 筆/);
+  assert.match(picker, /<button[^>]+disabled=""[^>]*>核對作廢帳單/);
+  assert.doesNotMatch(render("admin", true, "records", { invoices: rows }), /作廢未繳帳單/);
+  assert.doesNotMatch(render("admin", true, "people", { invoices: rows }, { PENDING: "REPORTED" }), /作廢未繳帳單/);
+  assert.doesNotMatch(render("未繳球友", false, "people", { invoices: rows }, { false: true }), /選擇要作廢的帳單|作廢未繳帳單/);
+});
+
+test("帳務紀錄只顯示已結案資料，作廢紀錄須手動納入", () => {
+  const rows = [
+    invoice("未繳", "SINGLE_EVENT", "PENDING", 180, 7),
+    invoice("轉帳待核對", "SINGLE_EVENT", "REPORTED", 170, 7),
+    invoice("已收款球友", "SINGLE_EVENT", "CONFIRMED", 160, 7),
+    invoice("已退費球友", "SINGLE_EVENT", "REFUNDED", 150, 7),
+    invoice("已轉餘額球友", "SINGLE_EVENT", "CREDITED", 140, 7),
+    invoice("已作廢球友", "SINGLE_EVENT", "VOID", 130, 7),
+    invoice("待退實收款球友", "CREDIT", "AWAITING_OFFLINE_REFUND", 120, 7),
+    invoice("待核對原款球友", "CREDIT", "AWAITING_PAYMENT_CONFIRMATION", 110, 7),
+    invoice("已完成退款球友", "CREDIT", "CONFIRMED", 100, 7),
+  ];
+  const history = (state) => render("admin", true, "records", { invoices: rows }, state);
+  const all = history({ CHARGES: "ALL" });
+  assert.match(all, /已收款球友/);
+  assert.match(all, /已退費球友/);
+  assert.match(all, /已轉餘額球友/);
+  assert.match(all, /已完成退款球友/);
+  assert.doesNotMatch(all, /已作廢球友|未繳|轉帳待核對|待退實收款球友|待核對原款球友/);
+  assert.match(history({ CHARGES: "ALL", false: true }), /已作廢球友/);
+  assert.doesNotMatch(history({ CHARGES: "ADJUSTMENTS" }), /已收款球友|待退實收款球友|待核對原款球友/);
+});
+
+test("按活動查看只重新分組同一份已結案紀錄", () => {
+  const fixtures = [
+    { ...events[0], courts: "已完成場館" },
+    { ...events[0], id: "pending-only", courts: "未繳場館" },
+    { ...events[0], id: "unbilled-event", courts: "未開單場館" },
+  ];
+  const rows = [
+    { ...invoices[0], status: "CONFIRMED", period_label: "已繳帳單資料" },
+    { ...invoices[1], period_label: "同場未繳資料" },
+    { ...invoices[2], period_label: "同場待確認資料" },
+    { ...invoices[3], event_id: "pending-only", period_label: "另一場未繳資料" },
+    { ...invoice("退款球友", "CREDIT", "CONFIRMED", 120, 7), id: "refund", event_id: null, related_invoice_id: invoices[0].id, period_label: "已退現金資料" },
+    { ...invoice("調整球友", "CREDIT", "CONFIRMED", 80, 7), id: "credit", event_id: null, period_label: "手動調整資料" },
+  ];
+  const props = { events: fixtures, invoices: rows };
+  const admin = render("admin", true, "activities", props, { CHARGES: "ALL" });
+  assert.match(admin, /role="tab" aria-selected="true" class="active">帳務紀錄/);
+  assert.match(admin, /返回帳務紀錄/);
+  assert.match(admin, /已完成場館/);
+  assert.match(admin, /已繳帳單資料/);
+  assert.match(admin, /已退現金資料/);
+  assert.match(admin, /未關聯活動.*手動調整資料/);
+  assert.doesNotMatch(admin, /未繳場館|未開單場館|同場未繳資料|同場待確認資料|另一場未繳資料/);
+  const adjustments = render("admin", true, "activities", props, { CHARGES: "ADJUSTMENTS" });
+  assert.match(adjustments, /已退現金資料/);
+  assert.doesNotMatch(adjustments, /已繳帳單資料/);
+  assert.match(render("club-guest", false, "activities", props), /沒有符合條件的紀錄/);
+});
+
+test("待收款以查看活動詳情取代帳單明細，跨場帳單可選場次", () => {
+  const friday = { ...events[0], id: "friday", courts: "星期五場地" };
+  const sunday = { ...events[0], id: "sunday", courts: "星期日場地" };
+  const props = { events: [friday, sunday], openEvent() {} };
+  const single = render("admin", true, "people", { ...props, invoices: [{ ...invoices[0], event_id: friday.id }] });
+  assert.match(single, /aria-haspopup="dialog">查看活動詳情/);
+  assert.match(single, /複製帳單編號/);
+  assert.doesNotMatch(single, /帳單明細|帳單編號：/);
+  const multiple = render("admin", true, "people", { ...props, invoices: [{ ...invoices[0], event_ids: [friday.id, sunday.id] }] });
+  assert.match(multiple, /aria-expanded="false" aria-controls="[^"]+">查看活動詳情/);
+  assert.match(multiple, /星期五場地.*星期日場地/);
 });
