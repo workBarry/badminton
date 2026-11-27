@@ -23,6 +23,7 @@ export type Viewer = {
   accountType: "guest" | "recoverable" | "verified" | "unclaimed";
   hasRecoveryCode: boolean;
   hasPassword?: boolean;
+  avatarVersion?: string | null;
   hasPasskey: boolean;
 };
 
@@ -79,6 +80,7 @@ function viewerFromMember(id: string, member: FirebaseFirestore.DocumentData): V
       : "unclaimed",
     hasRecoveryCode: Boolean(member.recoveryCodeHash),
     hasPassword: Boolean(member.passwordVersion),
+    ...(typeof member.avatarVersion === "string" ? { avatarVersion: member.avatarVersion } : {}),
     hasPasskey: Number(member.passkeyCount ?? 0) > 0,
   };
 }

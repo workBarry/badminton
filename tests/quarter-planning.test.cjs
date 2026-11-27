@@ -1205,7 +1205,7 @@ function accountComponentsForTest(rosterState) {
       return React.useState(initial === "member" ? rosterState.group : initial === "" ? rosterState.query : initial);
     } };
   }
-  new Function("require", "module", "exports", code + "\nmodule.exports.AccountProfileForTest = AccountProfile; module.exports.MemberManagerForTest = MemberManagerModal; module.exports.MembersForTest = Members;")((id) => dependencies[id] ?? require(id), loaded, loaded.exports);
+  new Function("require", "module", "exports", code + "\nmodule.exports.AccountProfileForTest = AccountProfile; module.exports.AvatarCanvasForTest = AvatarCanvas; module.exports.avatarCropRectForTest = avatarCropRect; module.exports.MemberManagerForTest = MemberManagerModal; module.exports.MembersForTest = Members;")((id) => dependencies[id] ?? require(id), loaded, loaded.exports);
   return loaded.exports;
 }
 function accountProfileProps(primaryAdmin = false) {
@@ -1258,7 +1258,9 @@ test("personal profile prioritizes three sections, shows current identity withou
   assert.doesNotMatch(html, /申請退出社員|還沒設定取回帳號的方式|原本的復原碼會立即失效/);
   assert.match(html, /<details class="account-disclosure"><summary>更多帳號資訊<\/summary>/);
   assert.match(html, /<details class="account-disclosure"><summary>申請紀錄<\/summary>/);
-  assert.match(html, /修改顯示名稱|重新產生復原碼/);
+  assert.match(html, /class="account-name-row"><strong[^>]*>Account Owner<\/strong><button[^>]*aria-label="修改顯示名稱"><span class="profile-edit-icon"/);
+  assert.doesNotMatch(html, />改顯示名稱<\/button>/);
+  assert.match(html, /重新產生復原碼/);
   assert.match(html, /<footer[^>]*><button[^>]*>登出<\/button><button[^>]*>登出並清除此裝置的帳號<\/button><\/footer>/);
 });
 
@@ -1873,4 +1875,35 @@ test("other activities can switch to paid and bill registered regular and standb
   await s.mutate("cancel", { eventId }, member);
   assert.equal(s.db.data("invoices/" + rows.find(bill=>bill.memberId==="member").id).status, "VOID");
   assert.equal(s.db.data("members/member").creditBalance, 20);
+});
+
+test("profile uses the avatar as the only edit trigger and keeps actions inside a closed dialog", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const { AccountProfileForTest, AvatarCanvasForTest } = accountComponentsForTest();
+  const props = { ...accountProfileProps(), async saveAvatar() {} };
+  const render = () => renderToStaticMarkup(React.createElement(AccountProfileForTest, props));
+  assert.match(render(), /aria-label="編輯頭貼" aria-haspopup="dialog"/);
+  assert.match(render(), /<dialog class="modal profile-photo-dialog"[^>]*>/);
+  assert.doesNotMatch(render(), /<dialog[^>]*\bopen(?:=|\s|>)|>移除頭貼<\/button>/);
+  props.viewer.avatarVersion = "9fc02fbf-8a20-4b2a-ae7a-7ff3bb7b0dd2";
+  const updated = render();
+  assert.doesNotMatch(updated, /更換頭貼|上傳頭貼|>關閉<\/button>/);
+  assert.match(updated, /class="profile-photo-close" aria-label="關閉頭貼編輯"/);
+  const studio = renderToStaticMarkup(React.createElement(AvatarCanvasForTest, { active: true, saving: false, async save() {}, remove() {} }));
+  assert.match(studio, /<canvas[^>]*aria-label="頭貼畫布"/);
+  assert.match(studio, /貼上圖片/);
+  assert.match(studio, /選擇照片/);
+  assert.match(studio, />移除頭貼<\/button>/);
+  assert.match(studio, /disabled=""[^>]*>儲存<\/button>/);
+  assert.match(updated, /\/api\/avatar\?memberId=/);
+});
+
+
+test("avatar crop clamps landscape and portrait framing and supports zoom on square photos", () => {
+  const { avatarCropRectForTest: crop } = accountComponentsForTest();
+  assert.deepEqual(crop(1200, 600, 600, 300, 1), { x: 300, y: 0, edge: 600 });
+  assert.deepEqual(crop(1200, 600, 0, 900, 1), { x: 0, y: 0, edge: 600 });
+  assert.deepEqual(crop(600, 1200, 900, 1200, 1), { x: 0, y: 600, edge: 600 });
+  assert.deepEqual(crop(600, 600, 600, 0, 2), { x: 300, y: 0, edge: 300 });
 });

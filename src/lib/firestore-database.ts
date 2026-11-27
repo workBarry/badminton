@@ -693,6 +693,7 @@ export async function readState(viewer: Viewer | null = null) {
         id: document.id,
         name,
         accountName: memberAccountName(member),
+        ...(typeof member.avatarVersion === "string" ? { avatarVersion: member.avatarVersion } : {}),
         department: member.department ? String(member.department) : null,
         role: String(member.role ?? "MEMBER"),
         membershipStatus,

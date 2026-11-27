@@ -250,7 +250,7 @@ function setup() {
   const database = loadSource("src/lib/firestore-database.ts");
   const roles = loadSource("src/lib/club-roles.ts");
   const passkeys = loadSource("src/lib/passkey-auth.ts");
-  return { db, names, auth, database, roles, passkeys, webauthnCalls };
+  return { db, names, auth, database, roles, passkeys, webauthnCalls, loadSource };
 }
 
 function targetMembers(s, name) {
@@ -1030,4 +1030,48 @@ test("trust never bypasses administrator authentication or survives a reset on a
   const admin = await s.auth.loginWithPassword("Reset trusted player", SECOND_PASSWORD, newCode, reset.token, undefined, true);
   await s.auth.deactivateDeviceToken(admin.token);
   await assert.rejects(s.auth.activateDeviceAccount(admin.token, original.viewer.id), /請輸入密碼/);
+});
+
+test("avatar upload normalizes images, persists by account, and refuses anonymous or cross-account writes", async () => {
+  const s = setup();
+  const { NextRequest } = require("next/server");
+  const sharp = require("sharp");
+  const route = s.loadSource("src/app/api/avatar/route.ts");
+  const owner = await s.auth.createGuestDeviceAccount("Avatar Owner");
+  const other = await s.auth.createGuestDeviceAccount("Other Avatar Player");
+  const png = await sharp({ create: { width: 180, height: 100, channels: 3, background: "#12745e" } }).png().toBuffer();
+  const origin = "https://example.test";
+  function request(action, { account, subject = owner.viewer.id, version, type = "image/png", body, requestOrigin = origin } = {}) {
+    const url = new URL("/api/avatar", origin);
+    if (version) { url.searchParams.set("memberId", subject); url.searchParams.set("v", version); }
+    const headers = { origin: requestOrigin, "X-Avatar-Owner": subject };
+    if (account) headers.cookie = "badminton_device=" + account.token;
+    return route[action](new NextRequest(url, { method: action, headers: { ...headers, ...(body ? { "Content-Type": type } : {}) }, body }));
+  }
+  assert.equal((await request("POST", { body: png })).status, 401);
+  assert.equal((await request("POST", { account: other, body: png })).status, 409);
+  assert.equal((await request("POST", { account: owner, body: png, requestOrigin: "https://outside.test" })).status, 403);
+  assert.equal((await request("POST", { account: owner, body: png, type: "image/svg+xml" })).status, 415);
+  assert.equal((await request("POST", { account: owner, body: png, type: "image/jpeg" })).status, 415);
+  assert.equal((await request("POST", { account: owner, body: Buffer.from("not a photo") })).status, 422);
+  assert.equal((await request("POST", { account: owner, body: Buffer.alloc(1024 * 1024 + 1) })).status, 413);
+  const upload = await request("POST", { account: owner, body: png });
+  assert.equal(upload.status, 200);
+  const { avatarVersion: version } = await upload.json();
+  assert.equal((await s.auth.viewerForDeviceToken(owner.token)).avatarVersion, version);
+  assert.equal((await request("GET", { version })).status, 401);
+  const fetched = await request("GET", { account: other, version });
+  assert.equal(fetched.headers.get("content-type"), "image/webp");
+  assert.equal(fetched.headers.get("cache-control"), "private, no-store");
+  const encoded = await sharp(Buffer.from(await fetched.arrayBuffer())).metadata();
+  assert.deepEqual([encoded.format, encoded.width, encoded.height, encoded.exif], ["webp", 256, 256, undefined]);
+  assert.equal((await request("DELETE", { account: other })).status, 409);
+  const replacement = await request("POST", { account: owner, body: png });
+  assert.equal(replacement.status, 200);
+  const { avatarVersion: nextVersion } = await replacement.json();
+  assert.notEqual(nextVersion, version);
+  assert.equal((await request("GET", { account: owner, version })).status, 404);
+  assert.deepEqual(await (await request("DELETE", { account: owner })).json(), { avatarVersion: null });
+  assert.equal((await request("GET", { account: owner, version: nextVersion })).status, 404);
+  assert.equal(s.db.data("profileAvatars/" + owner.viewer.id), undefined);
 });
